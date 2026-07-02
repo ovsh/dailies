@@ -17,6 +17,7 @@ import type {
   FileDetail,
   Job,
   MediaFile,
+  ModelDownloadProgress,
   MediaRole,
   Project,
   ProjectFolder,
@@ -51,6 +52,9 @@ export interface DailiesAPI {
 
   // settings (global)
   getSettings(): Promise<AppSettings>;
+  /** Starts (or joins) the speech-model download; progress arrives via onModelProgress. */
+  downloadWhisperModel(): Promise<void>;
+  onModelProgress(cb: (p: ModelDownloadProgress) => void): () => void;
   setApiKey(provider: "gemini", key: string): Promise<boolean>;
   setQualityMode(mode: QualityMode): Promise<void>;
 
@@ -91,6 +95,8 @@ export const IPC = {
   getWords: "dailies:getWords",
   listJobs: "dailies:listJobs",
   getSettings: "dailies:getSettings",
+  downloadWhisperModel: "dailies:downloadWhisperModel",
+  modelProgress: "dailies:modelProgress",
   setApiKey: "dailies:setApiKey",
   setQualityMode: "dailies:setQualityMode",
   listChats: "dailies:listChats",

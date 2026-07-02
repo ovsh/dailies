@@ -467,13 +467,13 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
 
     const whisperBin = findWhisperBinary();
     if (!whisperBin) {
-      db.failJob(job.id, "Whisper not installed — see Settings");
+      db.failJob(job.id, "Speech model not downloaded — Settings → Transcription");
       return;
     }
 
     const modelPath = findWhisperModel(whisperModel, dataDir);
     if (!modelPath) {
-      db.failJob(job.id, "Whisper not installed — see Settings");
+      db.failJob(job.id, "Speech model not downloaded — Settings → Transcription");
       return;
     }
 

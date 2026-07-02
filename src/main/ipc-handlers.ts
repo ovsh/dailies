@@ -1,5 +1,6 @@
 import { app, dialog, ipcMain, shell, type BrowserWindow } from "electron";
 import path from "node:path";
+import { downloadWhisperModel } from "./model-download";
 import { IPC } from "../shared/ipc";
 import type {
   AppSettings,
@@ -12,7 +13,7 @@ import type {
 } from "../shared/types";
 import type { ProjectManager } from "./project-manager";
 import type { AppSettingsStore } from "./app-settings";
-import { checkAvailability } from "./pipeline/binaries";
+import { checkAvailability, findWhisperModel } from "./pipeline/binaries";
 import { DOC_EXTENSIONS } from "./pipeline/docs";
 import { runChatTurn } from "./agents/supervisor";
 import { createGeminiEmbedder, createGeminiIndexer } from "./agents/gemini";
@@ -21,11 +22,12 @@ import { writeExport } from "./export";
 export interface IpcContext {
   manager: ProjectManager;
   settings: AppSettingsStore;
+  dataDir: string;
   getWindow: () => BrowserWindow | null;
 }
 
 export function registerIpcHandlers(ctx: IpcContext): void {
-  const { manager, settings } = ctx;
+  const { manager, settings, dataDir } = ctx;
 
   const emitChatEvent = (ev: ChatEvent) => {
     ctx.getWindow()?.webContents.send(IPC.chatEvent, ev);
@@ -142,13 +144,24 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   // ---- settings (global) ----
   ipcMain.handle(IPC.getSettings, (): AppSettings => {
     const avail = checkAvailability();
+    const model = settings.getWhisperModel();
     return {
       geminiKeySet: settings.hasApiKey(),
       qualityMode: settings.getQualityMode(),
-      whisperModel: settings.getWhisperModel(),
+      whisperModel: model,
       whisperAvailable: avail.whisper,
+      whisperModelReady: findWhisperModel(model, dataDir) !== null,
       ffmpegAvailable: avail.ffmpeg,
     };
+  });
+
+  ipcMain.handle(IPC.downloadWhisperModel, () => {
+    const model = settings.getWhisperModel();
+    void downloadWhisperModel(model, path.join(dataDir, "models"), (p) => {
+      ctx.getWindow()?.webContents.send(IPC.modelProgress, p);
+    }).catch(() => {
+      /* surfaced via the progress error event */
+    });
   });
 
   ipcMain.handle(IPC.setApiKey, (_e, _provider: "gemini", key: string) => settings.setApiKey(key));

@@ -2,7 +2,7 @@
  * Full in-browser mock of DailiesAPI so `vite dev` runs with no Electron.
  */
 import type { DailiesAPI } from "../../shared/ipc";
-import type {
+import type { ModelDownloadProgress,
   ChatEvent,
   Episode,
   ExportItem,
@@ -30,6 +30,8 @@ import {
 } from "./data";
 
 type Listener = (ev: ChatEvent) => void;
+
+const modelProgressListeners = new Set<(p: ModelDownloadProgress) => void>();
 
 export function createMockApi(): DailiesAPI {
   const listeners = new Set<Listener>();
@@ -188,6 +190,29 @@ export function createMockApi(): DailiesAPI {
 
     // ---------- settings ----------
 
+    async downloadWhisperModel(): Promise<void> {
+      // Simulate a staged download, then flip the ready flag.
+      let mb = 0;
+      const total = 1624;
+      const tick = () => {
+        mb = Math.min(total, mb + 260);
+        const done = mb >= total;
+        if (done) {
+          settings = { ...settings, whisperModelReady: true };
+        }
+        for (const cb of modelProgressListeners) {
+          cb({ downloadedMb: mb, totalMb: total, pct: Math.round((mb / total) * 100), done, error: null });
+        }
+        if (!done) {
+          setTimeout(tick, 450);
+        }
+      };
+      setTimeout(tick, 400);
+    },
+    onModelProgress(cb: (p: ModelDownloadProgress) => void): () => void {
+      modelProgressListeners.add(cb);
+      return () => modelProgressListeners.delete(cb);
+    },
     async getSettings() {
       return settings;
     },

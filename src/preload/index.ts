@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC, type DailiesAPI } from "../shared/ipc";
-import type { ChatEvent, ExportItem, ExportKind, MediaRole, QualityMode } from "../shared/types";
+import type {
+  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, MediaRole, QualityMode } from "../shared/types";
 
 const api: DailiesAPI = {
   // projects
@@ -27,6 +28,12 @@ const api: DailiesAPI = {
 
   // settings
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
+  downloadWhisperModel: () => ipcRenderer.invoke(IPC.downloadWhisperModel),
+  onModelProgress: (cb: (p: ModelDownloadProgress) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, p: ModelDownloadProgress) => cb(p);
+    ipcRenderer.on(IPC.modelProgress, listener);
+    return () => ipcRenderer.removeListener(IPC.modelProgress, listener);
+  },
   setApiKey: (provider: "gemini", key: string) => ipcRenderer.invoke(IPC.setApiKey, provider, key),
   setQualityMode: (mode: QualityMode) => ipcRenderer.invoke(IPC.setQualityMode, mode),
 

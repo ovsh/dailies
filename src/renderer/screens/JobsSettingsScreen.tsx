@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { AppSettings, Episode, Job, ProjectFolder, QualityMode } from "../../shared/types";
+import type {
+  ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder, QualityMode } from "../../shared/types";
 
 const STATUS_COLOR: Record<Job["status"], string> = {
   queued: "var(--ink-faint)",
@@ -38,12 +39,23 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [geminiKey, setGeminiKey] = useState("");
   const [savingProvider, setSavingProvider] = useState<"gemini" | null>(null);
+  const [modelProgress, setModelProgress] = useState<ModelDownloadProgress | null>(null);
   const [newEpisodeCode, setNewEpisodeCode] = useState("");
   const [addingEpisode, setAddingEpisode] = useState(false);
 
   useEffect(() => {
     api.listJobs().then(setJobs);
     api.getSettings().then(setSettings);
+  }, []);
+
+  useEffect(() => {
+    const unsub = api.onModelProgress((p) => {
+      setModelProgress(p);
+      if (p.done && !p.error) {
+        void api.getSettings().then(setSettings);
+      }
+    });
+    return unsub;
   }, []);
 
   async function refreshJobs() {
@@ -214,6 +226,50 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
 
           <section className="jobs-section">
             <div className="section-head">
+              <span className="label">Transcription</span>
+            </div>
+            <div className="trans-row">
+              <span className="trans-name">Whisper engine</span>
+              <span className={`trans-status mono${settings?.whisperAvailable ? " ok" : ""}`}>
+                {settings?.whisperAvailable ? "built in" : "missing"}
+              </span>
+            </div>
+            <div className="trans-row">
+              <span className="trans-name">
+                Speech model
+                <span className="trans-sub mono"> {settings?.whisperModel ?? ""} · ~1.6 GB · one-time download</span>
+              </span>
+              {settings?.whisperModelReady ? (
+                <span className="trans-status mono ok">downloaded</span>
+              ) : modelProgress && !modelProgress.done ? (
+                <span className="trans-status mono">
+                  {modelProgress.pct !== null ? `${modelProgress.pct}%` : `${Math.round(modelProgress.downloadedMb)} MB`}
+                </span>
+              ) : (
+                <button
+                  className="ghost-btn label"
+                  onClick={() => {
+                    setModelProgress({ downloadedMb: 0, totalMb: null, pct: 0, done: false, error: null });
+                    void api.downloadWhisperModel();
+                  }}
+                >
+                  Download
+                </button>
+              )}
+            </div>
+            {modelProgress && !modelProgress.done && modelProgress.pct !== null && (
+              <div className="trans-bar">
+                <div className="trans-bar-fill" style={{ width: `${modelProgress.pct}%` }} />
+              </div>
+            )}
+            {modelProgress?.error && <p className="jobs-error mono">{modelProgress.error}</p>}
+            <p className="jobs-hint mono">
+              Everything transcribes on this Mac — audio never leaves the machine.
+            </p>
+          </section>
+
+          <section className="jobs-section">
+            <div className="section-head">
               <span className="label">Quality</span>
             </div>
             <div className="quality-toggle">
@@ -227,10 +283,6 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                 </button>
               ))}
             </div>
-            <p className="jobs-hint mono">
-              whisper: {settings?.whisperModel ?? "—"} · {settings?.whisperAvailable ? "available" : "unavailable"} · ffmpeg:{" "}
-              {settings?.ffmpegAvailable ? "available" : "unavailable"}
-            </p>
           </section>
         </div>
       </div>
@@ -400,6 +452,42 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         .quality-btn.active {
           background: var(--accent-wash);
           color: var(--accent);
+        }
+        .trans-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          padding: 14px 0;
+          border-bottom: 1px solid var(--hairline);
+        }
+        .trans-name {
+          font-size: 13px;
+          color: var(--ink-dim);
+        }
+        .trans-sub {
+          font-size: 10.5px;
+          color: var(--ink-faint);
+          margin-left: 8px;
+        }
+        .trans-status {
+          font-size: 11px;
+          color: var(--ink-dimmer);
+        }
+        .trans-status.ok {
+          color: var(--status-ok);
+        }
+        .trans-bar {
+          height: 2px;
+          background: var(--hairline);
+          border-radius: 1px;
+          margin: 12px 0 4px;
+          overflow: hidden;
+        }
+        .trans-bar-fill {
+          height: 100%;
+          background: var(--accent);
+          transition: width 400ms var(--ease-out);
         }
         .jobs-hint {
           margin-top: 14px;

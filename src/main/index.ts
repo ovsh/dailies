@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { IPC } from "../shared/ipc";
+import { setGlobalModelsDir } from "./pipeline/binaries";
 import { createAppSettings } from "./app-settings";
 import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
@@ -51,6 +52,7 @@ void app.whenReady().then(() => {
 
   const dataDir = app.getPath("userData");
   fs.mkdirSync(dataDir, { recursive: true });
+  setGlobalModelsDir(path.join(dataDir, "models"));
 
   // Crash-visibility for remote debugging: everything lands in dailies.log.
   const logFile = path.join(dataDir, "dailies.log");
@@ -80,7 +82,7 @@ void app.whenReady().then(() => {
     },
   });
 
-  registerIpcHandlers({ manager, settings, getWindow: () => win });
+  registerIpcHandlers({ manager, settings, dataDir, getWindow: () => win });
 
   // Re-open the last project (adopts a pre-projects install on first boot).
   try {

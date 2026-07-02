@@ -319,7 +319,19 @@ export interface AppSettings {
   qualityMode: QualityMode;
   whisperModel: string;
   whisperAvailable: boolean;
+  /** True once the speech model file is on disk (global, shared by projects). */
+  whisperModelReady: boolean;
   ffmpegAvailable: boolean;
+}
+
+/** Progress events while the speech model downloads (main -> renderer). */
+export interface ModelDownloadProgress {
+  downloadedMb: number;
+  totalMb: number | null;
+  /** 0-100, null when total size is unknown. */
+  pct: number | null;
+  done: boolean;
+  error: string | null;
 }
 
 // ---------- documents (producer notes, scripts) ----------

@@ -480,6 +480,7 @@ export const MOCK_SETTINGS: AppSettings = {
   qualityMode: "high",
   whisperModel: "large-v3",
   whisperAvailable: true,
+  whisperModelReady: false,
   ffmpegAvailable: true,
 };
 

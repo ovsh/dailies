@@ -9,7 +9,8 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
   indexing, and semantic search. Stored in the macOS Keychain.
 - **Reads Avid media directly** — point it at an `Avid MediaFiles` folder; OP-Atom MXF atoms
   are grouped back into clips under their real Avid clip names. No exports needed.
-- **Whisper on-device** — transcription runs locally via whisper.cpp. Your audio never
+- **Whisper on-device, built in** — the transcription engine ships inside the app
+  (whisper.cpp, Metal). One-click speech-model download in Settings. Your audio never
   leaves the machine.
 
 ---
@@ -31,12 +32,15 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
    exported cuts. You can point directly at an **`Avid MediaFiles`** folder — Avid's MXF
    media is read in place, grouped into clips with their real names. New files dropped into
    a watched folder are picked up automatically.
-3. **(For transcription) install Whisper.** In Terminal:
-   ```sh
-   brew install whisper-cpp
-   ```
-   Everything except speech transcription works without it (visual search, chat, export);
-   Settings shows whether Dailies can see it.
+3. **The speech model.** The Whisper engine is built into the app — nothing to install.
+   The first time, go to **Settings & Jobs → Transcription → Download** to fetch the
+   speech model (~1.6 GB, one time; a progress bar shows it downloading). Until it's
+   downloaded, everything else still works (visual search, chat, export) and any clips
+   waiting on transcription pick it up automatically afterwards.
+
+   *Advanced:* if you already use whisper.cpp, Dailies also honors a Homebrew install
+   (`brew install whisper-cpp`) or a `DAILIES_WHISPER_BIN` override — but you never need
+   a terminal.
 
 ### 3. Projects
 
@@ -106,7 +110,7 @@ All timecodes are source TC (or timeline TC for finals), drop-frame handled corr
 |---|---|
 | "Can't verify the app" on first open | Right-click → Open → Open (one time). |
 | Chat says a key is needed | Settings & Jobs → paste your Gemini key. |
-| Clips stuck without transcripts | Install whisper (`brew install whisper-cpp`); check Settings shows it as available. |
+| Clips stuck without transcripts | Download the speech model: Settings & Jobs → Transcription → Download. |
 | A clip shows "media offline" | Its drive is unmounted; remount and it recovers. |
 | Visual search finds nothing | Visual indexing needs the Gemini key at scan time — re-scan after adding the key. |
 | Something looks stuck | Settings & Jobs shows every indexing job and any errors; "Scan again" is always safe. |

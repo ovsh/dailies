@@ -43,16 +43,47 @@ export function findFfprobeBinary(): string {
 const WHISPER_CANDIDATES = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
 
 /**
+ * The whisper-cli we ship inside the app (static arm64 build with embedded
+ * Metal shaders — see vendor/whisper/). Packaged: <Resources>/whisper/;
+ * dev: <repo>/vendor/whisper/.
+ */
+function bundledWhisperBinary(): string | null {
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const candidates = [
+    resourcesPath ? join(resourcesPath, "whisper", "whisper-cli") : null,
+    // dev: dist-electron/main/index.cjs -> repo root -> vendor
+    join(__dirname, "..", "..", "vendor", "whisper", "whisper-cli"),
+    join(process.cwd(), "vendor", "whisper", "whisper-cli"),
+  ];
+  for (const c of candidates) {
+    if (c && existsSync(c)) return c;
+  }
+  return null;
+}
+
+/** Global directory where downloaded speech models live (userData/models). */
+let globalModelsDir: string | null = null;
+export function setGlobalModelsDir(dir: string): void {
+  globalModelsDir = dir;
+}
+
+/**
  * Locates the whisper-cli binary, checking in order:
  * 1. DAILIES_WHISPER_BIN env var
- * 2. common Homebrew install locations
- * 3. `which whisper-cli` on PATH
+ * 2. the binary bundled with the app
+ * 3. common Homebrew install locations
+ * 4. `which whisper-cli` on PATH
  * Returns null if none are found.
  */
 export function findWhisperBinary(): string | null {
   const fromEnv = process.env["DAILIES_WHISPER_BIN"];
   if (fromEnv && existsSync(fromEnv)) {
     return fromEnv;
+  }
+
+  const bundled = bundledWhisperBinary();
+  if (bundled) {
+    return bundled;
   }
 
   for (const candidate of WHISPER_CANDIDATES) {
@@ -74,11 +105,19 @@ export function findWhisperBinary(): string | null {
 
 /**
  * Locates a whisper.cpp ggml model file by name, checking in order:
- * 1. `${dataDir}/models/ggml-${modelName}.bin`
- * 2. `~/.cache/whisper/ggml-${modelName}.bin`
+ * 1. the global models dir (userData/models — where in-app downloads land)
+ * 2. `${dataDir}/models/ggml-${modelName}.bin`
+ * 3. `~/.cache/whisper/ggml-${modelName}.bin`
  * Returns null if none are found.
  */
 export function findWhisperModel(modelName: string, dataDir: string): string | null {
+  if (globalModelsDir) {
+    const inGlobal = join(globalModelsDir, `ggml-${modelName}.bin`);
+    if (existsSync(inGlobal)) {
+      return inGlobal;
+    }
+  }
+
   const inDataDir = join(dataDir, "models", `ggml-${modelName}.bin`);
   if (existsSync(inDataDir)) {
     return inDataDir;

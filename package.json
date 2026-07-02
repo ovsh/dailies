@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --root .",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "dist": "npm run build:renderer && npm run build:main && electron-builder --mac dmg"
+    "dist": "npm run rebuild && npm run build:renderer && npm run build:main && electron-builder --mac dmg"
   },
   "build": {
     "appId": "com.dailies.app",
@@ -44,7 +44,8 @@
       ],
       "darkModeSupport": true,
       "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "notarize": true
     },
     "dmg": {
       "title": "Dailies"
@@ -68,6 +69,7 @@
     "@types/node": "^26.1.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^10.0.3",
     "electron": "^43.0.0",
@@ -75,6 +77,7 @@
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3",
     "vite": "^8.1.3",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "ws": "^8.21.0"
   }
 }

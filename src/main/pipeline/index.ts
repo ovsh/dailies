@@ -302,13 +302,25 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
   }
 
   async function scanFolder(folder: ProjectFolder): Promise<void> {
-    const files = await walkFiles(folder.path);
+    // A missing folder (unmounted drive, deleted path) must never take the
+    // app down — skip quietly; the watcher recovers when it reappears.
+    let files: string[];
+    try {
+      files = await walkFiles(folder.path);
+    } catch (err) {
+      console.warn(`scanFolder: cannot read ${folder.path}:`, err);
+      return;
+    }
     for (const file of files) {
       const ext = extname(file).toLowerCase();
-      if (VIDEO_EXTENSIONS.has(ext)) {
-        await onFileFound(file);
-      } else if (DOC_EXTENSIONS_SET.has(ext)) {
-        await onDocFound(file);
+      try {
+        if (VIDEO_EXTENSIONS.has(ext)) {
+          await onFileFound(file);
+        } else if (DOC_EXTENSIONS_SET.has(ext)) {
+          await onDocFound(file);
+        }
+      } catch (err) {
+        console.warn(`scanFolder: failed on ${file}:`, err);
       }
     }
   }

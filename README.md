@@ -128,6 +128,22 @@ npm test
 npm run dist           # signed macOS DMG into release/
 ```
 
+### Releasing
+
+`npm run dist` forces the Electron-ABI native rebuild first (never package after running
+tests without it — a Node-ABI better-sqlite3 makes every database call fail in the
+packaged app). To **notarize** (required for friction-free installs on modern macOS),
+export before `npm run dist`:
+
+```sh
+export APPLE_ID="you@example.com"
+export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # appleid.apple.com -> App-Specific Passwords
+export APPLE_TEAM_ID="7Z82LSPAPP"
+```
+
+Un-notarized builds are blocked by Gatekeeper on current macOS ("damaged / move to
+Trash"). Workaround for a machine you control: `xattr -d com.apple.quarantine /Applications/Dailies.app`.
+
 Note: better-sqlite3 is native and single-ABI. `npm run rebuild` compiles it for
 Electron (required for `npm run dev` / `npm run dist`); `npm rebuild better-sqlite3`
 compiles it for plain Node (required for the DB test in `npm test`). Switch as needed.

@@ -25,6 +25,7 @@ export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
   const [opening, setOpening] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void api.listProjects().then(setProjects);
@@ -32,20 +33,32 @@ export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
 
   async function open(id: string) {
     setOpening(id);
-    const state = await api.openProject(id);
-    setOpening(null);
-    onProjectOpened(state);
+    setError(null);
+    try {
+      const state = await api.openProject(id);
+      onProjectOpened(state);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open the project.");
+    } finally {
+      setOpening(null);
+    }
   }
 
   async function create() {
     const name = newName.trim();
     if (!name) return;
     setCreating(true);
-    const project = await api.createProject(name);
-    setNewName("");
-    const state = await api.openProject(project.id);
-    setCreating(false);
-    onProjectOpened(state);
+    setError(null);
+    try {
+      const project = await api.createProject(name);
+      setNewName("");
+      const state = await api.openProject(project.id);
+      onProjectOpened(state);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the project.");
+    } finally {
+      setCreating(false);
+    }
   }
 
   return (
@@ -69,6 +82,8 @@ export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
             </button>
           ))}
         </div>
+
+        {error && <p className="project-error mono">{error}</p>}
 
         <div className="project-new">
           <input
@@ -141,6 +156,11 @@ export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
           flex: 0 0 auto;
           font-size: 10.5px;
           color: var(--ink-faint);
+        }
+        .project-error {
+          color: var(--status-error);
+          font-size: 12px;
+          margin: 0 0 14px;
         }
         .project-new {
           display: flex;

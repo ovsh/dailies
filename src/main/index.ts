@@ -52,6 +52,25 @@ void app.whenReady().then(() => {
   const dataDir = app.getPath("userData");
   fs.mkdirSync(dataDir, { recursive: true });
 
+  // Crash-visibility for remote debugging: everything lands in dailies.log.
+  const logFile = path.join(dataDir, "dailies.log");
+  const logLine = (level: string, args: unknown[]) => {
+    try {
+      const text = args
+        .map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ""}` : String(a)))
+        .join(" ");
+      fs.appendFileSync(logFile, `${new Date().toISOString()} [${level}] ${text}\n`);
+    } catch {
+      // never let logging break the app
+    }
+  };
+  const origError = console.error.bind(console);
+  const origWarn = console.warn.bind(console);
+  console.error = (...args: unknown[]) => (logLine("error", args), origError(...args));
+  console.warn = (...args: unknown[]) => (logLine("warn", args), origWarn(...args));
+  process.on("uncaughtException", (err) => logLine("uncaught", [err]));
+  process.on("unhandledRejection", (reason) => logLine("unhandledRejection", [reason]));
+
   const settings = createAppSettings(dataDir);
   const manager = createProjectManager({
     dataDir,

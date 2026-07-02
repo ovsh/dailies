@@ -4,6 +4,9 @@ import type { Screen } from "../App";
 interface RailProps {
   screen: Screen;
   onNavigate: (screen: Screen) => void;
+  /** Full project name, e.g. "DUCK DYNASTY" — rendered as initials with a tooltip. */
+  projectName: string;
+  onOpenProjects: () => void;
 }
 
 const ITEMS: { screen: Screen; label: string; icon: ReactElement }[] = [
@@ -38,12 +41,27 @@ const ITEMS: { screen: Screen; label: string; icon: ReactElement }[] = [
   },
 ];
 
-export function Rail({ screen, onNavigate }: RailProps) {
+function projectInitials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailProps) {
   return (
     <nav className="rail">
       <div className="rail-mark display" aria-label="Dailies">
         D.
       </div>
+      <button
+        className="rail-project"
+        onClick={onOpenProjects}
+        aria-label={projectName}
+        data-tooltip={projectName}
+      >
+        <span className="rail-project-initials display">{projectInitials(projectName)}</span>
+      </button>
       <div className="rail-items">
         {ITEMS.map((item) => (
           <button
@@ -74,7 +92,31 @@ export function Rail({ screen, onNavigate }: RailProps) {
         .rail-mark {
           font-size: 22px;
           color: var(--accent);
+          margin-bottom: 20px;
+          user-select: none;
+        }
+        .rail-project {
+          position: relative;
+          width: 30px;
+          height: 30px;
+          flex: 0 0 auto;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: transparent;
+          border: 1px solid var(--hairline-strong);
+          border-radius: 50%;
+          color: var(--ink-dim);
           margin-bottom: 36px;
+          transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+        }
+        .rail-project:hover {
+          border-color: var(--accent-dim);
+          color: var(--accent);
+        }
+        .rail-project-initials {
+          font-size: 12px;
+          letter-spacing: 0.02em;
           user-select: none;
         }
         .rail-items {
@@ -117,7 +159,8 @@ export function Rail({ screen, onNavigate }: RailProps) {
           background: var(--accent);
           border-radius: 1px;
         }
-        .rail-btn[data-tooltip]::after {
+        .rail-btn[data-tooltip]::after,
+        .rail-project[data-tooltip]::after {
           content: attr(data-tooltip);
           position: absolute;
           left: calc(100% + 10px);
@@ -136,7 +179,8 @@ export function Rail({ screen, onNavigate }: RailProps) {
           transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
           z-index: 20;
         }
-        .rail-btn[data-tooltip]:hover::after {
+        .rail-btn[data-tooltip]:hover::after,
+        .rail-project[data-tooltip]:hover::after {
           opacity: 1;
           transform: translateY(-50%) translateX(0);
         }

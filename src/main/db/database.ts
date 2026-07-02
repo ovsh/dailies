@@ -12,6 +12,7 @@ import type {
   DocumentInput,
   DocumentRecord,
   EmbeddingKind,
+  Episode,
   FileInput,
   FileStatus,
   Job,
@@ -20,6 +21,7 @@ import type {
   MediaFile,
   MediaKind,
   MediaRole,
+  ProjectFolder,
   Scene,
   SceneInput,
   SegmentInput,
@@ -56,6 +58,21 @@ interface FileRow {
   media_kind: string;
   member_paths: string | null;
   clip_key: string | null;
+  episode_id: number | null;
+}
+
+interface EpisodeRow {
+  id: number;
+  code: string;
+  created_at: string;
+}
+
+interface FolderRow {
+  id: number;
+  path: string;
+  role: string;
+  episode_id: number | null;
+  last_scanned_at: string | null;
 }
 
 interface SceneRow {
@@ -131,6 +148,7 @@ interface TranscriptSearchRow {
   file_id: number;
   filename: string;
   role: string;
+  episode_id: number | null;
   fps: number;
   drop_frame: number;
   start_tc: string;
@@ -146,6 +164,7 @@ interface VisualSearchRow {
   file_id: number;
   filename: string;
   role: string;
+  episode_id: number | null;
   fps: number;
   drop_frame: number;
   start_tc: string;
@@ -165,6 +184,7 @@ interface DocumentRow {
   kind: string;
   content: string;
   added_at: string;
+  episode_id: number | null;
 }
 
 interface DocChunkRow {
@@ -178,6 +198,7 @@ interface DocumentSearchRow {
   chunk_id: number;
   doc_id: number;
   filename: string;
+  episode_id: number | null;
   text: string;
   rank: number;
 }
@@ -212,6 +233,25 @@ function mapFile(row: FileRow): MediaFile {
     mediaKind: row.media_kind as MediaKind,
     memberPaths: row.member_paths ? (JSON.parse(row.member_paths) as string[]) : null,
     clipKey: row.clip_key,
+    episodeId: row.episode_id,
+  };
+}
+
+function mapEpisode(row: EpisodeRow): Episode {
+  return {
+    id: row.id,
+    code: row.code,
+    createdAt: row.created_at,
+  };
+}
+
+function mapFolder(row: FolderRow): ProjectFolder {
+  return {
+    id: row.id,
+    path: row.path,
+    role: row.role as MediaRole,
+    episodeId: row.episode_id,
+    lastScannedAt: row.last_scanned_at,
   };
 }
 
@@ -303,6 +343,7 @@ function mapDocument(row: DocumentRow, chunkCount: number): DocumentRecord {
     kind: row.kind as DocumentRecord["kind"],
     addedAt: row.added_at,
     chunkCount,
+    episodeId: row.episode_id,
   };
 }
 
@@ -462,28 +503,84 @@ interface TableInfoRow {
   name: string;
 }
 
+/** Adds any missing columns from `wantedColumns` to `table`, reading PRAGMA table_info. */
+function addMissingColumns(
+  db: BetterSqlite3Database,
+  table: string,
+  wantedColumns: Array<[string, string]>,
+): void {
+  const existingColumns = new Set(
+    (db.pragma(`table_info(${table})`) as TableInfoRow[]).map((c) => c.name),
+  );
+  for (const [name, ddl] of wantedColumns) {
+    if (!existingColumns.has(name)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+    }
+  }
+}
+
+interface LegacyWatchedFolder {
+  path: string;
+  role?: string;
+}
+
 /**
- * Adds columns to `files` that pre-date this schema version. CREATE TABLE IF NOT EXISTS
- * leaves existing tables untouched, so older databases are missing these columns.
- * Idempotent: reads PRAGMA table_info and only ALTERs what's missing.
+ * Migrates the legacy `watchedFolders` settings KV row (JSON array of {path, role}
+ * or plain path strings) into the `folders` table, then deletes the KV row.
+ */
+function migrateWatchedFoldersKv(db: BetterSqlite3Database): void {
+  const row = db
+    .prepare<[string], { value: string }>("SELECT value FROM settings WHERE key = ?")
+    .get("watchedFolders");
+  if (!row) return;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.value);
+  } catch {
+    parsed = null;
+  }
+
+  if (Array.isArray(parsed)) {
+    const insert = db.prepare<[string, string]>(
+      "INSERT OR IGNORE INTO folders (path, role, episode_id, last_scanned_at) VALUES (?, ?, NULL, NULL)",
+    );
+    for (const entry of parsed as unknown[]) {
+      if (typeof entry === "string") {
+        insert.run(entry, "raw");
+      } else if (entry && typeof entry === "object" && "path" in entry) {
+        const legacy = entry as LegacyWatchedFolder;
+        if (typeof legacy.path === "string") {
+          insert.run(legacy.path, legacy.role ?? "raw");
+        }
+      }
+    }
+  }
+
+  db.prepare("DELETE FROM settings WHERE key = ?").run("watchedFolders");
+}
+
+/**
+ * Brings a database created by an earlier schema version up to date.
+ * CREATE TABLE IF NOT EXISTS leaves existing tables untouched, so older databases
+ * are missing columns added later; ALTER them in when absent. Idempotent.
  */
 function migrate(db: BetterSqlite3Database): void {
-  const existingColumns = new Set(
-    (db.pragma("table_info(files)") as TableInfoRow[]).map((c) => c.name),
-  );
-  const wantedColumns: Array<[string, string]> = [
+  addMissingColumns(db, "files", [
     ["role", "TEXT NOT NULL DEFAULT 'raw'"],
     ["clip_name", "TEXT"],
     ["media_kind", "TEXT NOT NULL DEFAULT 'standard'"],
     ["member_paths", "TEXT"],
     ["clip_key", "TEXT"],
-  ];
-  for (const [name, ddl] of wantedColumns) {
-    if (!existingColumns.has(name)) {
-      db.exec(`ALTER TABLE files ADD COLUMN ${name} ${ddl}`);
-    }
-  }
+    ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
+  ]);
+  addMissingColumns(db, "documents", [
+    ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
+  ]);
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_clip_key ON files(clip_key)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_files_episode_id ON files(episode_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id)");
+  migrateWatchedFoldersKv(db);
 }
 
 // ---------- database implementation ----------
@@ -519,14 +616,15 @@ export function openDatabase(dbPath: string): DailiesDB {
       string,
       string | null,
       string | null,
+      number | null,
     ],
     FileRow
   >(
     `INSERT INTO files (
        path, filename, duration_s, fps, drop_frame, start_tc, codec, audio_channels, file_hash,
-       status, added_at, role, clip_name, media_kind, member_paths, clip_key
+       status, added_at, role, clip_name, media_kind, member_paths, clip_key, episode_id
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
      RETURNING *`,
   );
   const stmtUpdateFile = db.prepare<
@@ -544,20 +642,49 @@ export function openDatabase(dbPath: string): DailiesDB {
       string,
       string | null,
       string | null,
+      number | null,
       number,
     ],
     FileRow
   >(
     `UPDATE files SET filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?,
-       role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?
+       role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?, episode_id = ?
      WHERE id = ?
      RETURNING *`,
   );
   const stmtListFiles = db.prepare<[], FileRow>("SELECT * FROM files ORDER BY added_at DESC");
+  const stmtListFilesByEpisode = db.prepare<[number], FileRow>(
+    "SELECT * FROM files WHERE episode_id = ? ORDER BY added_at DESC",
+  );
   const stmtSetFileStatus = db.prepare<[string, number]>("UPDATE files SET status = ? WHERE id = ?");
   const stmtSetFileProxy = db.prepare<[string, number]>("UPDATE files SET proxy_path = ? WHERE id = ?");
   const stmtMarkTranscribed = db.prepare<[number]>("UPDATE files SET has_transcript = 1 WHERE id = ?");
   const stmtMarkVisuallyIndexed = db.prepare<[number]>("UPDATE files SET has_visual_index = 1 WHERE id = ?");
+
+  // ---------- episodes ----------
+
+  const stmtInsertEpisode = db.prepare<[string, string], EpisodeRow>(
+    "INSERT INTO episodes (code, created_at) VALUES (?, ?) RETURNING *",
+  );
+  const stmtGetEpisodeByCode = db.prepare<[string], EpisodeRow>(
+    "SELECT * FROM episodes WHERE code = ?",
+  );
+  const stmtListEpisodes = db.prepare<[], EpisodeRow>("SELECT * FROM episodes ORDER BY code ASC");
+
+  // ---------- folders ----------
+
+  const stmtInsertFolder = db.prepare<[string, string, number | null], FolderRow>(
+    `INSERT OR IGNORE INTO folders (path, role, episode_id, last_scanned_at)
+     VALUES (?, ?, ?, NULL)`,
+  );
+  const stmtGetFolderByPath = db.prepare<[string], FolderRow>(
+    "SELECT * FROM folders WHERE path = ?",
+  );
+  const stmtListFolders = db.prepare<[], FolderRow>("SELECT * FROM folders ORDER BY path ASC");
+  const stmtRemoveFolder = db.prepare<[number]>("DELETE FROM folders WHERE id = ?");
+  const stmtSetFolderScanned = db.prepare<[string, number]>(
+    "UPDATE folders SET last_scanned_at = ? WHERE id = ?",
+  );
 
   const stmtDeleteScenes = db.prepare<[number]>("DELETE FROM scenes WHERE file_id = ?");
   const stmtInsertScene = db.prepare<[number, number, number, string, string, string | null], SceneRow>(
@@ -626,13 +753,19 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtGetDocumentById = db.prepare<[number], DocumentRow>(
     "SELECT * FROM documents WHERE id = ?",
   );
-  const stmtInsertDocument = db.prepare<[string, string, string, string, string], DocumentRow>(
-    `INSERT INTO documents (path, filename, kind, content, added_at)
-     VALUES (?, ?, ?, ?, ?)
+  const stmtInsertDocument = db.prepare<
+    [string, string, string, string, string, number | null],
+    DocumentRow
+  >(
+    `INSERT INTO documents (path, filename, kind, content, added_at, episode_id)
+     VALUES (?, ?, ?, ?, ?, ?)
      RETURNING *`,
   );
-  const stmtUpdateDocument = db.prepare<[string, string, string, number], DocumentRow>(
-    `UPDATE documents SET filename = ?, kind = ?, content = ?
+  const stmtUpdateDocument = db.prepare<
+    [string, string, string, number | null, number],
+    DocumentRow
+  >(
+    `UPDATE documents SET filename = ?, kind = ?, content = ?, episode_id = ?
      WHERE id = ?
      RETURNING *`,
   );
@@ -659,20 +792,24 @@ export function openDatabase(dbPath: string): DailiesDB {
     "SELECT * FROM doc_chunks WHERE id = ?",
   );
 
-  const stmtSearchDocuments = db.prepare<[string, number], DocumentSearchRow>(
-    `SELECT
-       doc_fts.chunk_id AS chunk_id,
-       doc_fts.doc_id AS doc_id,
-       documents.filename AS filename,
-       doc_chunks.text AS text,
-       bm25(doc_fts) AS rank
-     FROM doc_fts
-     JOIN doc_chunks ON doc_chunks.id = doc_fts.chunk_id
-     JOIN documents ON documents.id = doc_fts.doc_id
-     WHERE doc_fts MATCH ?
-     ORDER BY rank ASC
-     LIMIT ?`,
-  );
+  function buildSearchDocumentsStmt(episodeId?: number) {
+    const clauses: string[] = ["doc_fts MATCH ?"];
+    if (episodeId !== undefined) clauses.push("documents.episode_id = ?");
+    const sql = `SELECT
+        doc_fts.chunk_id AS chunk_id,
+        doc_fts.doc_id AS doc_id,
+        documents.filename AS filename,
+        documents.episode_id AS episode_id,
+        doc_chunks.text AS text,
+        bm25(doc_fts) AS rank
+      FROM doc_fts
+      JOIN doc_chunks ON doc_chunks.id = doc_fts.chunk_id
+      JOIN documents ON documents.id = doc_fts.doc_id
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY rank ASC
+      LIMIT ?`;
+    return db.prepare<unknown[], DocumentSearchRow>(sql);
+  }
 
   // ---------- embeddings ----------
 
@@ -775,26 +912,30 @@ export function openDatabase(dbPath: string): DailiesDB {
     "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   );
 
-  const stmtSearchTranscripts = db.prepare<[string, number], TranscriptSearchRow>(
-    `SELECT
-       transcript_fts.segment_id AS segment_id,
-       transcript_fts.file_id AS file_id,
-       files.filename AS filename,
-       files.role AS role,
-       files.fps AS fps,
-       files.drop_frame AS drop_frame,
-       files.start_tc AS start_tc,
-       transcript_segments.start_s AS start_s,
-       transcript_segments.end_s AS end_s,
-       transcript_segments.text AS text,
-       bm25(transcript_fts) AS rank
-     FROM transcript_fts
-     JOIN transcript_segments ON transcript_segments.id = transcript_fts.segment_id
-     JOIN files ON files.id = transcript_fts.file_id
-     WHERE transcript_fts MATCH ?
-     ORDER BY rank ASC
-     LIMIT ?`,
-  );
+  function buildSearchTranscriptsStmt(episodeId?: number) {
+    const clauses: string[] = ["transcript_fts MATCH ?"];
+    if (episodeId !== undefined) clauses.push("files.episode_id = ?");
+    const sql = `SELECT
+        transcript_fts.segment_id AS segment_id,
+        transcript_fts.file_id AS file_id,
+        files.filename AS filename,
+        files.role AS role,
+        files.episode_id AS episode_id,
+        files.fps AS fps,
+        files.drop_frame AS drop_frame,
+        files.start_tc AS start_tc,
+        transcript_segments.start_s AS start_s,
+        transcript_segments.end_s AS end_s,
+        transcript_segments.text AS text,
+        bm25(transcript_fts) AS rank
+      FROM transcript_fts
+      JOIN transcript_segments ON transcript_segments.id = transcript_fts.segment_id
+      JOIN files ON files.id = transcript_fts.file_id
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY rank ASC
+      LIMIT ?`;
+    return db.prepare<unknown[], TranscriptSearchRow>(sql);
+  }
 
   const stmtGetTranscriptHit = db.prepare<[number], TranscriptSearchRow>(
     `SELECT
@@ -802,6 +943,7 @@ export function openDatabase(dbPath: string): DailiesDB {
        transcript_segments.file_id AS file_id,
        files.filename AS filename,
        files.role AS role,
+       files.episode_id AS episode_id,
        files.fps AS fps,
        files.drop_frame AS drop_frame,
        files.start_tc AS start_tc,
@@ -818,12 +960,14 @@ export function openDatabase(dbPath: string): DailiesDB {
     const clauses: string[] = ["visual_fts MATCH ?"];
     if (filters?.shotType) clauses.push("visual_annotations.shot_type = ?");
     if (filters?.timeOfDay) clauses.push("visual_annotations.time_of_day = ?");
+    if (filters?.episodeId !== undefined) clauses.push("files.episode_id = ?");
     const sql = `SELECT
         visual_annotations.id AS ann_id,
         visual_fts.scene_id AS scene_id,
         visual_fts.file_id AS file_id,
         files.filename AS filename,
         files.role AS role,
+        files.episode_id AS episode_id,
         files.fps AS fps,
         files.drop_frame AS drop_frame,
         files.start_tc AS start_tc,
@@ -851,6 +995,7 @@ export function openDatabase(dbPath: string): DailiesDB {
        scenes.file_id AS file_id,
        files.filename AS filename,
        files.role AS role,
+       files.episode_id AS episode_id,
        files.fps AS fps,
        files.drop_frame AS drop_frame,
        files.start_tc AS start_tc,
@@ -954,6 +1099,7 @@ export function openDatabase(dbPath: string): DailiesDB {
   });
 
   const upsertDocumentTx = db.transaction((input: DocumentInput): DocumentRecord => {
+    const episodeId = input.episodeId ?? null;
     const existing = stmtGetDocumentByPath.get(input.path);
     let doc: DocumentRow;
     if (existing) {
@@ -967,6 +1113,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         input.filename,
         input.kind,
         input.content,
+        episodeId,
         existing.id,
       );
       doc = updated ?? existing;
@@ -977,6 +1124,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         input.kind,
         input.content,
         new Date().toISOString(),
+        episodeId,
       );
       if (!inserted) throw new Error("upsertDocument: insert failed");
       doc = inserted;
@@ -1000,6 +1148,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       const clipName = input.clipName ?? null;
       const memberPaths = input.memberPaths ? JSON.stringify(input.memberPaths) : null;
       const clipKey = input.clipKey ?? null;
+      const episodeId = input.episodeId ?? null;
       const existing = stmtGetFileByPath.get(input.path);
       if (existing) {
         const updated = stmtUpdateFile.get(
@@ -1016,6 +1165,7 @@ export function openDatabase(dbPath: string): DailiesDB {
           mediaKind,
           memberPaths,
           clipKey,
+          episodeId,
           existing.id,
         );
         return mapFile(updated ?? existing);
@@ -1036,6 +1186,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         mediaKind,
         memberPaths,
         clipKey,
+        episodeId,
       );
       if (!row) throw new Error("upsertFile: insert failed");
       return mapFile(row);
@@ -1056,8 +1207,9 @@ export function openDatabase(dbPath: string): DailiesDB {
       return row ? mapFile(row) : null;
     },
 
-    listFiles(): MediaFile[] {
-      return stmtListFiles.all().map(mapFile);
+    listFiles(episodeId?: number): MediaFile[] {
+      if (episodeId === undefined) return stmtListFiles.all().map(mapFile);
+      return stmtListFilesByEpisode.all(episodeId).map(mapFile);
     },
 
     setFileStatus(id: number, status: FileStatus): void {
@@ -1074,6 +1226,48 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     markVisuallyIndexed(id: number): void {
       stmtMarkVisuallyIndexed.run(id);
+    },
+
+    // episodes
+    createEpisode(code: string): Episode {
+      const trimmed = code.trim();
+      if (!trimmed) throw new Error("createEpisode: code must not be empty");
+      const existing = stmtGetEpisodeByCode.get(trimmed);
+      if (existing) return mapEpisode(existing);
+      try {
+        const row = stmtInsertEpisode.get(trimmed, new Date().toISOString());
+        if (!row) throw new Error("createEpisode: insert failed");
+        return mapEpisode(row);
+      } catch (err) {
+        // UNIQUE violation (race with another insert) -> return the existing row.
+        const raced = stmtGetEpisodeByCode.get(trimmed);
+        if (raced) return mapEpisode(raced);
+        throw err;
+      }
+    },
+
+    listEpisodes(): Episode[] {
+      return stmtListEpisodes.all().map(mapEpisode);
+    },
+
+    // folders
+    addFolder(path: string, role: MediaRole, episodeId: number | null): ProjectFolder {
+      stmtInsertFolder.run(path, role, episodeId);
+      const row = stmtGetFolderByPath.get(path);
+      if (!row) throw new Error("addFolder: insert failed");
+      return mapFolder(row);
+    },
+
+    listFolders(): ProjectFolder[] {
+      return stmtListFolders.all().map(mapFolder);
+    },
+
+    removeFolder(folderId: number): void {
+      stmtRemoveFolder.run(folderId);
+    },
+
+    setFolderScanned(folderId: number, at: string): void {
+      stmtSetFolderScanned.run(at, folderId);
     },
 
     // scenes
@@ -1119,15 +1313,20 @@ export function openDatabase(dbPath: string): DailiesDB {
     },
 
     // search
-    searchTranscripts(terms: string[], limit = 40): TranscriptHit[] {
+    searchTranscripts(terms: string[], limit = 40, episodeId?: number): TranscriptHit[] {
       const query = buildFtsQuery(terms);
       if (!query) return [];
-      const rows = stmtSearchTranscripts.all(query, limit);
+      const stmt = buildSearchTranscriptsStmt(episodeId);
+      const params: unknown[] = [query];
+      if (episodeId !== undefined) params.push(episodeId);
+      params.push(limit);
+      const rows = stmt.all(...params);
       const scores = normalizeScores(rows);
       return rows.map((row, i) => ({
         fileId: row.file_id,
         filename: row.filename,
         role: row.role as MediaRole,
+        episodeId: row.episode_id,
         segmentId: row.segment_id,
         startS: row.start_s,
         endS: row.end_s,
@@ -1145,6 +1344,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       const params: unknown[] = [query];
       if (filters?.shotType) params.push(filters.shotType);
       if (filters?.timeOfDay) params.push(filters.timeOfDay);
+      if (filters?.episodeId !== undefined) params.push(filters.episodeId);
       params.push(limit);
       const rows = stmt.all(...params);
       const scores = normalizeScores(rows);
@@ -1152,6 +1352,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         fileId: row.file_id,
         filename: row.filename,
         role: row.role as MediaRole,
+        episodeId: row.episode_id,
         sceneId: row.scene_id,
         startS: row.scene_start_s,
         endS: row.scene_end_s,
@@ -1172,6 +1373,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         fileId: row.file_id,
         filename: row.filename,
         role: row.role as MediaRole,
+        episodeId: row.episode_id,
         segmentId: row.segment_id,
         startS: row.start_s,
         endS: row.end_s,
@@ -1189,6 +1391,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         fileId: row.file_id,
         filename: row.filename,
         role: row.role as MediaRole,
+        episodeId: row.episode_id,
         sceneId: row.scene_id,
         startS: row.scene_start_s,
         endS: row.scene_end_s,
@@ -1221,15 +1424,20 @@ export function openDatabase(dbPath: string): DailiesDB {
       });
     },
 
-    searchDocuments(terms: string[], limit = 20): DocumentHit[] {
+    searchDocuments(terms: string[], limit = 20, episodeId?: number): DocumentHit[] {
       const query = buildFtsQuery(terms);
       if (!query) return [];
-      const rows = stmtSearchDocuments.all(query, limit);
+      const stmt = buildSearchDocumentsStmt(episodeId);
+      const params: unknown[] = [query];
+      if (episodeId !== undefined) params.push(episodeId);
+      params.push(limit);
+      const rows = stmt.all(...params);
       const scores = normalizeScores(rows);
       return rows.map((row, i) => ({
         docId: row.doc_id,
         chunkId: row.chunk_id,
         filename: row.filename,
+        episodeId: row.episode_id,
         text: row.text,
         score: scores[i] ?? 0,
       }));
@@ -1243,6 +1451,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         docId: row.doc_id,
         chunkId: row.id,
         filename: doc?.filename ?? "",
+        episodeId: doc?.episode_id ?? null,
         text: row.text,
         score: 0,
       };

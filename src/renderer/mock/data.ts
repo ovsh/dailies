@@ -9,15 +9,17 @@ import type {
   AppSettings,
   ChatMessageRecord,
   ChatSummary,
+  Episode,
   FileDetail,
   Job,
   MediaFile,
   MediaKind,
   MediaRole,
+  Project,
+  ProjectFolder,
   Scene,
   TranscriptSegment,
   VisualAnnotation,
-  WatchedFolder,
 } from "../../shared/types";
 
 // ---------- keyframe placeholder generator ----------
@@ -50,6 +52,70 @@ export function keyframeSvg(label: string, sub?: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
+// ---------- projects ----------
+
+export const MOCK_PROJECTS: Project[] = [
+  {
+    id: "duck-dynasty",
+    name: "DUCK DYNASTY",
+    createdAt: new Date(Date.UTC(2026, 3, 2, 9, 0)).toISOString(),
+    lastOpenedAt: new Date(Date.UTC(2026, 6, 20, 15, 2)).toISOString(),
+  },
+  {
+    id: "lonely-island",
+    name: "LONELY ISLAND",
+    createdAt: new Date(Date.UTC(2026, 5, 11, 9, 0)).toISOString(),
+    lastOpenedAt: new Date(Date.UTC(2026, 5, 28, 11, 40)).toISOString(),
+  },
+];
+
+// ---------- episodes ----------
+
+export const MOCK_EPISODES: Record<string, Episode[]> = {
+  "duck-dynasty": [
+    { id: 201, code: "201", createdAt: new Date(Date.UTC(2026, 3, 2, 9, 5)).toISOString() },
+    { id: 202, code: "202", createdAt: new Date(Date.UTC(2026, 4, 1, 9, 5)).toISOString() },
+    { id: 203, code: "203", createdAt: new Date(Date.UTC(2026, 5, 3, 9, 5)).toISOString() },
+  ],
+  "lonely-island": [],
+};
+
+// ---------- folders ----------
+
+export const MOCK_FOLDERS: Record<string, ProjectFolder[]> = {
+  "duck-dynasty": [
+    {
+      id: 1,
+      path: "/Volumes/DAILIES_01/footage",
+      role: "raw",
+      episodeId: null,
+      lastScannedAt: new Date(Date.UTC(2026, 6, 20, 15, 2)).toISOString(),
+    },
+    {
+      id: 2,
+      path: "/Volumes/DAILIES_01/footage_202",
+      role: "raw",
+      episodeId: 202,
+      lastScannedAt: new Date(Date.UTC(2026, 6, 19, 9, 30)).toISOString(),
+    },
+    {
+      id: 3,
+      path: "/Volumes/DAILIES_01/exports",
+      role: "final",
+      episodeId: null,
+      lastScannedAt: new Date(Date.UTC(2026, 6, 18, 20, 5)).toISOString(),
+    },
+    {
+      id: 4,
+      path: "/Volumes/DAILIES_01/footage_203",
+      role: "raw",
+      episodeId: 203,
+      lastScannedAt: null,
+    },
+  ],
+  "lonely-island": [],
+};
+
 // ---------- files ----------
 
 interface MockFileSeed {
@@ -67,6 +133,7 @@ interface MockFileSeed {
   role?: MediaRole;
   clipName?: string | null;
   mediaKind?: MediaKind;
+  episodeId?: number | null;
 }
 
 const FILE_SEEDS: MockFileSeed[] = [
@@ -84,6 +151,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     hasVisualIndex: true,
     clipName: "A001C012_230715_BEAR RIVER WS",
     mediaKind: "opatom",
+    episodeId: 201,
   },
   {
     id: 2,
@@ -97,6 +165,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: false,
     hasVisualIndex: true,
+    episodeId: 201,
   },
   {
     id: 3,
@@ -110,6 +179,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: true,
     hasVisualIndex: true,
+    episodeId: 201,
   },
   {
     id: 4,
@@ -123,6 +193,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: true,
     hasVisualIndex: true,
+    episodeId: 202,
   },
   {
     id: 5,
@@ -138,6 +209,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     hasVisualIndex: true,
     role: "final",
     clipName: null,
+    episodeId: 201,
   },
   {
     id: 6,
@@ -153,6 +225,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     hasVisualIndex: true,
     role: "final",
     clipName: null,
+    episodeId: 202,
   },
   {
     id: 7,
@@ -166,6 +239,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: true,
     hasVisualIndex: true,
+    episodeId: 202,
   },
   {
     id: 8,
@@ -179,6 +253,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "processing",
     hasTranscript: false,
     hasVisualIndex: false,
+    episodeId: 202,
   },
   {
     id: 9,
@@ -192,6 +267,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: true,
     hasVisualIndex: false,
+    episodeId: 203,
   },
   {
     id: 10,
@@ -205,6 +281,7 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: false,
     hasVisualIndex: true,
+    episodeId: null,
   },
 ];
 
@@ -224,6 +301,7 @@ export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => ({
   hasTranscript: s.hasTranscript,
   hasVisualIndex: s.hasVisualIndex,
   proxyPath: s.status === "ready" ? `/Volumes/DAILIES_01/proxies/${s.filename.replace(".mov", "_proxy.mp4")}` : null,
+  episodeId: s.episodeId ?? null,
   role: s.role ?? "raw",
   clipName: s.clipName ?? null,
   mediaKind: s.mediaKind ?? "standard",
@@ -337,7 +415,7 @@ function anno(id: number, sceneId: number, fileId: number, description: string, 
     timeOfDay,
     peopleCount,
     actions,
-    model: "gemini-2.5-pro",
+    model: "gemini-3.5-flash",
     indexedAt: new Date(Date.UTC(2026, 6, 20, 14, 0)).toISOString(),
   };
 }
@@ -399,11 +477,6 @@ export const MOCK_JOBS: Job[] = [
 
 export const MOCK_SETTINGS: AppSettings = {
   geminiKeySet: true,
-  watchedFolders: [
-    { path: "/Volumes/DAILIES_01/footage", role: "raw" },
-    { path: "/Volumes/DAILIES_01/b-roll", role: "raw" },
-    { path: "/Volumes/DAILIES_01/exports", role: "final" },
-  ] satisfies WatchedFolder[],
   qualityMode: "high",
   whisperModel: "large-v3",
   whisperAvailable: true,

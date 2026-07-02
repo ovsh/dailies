@@ -3,6 +3,20 @@
  * All statements are idempotent (IF NOT EXISTS) so opening an existing DB is safe.
  */
 export const SCHEMA_SQL: string = `
+CREATE TABLE IF NOT EXISTS episodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS folders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  path TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL DEFAULT 'raw',
+  episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL,
+  last_scanned_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   path TEXT NOT NULL UNIQUE,
@@ -23,10 +37,12 @@ CREATE TABLE IF NOT EXISTS files (
   clip_name TEXT,
   media_kind TEXT NOT NULL DEFAULT 'standard',
   member_paths TEXT,
-  clip_key TEXT
+  clip_key TEXT,
+  episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_clip_key ON files(clip_key);
+CREATE INDEX IF NOT EXISTS idx_files_episode_id ON files(episode_id);
 
 CREATE TABLE IF NOT EXISTS scenes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,8 +148,11 @@ CREATE TABLE IF NOT EXISTS documents (
   filename TEXT NOT NULL,
   kind TEXT NOT NULL,
   content TEXT NOT NULL,
-  added_at TEXT NOT NULL
+  added_at TEXT NOT NULL,
+  episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id);
 
 CREATE TABLE IF NOT EXISTS doc_chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

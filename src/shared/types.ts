@@ -12,6 +12,40 @@ export type FileStatus = "pending" | "processing" | "ready" | "offline" | "error
 export type MediaRole = "raw" | "final";
 export type MediaKind = "standard" | "opatom";
 
+// ---------- projects & episodes ----------
+
+/** A project = one show, with its own isolated database and index. */
+export interface Project {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastOpenedAt: string | null;
+}
+
+/** An episode within a project, e.g. code "201". */
+export interface Episode {
+  id: number;
+  code: string;
+  createdAt: string;
+}
+
+/** A watched folder within a project, optionally assigned to one episode. */
+export interface ProjectFolder {
+  id: number;
+  path: string;
+  role: MediaRole;
+  episodeId: number | null;
+  lastScannedAt: string | null;
+}
+
+/** Everything the renderer needs about the currently open project. */
+export interface ProjectState {
+  project: Project;
+  episodes: Episode[];
+  folders: ProjectFolder[];
+}
+
+/** @deprecated superseded by ProjectFolder; kept only for settings migration. */
 export interface WatchedFolder {
   path: string;
   role: MediaRole;
@@ -34,6 +68,7 @@ export interface MediaFile {
   hasTranscript: boolean;
   hasVisualIndex: boolean;
   proxyPath: string | null;
+  episodeId: number | null;
   role: MediaRole;
   /** Avid OP-Atom: clip name from the MXF material package; shown instead of the atom filename. */
   clipName: string | null;
@@ -97,6 +132,7 @@ export interface FileInput {
   audioChannels: number;
   fileHash: string;
   role?: MediaRole;
+  episodeId?: number | null;
   clipName?: string | null;
   mediaKind?: MediaKind;
   memberPaths?: string[] | null;
@@ -159,6 +195,7 @@ export interface TranscriptHit {
   fileId: number;
   filename: string;
   role: MediaRole;
+  episodeId: number | null;
   segmentId: number;
   startS: number;
   endS: number;
@@ -172,6 +209,7 @@ export interface VisualHit {
   fileId: number;
   filename: string;
   role: MediaRole;
+  episodeId: number | null;
   sceneId: number;
   startS: number;
   endS: number;
@@ -187,6 +225,8 @@ export interface VisualHit {
 export interface VisualSearchFilters {
   shotType?: string;
   timeOfDay?: string;
+  /** Restrict results to one episode. */
+  episodeId?: number;
 }
 
 // ---------- agent answers ----------
@@ -273,9 +313,9 @@ export const GEMINI_MODELS = {
 /** Embedding vector length (gemini-embedding-001 with outputDimensionality). */
 export const EMBEDDING_DIM = 768;
 
+/** Global (cross-project) settings. Folders/episodes live on ProjectState. */
 export interface AppSettings {
   geminiKeySet: boolean;
-  watchedFolders: WatchedFolder[];
   qualityMode: QualityMode;
   whisperModel: string;
   whisperAvailable: boolean;
@@ -284,7 +324,7 @@ export interface AppSettings {
 
 // ---------- documents (producer notes, scripts) ----------
 
-export type DocumentKind = "pdf" | "txt" | "md";
+export type DocumentKind = "pdf" | "txt" | "md" | "xlsx" | "csv";
 
 export interface DocumentInput {
   path: string;
@@ -293,6 +333,7 @@ export interface DocumentInput {
   content: string;
   /** Pre-chunked content (~1200 chars per chunk, paragraph-aligned). */
   chunks: string[];
+  episodeId?: number | null;
 }
 
 export interface DocumentRecord {
@@ -302,12 +343,14 @@ export interface DocumentRecord {
   kind: DocumentKind;
   addedAt: string;
   chunkCount: number;
+  episodeId: number | null;
 }
 
 export interface DocumentHit {
   docId: number;
   chunkId: number;
   filename: string;
+  episodeId: number | null;
   text: string;
   score: number;
 }

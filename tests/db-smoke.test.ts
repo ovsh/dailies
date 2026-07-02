@@ -71,6 +71,32 @@ describe("db end-to-end smoke", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0].description).toContain("brown bear");
 
+    // episodes + folders + scoped search
+    const ep = db.createEpisode("201");
+    expect(db.createEpisode("201").id).toBe(ep.id); // idempotent by code
+    const folder = db.addFolder("/footage/ep201", "raw", ep.id);
+    expect(db.listFolders()[0]?.episodeId).toBe(ep.id);
+    db.setFolderScanned(folder.id, "2026-07-02T00:00:00.000Z");
+    expect(db.listFolders()[0]?.lastScannedAt).toContain("2026");
+
+    db.upsertFile({
+      path: "/footage/A001_bear_river.mov",
+      filename: "A001_bear_river.mov",
+      durationS: 120,
+      fps: 23.976,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "abc123",
+      episodeId: ep.id,
+    });
+    expect(db.listFiles(ep.id)).toHaveLength(1);
+    const scoped = db.searchTranscripts(["bears"], 40, ep.id);
+    expect(scoped.length).toBeGreaterThan(0);
+    expect(scoped[0].episodeId).toBe(ep.id);
+    expect(db.searchTranscripts(["bears"], 40, ep.id + 999)).toHaveLength(0);
+
     // job queue lifecycle
     db.enqueueJob(file.id, "transcribe");
     const job = db.claimNextJob();

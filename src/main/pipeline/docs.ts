@@ -1,14 +1,16 @@
 /**
  * Document ingest: extracts text + paragraph-aligned chunks from producer
- * notes / scripts (.pdf, .txt, .md) so they can be stored and embedded
- * alongside transcript/visual data.
+ * notes / scripts / spreadsheets (.pdf, .txt, .md, .xlsx, .csv) so they can
+ * be stored and embedded alongside transcript/visual data.
  */
 import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 
 import type { DocumentInput, DocumentKind } from "../../shared/types";
 
-export const DOC_EXTENSIONS = [".pdf", ".txt", ".md"];
+export const DOC_EXTENSIONS = [".pdf", ".txt", ".md", ".xlsx", ".csv"];
+
+const MAX_XLSX_CONTENT_CHARS = 200_000;
 
 const MAX_CHUNK_CHARS = 1200;
 const HARD_SPLIT_CHARS = 2000;
@@ -21,6 +23,10 @@ function kindForExt(ext: string): DocumentKind | null {
       return "txt";
     case ".md":
       return "md";
+    case ".xlsx":
+      return "xlsx";
+    case ".csv":
+      return "csv";
     default:
       return null;
   }
@@ -92,10 +98,13 @@ function chunkText(text: string): string[] {
 }
 
 /**
- * Extracts a DocumentInput from a .pdf/.txt/.md file. Returns null on
- * extraction failure or empty text.
+ * Extracts a DocumentInput from a .pdf/.txt/.md/.xlsx/.csv file. Returns
+ * null on extraction failure or empty text.
  */
-export async function extractDocument(path: string): Promise<DocumentInput | null> {
+export async function extractDocument(
+  path: string,
+  episodeId: number | null = null,
+): Promise<DocumentInput | null> {
   const ext = extname(path).toLowerCase();
   const kind = kindForExt(ext);
   if (!kind) return null;
@@ -112,7 +121,22 @@ export async function extractDocument(path: string): Promise<DocumentInput | nul
       } finally {
         await parser.destroy();
       }
+    } else if (kind === "xlsx") {
+      try {
+        const XLSX = await import("xlsx");
+        const buffer = await readFile(path);
+        const wb = XLSX.read(buffer);
+        const blocks = wb.SheetNames.map((sheetName) => {
+          const ws = wb.Sheets[sheetName];
+          const csv = ws ? XLSX.utils.sheet_to_csv(ws) : "";
+          return `## ${sheetName}\n${csv}`;
+        });
+        rawText = blocks.join("\n\n").slice(0, MAX_XLSX_CONTENT_CHARS);
+      } catch {
+        return null;
+      }
     } else {
+      // csv and txt/md are both read as plain utf8 text.
       rawText = await readFile(path, "utf8");
     }
   } catch {
@@ -131,5 +155,6 @@ export async function extractDocument(path: string): Promise<DocumentInput | nul
     kind,
     content,
     chunks,
+    episodeId,
   };
 }

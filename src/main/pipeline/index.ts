@@ -9,7 +9,14 @@ import { mkdir, readdir } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 import type { DailiesDB } from "../db/types";
-import type { FileInput, GeminiIndexer, Job, MediaRole, TextEmbedder, WatchedFolder } from "../../shared/types";
+import type {
+  FileInput,
+  GeminiIndexer,
+  Job,
+  MediaRole,
+  ProjectFolder,
+  TextEmbedder,
+} from "../../shared/types";
 import { findFfprobeBinary, findWhisperBinary, findWhisperModel } from "./binaries";
 import { DOC_EXTENSIONS, extractDocument } from "./docs";
 import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo, type OpAtomClip } from "./opatom";
@@ -33,9 +40,17 @@ export interface PipelineOptions {
 }
 
 export interface Pipeline {
-  watchFolder(folder: WatchedFolder): void;
+  watchFolder(folder: ProjectFolder): void;
   unwatchFolder(path: string): void;
-  scanFolder(folder: WatchedFolder): Promise<void>;
+  scanFolder(folder: ProjectFolder): Promise<void>;
+  /**
+   * Direct entry for the Import button: extracts the file at `path` and
+   * upserts it as a document, attempting inline embedding immediately
+   * (same as the watched-doc flow). Returns false when extraction fails
+   * or the extension is unsupported. Re-ingesting an existing path is
+   * allowed — upsertDocument replaces the prior record.
+   */
+  ingestDocument(path: string, episodeId: number | null): Promise<boolean>;
   start(): void;
   stop(): Promise<void>;
 }
@@ -81,9 +96,10 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
   /** Transcribe jobs claimed from the DB but held back because one is already running. */
   const pendingTranscribeJobs: Job[] = [];
 
-  // folder path -> role, used to resolve a discovered file's role by
-  // longest-prefix match against watched folders. Default "raw".
-  const watchedFolderRoles: WatchedFolder[] = [];
+  // Watched project folders, used to resolve a discovered file's/document's
+  // role and episodeId by longest-prefix match. Default role "raw",
+  // default episodeId null.
+  const watchedFolders: ProjectFolder[] = [];
 
   function scheduleUpdate(): void {
     if (updateDebounceTimer) return;
@@ -93,15 +109,24 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     }, UPDATE_DEBOUNCE_MS);
   }
 
-  function roleForPath(path: string): MediaRole {
-    let best: WatchedFolder | null = null;
-    for (const folder of watchedFolderRoles) {
+  /** Longest-prefix-matching watched folder for `path`, if any. */
+  function folderForPath(path: string): ProjectFolder | null {
+    let best: ProjectFolder | null = null;
+    for (const folder of watchedFolders) {
       if (!path.startsWith(folder.path)) continue;
       if (!best || folder.path.length > best.path.length) {
         best = folder;
       }
     }
-    return best?.role ?? "raw";
+    return best;
+  }
+
+  function roleForPath(path: string): MediaRole {
+    return folderForPath(path)?.role ?? "raw";
+  }
+
+  function episodeIdForPath(path: string): number | null {
+    return folderForPath(path)?.episodeId ?? null;
   }
 
   async function embedDocChunks(): Promise<void> {
@@ -124,7 +149,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     try {
       if (db.getDocumentByPath(path)) return;
 
-      const doc = await extractDocument(path);
+      const doc = await extractDocument(path, episodeIdForPath(path));
       if (!doc) return;
 
       db.upsertDocument(doc);
@@ -132,6 +157,26 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       onUpdate();
     } catch (err) {
       console.error(`[pipeline] failed to ingest document ${path}:`, err);
+    }
+  }
+
+  /**
+   * Direct entry for the Import button. Unlike onDocFound (the watcher/scan
+   * path), this always (re-)ingests: upsertDocument replaces any existing
+   * record at the same path.
+   */
+  async function ingestDocument(path: string, episodeId: number | null): Promise<boolean> {
+    try {
+      const doc = await extractDocument(path, episodeId);
+      if (!doc) return false;
+
+      db.upsertDocument(doc);
+      await embedDocChunks();
+      onUpdate();
+      return true;
+    } catch (err) {
+      console.error(`[pipeline] failed to ingest document ${path}:`, err);
+      return false;
     }
   }
 
@@ -174,6 +219,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       audioChannels: audioAtoms.length > 0 ? 1 : 0,
       fileHash,
       role: roleForPath(primaryAtom.path),
+      episodeId: episodeIdForPath(primaryAtom.path),
       clipName: clip.clipName,
       mediaKind: "opatom",
       memberPaths,
@@ -223,6 +269,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     // to the worker loop via enqueueJob — this call never dispatches those.
     const probed = await probeFile(path);
     probed.role = roleForPath(path);
+    probed.episodeId = episodeIdForPath(path);
 
     if (existing && existing.fileHash === probed.fileHash) {
       // Unchanged since we last saw it; nothing to do.
@@ -243,18 +290,18 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     },
   });
 
-  function watchFolder(folder: WatchedFolder): void {
-    watchedFolderRoles.push(folder);
+  function watchFolder(folder: ProjectFolder): void {
+    watchedFolders.push(folder);
     watcher.watchFolder(folder.path);
   }
 
   function unwatchFolder(path: string): void {
-    const idx = watchedFolderRoles.findIndex((f) => f.path === path);
-    if (idx >= 0) watchedFolderRoles.splice(idx, 1);
+    const idx = watchedFolders.findIndex((f) => f.path === path);
+    if (idx >= 0) watchedFolders.splice(idx, 1);
     watcher.unwatchFolder(path);
   }
 
-  async function scanFolder(folder: WatchedFolder): Promise<void> {
+  async function scanFolder(folder: ProjectFolder): Promise<void> {
     const files = await walkFiles(folder.path);
     for (const file of files) {
       const ext = extname(file).toLowerCase();
@@ -616,6 +663,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     watchFolder,
     unwatchFolder,
     scanFolder,
+    ingestDocument,
     start,
     stop,
   };

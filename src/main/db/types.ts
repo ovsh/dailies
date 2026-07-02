@@ -4,6 +4,7 @@
  */
 import type {
   AnswerHit,
+  Episode,
   ChatMessageRecord,
   ChatSummary,
   DocumentHit,
@@ -15,6 +16,8 @@ import type {
   Job,
   JobStage,
   MediaFile,
+  MediaRole,
+  ProjectFolder,
   Scene,
   SceneInput,
   SegmentInput,
@@ -34,11 +37,22 @@ export interface DailiesDB {
   getFileByPath(path: string): MediaFile | null;
   /** OP-Atom lookup by material package UMID. */
   getFileByClipKey(clipKey: string): MediaFile | null;
-  listFiles(): MediaFile[];
+  /** All files, or one episode's when episodeId is given. */
+  listFiles(episodeId?: number): MediaFile[];
   setFileStatus(id: number, status: FileStatus): void;
   setFileProxy(id: number, proxyPath: string): void;
   markTranscribed(id: number): void;
   markVisuallyIndexed(id: number): void;
+
+  // episodes
+  createEpisode(code: string): Episode;
+  listEpisodes(): Episode[];
+
+  // watched folders (per project, optionally assigned to an episode)
+  addFolder(path: string, role: MediaRole, episodeId: number | null): ProjectFolder;
+  listFolders(): ProjectFolder[];
+  removeFolder(folderId: number): void;
+  setFolderScanned(folderId: number, at: string): void;
 
   // scenes
   replaceScenes(fileId: number, scenes: SceneInput[]): Scene[];
@@ -56,7 +70,7 @@ export interface DailiesDB {
   listAnnotations(fileId: number): VisualAnnotation[];
 
   // search (FTS5; terms are OR-combined; scores normalized 0..1, best first)
-  searchTranscripts(terms: string[], limit?: number): TranscriptHit[];
+  searchTranscripts(terms: string[], limit?: number, episodeId?: number): TranscriptHit[];
   searchVisuals(terms: string[], filters?: VisualSearchFilters, limit?: number): VisualHit[];
   /** Hydrate a single hit by id (used to merge semantic results with FTS). */
   getTranscriptHit(segmentId: number): TranscriptHit | null;
@@ -66,7 +80,7 @@ export interface DailiesDB {
   upsertDocument(input: DocumentInput): DocumentRecord;
   getDocumentByPath(path: string): DocumentRecord | null;
   listDocuments(): DocumentRecord[];
-  searchDocuments(terms: string[], limit?: number): DocumentHit[];
+  searchDocuments(terms: string[], limit?: number, episodeId?: number): DocumentHit[];
   getDocChunk(chunkId: number): DocumentHit | null;
 
   // embeddings (vectors stored as Float32Array blobs, EMBEDDING_DIM long)

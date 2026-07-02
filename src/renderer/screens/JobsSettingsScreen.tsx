@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { AppSettings, Job, MediaRole, QualityMode } from "../../shared/types";
+import type { AppSettings, Episode, Job, ProjectFolder, QualityMode } from "../../shared/types";
 
 const STATUS_COLOR: Record<Job["status"], string> = {
   queued: "var(--ink-faint)",
@@ -9,15 +9,37 @@ const STATUS_COLOR: Record<Job["status"], string> = {
   error: "var(--status-error)",
 };
 
-interface JobsSettingsScreenProps {
-  onSettingsChanged?: () => void;
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  const day = d.getDate();
+  const month = d.toLocaleString("en-US", { month: "short" });
+  const year = d.getFullYear();
+  return `${day} ${month} ${year}`;
 }
 
-export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProps) {
+function formatScanTime(iso: string): string {
+  const d = new Date(iso);
+  const day = d.getDate();
+  const month = d.toLocaleString("en-US", { month: "short" });
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${day} ${month}, ${hh}:${mm}`;
+}
+
+interface JobsSettingsScreenProps {
+  onSettingsChanged?: () => void;
+  folders: ProjectFolder[];
+  episodes: Episode[];
+  onRefresh: () => Promise<unknown>;
+}
+
+export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRefresh }: JobsSettingsScreenProps) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [geminiKey, setGeminiKey] = useState("");
   const [savingProvider, setSavingProvider] = useState<"gemini" | null>(null);
+  const [newEpisodeCode, setNewEpisodeCode] = useState("");
+  const [addingEpisode, setAddingEpisode] = useState(false);
 
   useEffect(() => {
     api.listJobs().then(setJobs);
@@ -28,18 +50,19 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
     setJobs(await api.listJobs());
   }
 
-  async function handleAddFolder(role: MediaRole) {
-    const path = await api.addWatchedFolder(role);
-    if (path) {
-      setSettings(await api.getSettings());
-      onSettingsChanged?.();
-    }
+  async function handleRemoveFolder(folderId: number) {
+    await api.removeProjectFolder(folderId);
+    await onRefresh();
   }
 
-  async function handleRemoveFolder(path: string) {
-    await api.removeWatchedFolder(path);
-    setSettings(await api.getSettings());
-    onSettingsChanged?.();
+  async function handleCreateEpisode() {
+    const code = newEpisodeCode.trim();
+    if (!code) return;
+    setAddingEpisode(true);
+    await api.createEpisode(code);
+    setNewEpisodeCode("");
+    setAddingEpisode(false);
+    await onRefresh();
   }
 
   async function handleSaveKey(provider: "gemini") {
@@ -116,27 +139,60 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
             </div>
 
             <div className="folder-list">
-              {settings?.watchedFolders.map((folder) => (
-                <div key={folder.path} className="folder-row">
+              {folders.map((folder) => {
+                const episode = folder.episodeId === null ? null : episodes.find((e) => e.id === folder.episodeId);
+                return (
+                  <div key={folder.id} className="folder-row">
+                    <span className="folder-path-row">
+                      <span className="folder-role-tag label">{folder.role === "raw" ? "RAW" : "FINAL"}</span>
+                      <span className="mono folder-path">{folder.path}</span>
+                      <span className="folder-episode-tag mono">{episode ? episode.code : "ALL"}</span>
+                      <span className="folder-scanned mono">
+                        {folder.lastScannedAt ? formatScanTime(folder.lastScannedAt) : "never"}
+                      </span>
+                    </span>
+                    <button className="ghost-btn label" onClick={() => handleRemoveFolder(folder.id)}>
+                      Remove
+                    </button>
+                  </div>
+                );
+              })}
+              {folders.length === 0 && <p className="jobs-empty mono">No folders watched.</p>}
+            </div>
+          </section>
+
+          <section className="jobs-section">
+            <div className="section-head">
+              <span className="label">Settings</span>
+              <h2 className="display">Episodes</h2>
+            </div>
+
+            <div className="folder-list">
+              {episodes.map((ep) => (
+                <div key={ep.id} className="folder-row">
                   <span className="folder-path-row">
-                    <span className="folder-role-tag label">{folder.role === "raw" ? "RAW" : "FINAL"}</span>
-                    <span className="mono folder-path">{folder.path}</span>
+                    <span className="mono episode-code">{ep.code}</span>
+                    <span className="folder-scanned mono">{formatDate(ep.createdAt)}</span>
                   </span>
-                  <button className="ghost-btn label" onClick={() => handleRemoveFolder(folder.path)}>
-                    Remove
-                  </button>
                 </div>
               ))}
-              {settings && settings.watchedFolders.length === 0 && (
-                <p className="jobs-empty mono">No folders watched.</p>
-              )}
+              {episodes.length === 0 && <p className="jobs-empty mono">No episodes yet.</p>}
             </div>
-            <div className="folder-add-btns" style={{ marginTop: 14 }}>
-              <button className="ghost-btn label" onClick={() => handleAddFolder("raw")}>
-                + Add raw folder
-              </button>
-              <button className="ghost-btn label" onClick={() => handleAddFolder("final")}>
-                + Add finals folder
+            <div className="episode-add-row" style={{ marginTop: 14 }}>
+              <input
+                className="episode-add-input mono"
+                placeholder="e.g. 204"
+                value={newEpisodeCode}
+                onChange={(e) => setNewEpisodeCode(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateEpisode()}
+                disabled={addingEpisode}
+              />
+              <button
+                className="ghost-btn label"
+                onClick={handleCreateEpisode}
+                disabled={!newEpisodeCode.trim() || addingEpisode}
+              >
+                {addingEpisode ? "Adding…" : "Add"}
               </button>
             </div>
           </section>
@@ -295,9 +351,36 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
           font-size: 12px;
           color: var(--ink-dim);
         }
-        .folder-add-btns {
+        .folder-episode-tag {
+          font-size: 10.5px;
+          color: var(--ink-dimmer);
+        }
+        .folder-scanned {
+          font-size: 10.5px;
+          color: var(--ink-faint);
+        }
+        .episode-code {
+          font-size: 13px;
+          color: var(--ink);
+        }
+        .episode-add-row {
           display: flex;
           gap: 10px;
+        }
+        .episode-add-input {
+          background: var(--ground-raised);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 9px 12px;
+          color: var(--ink);
+          font-size: 12.5px;
+          width: 140px;
+        }
+        .episode-add-input:focus-visible {
+          border-color: var(--accent-dim);
+        }
+        .episode-add-input::placeholder {
+          color: var(--ink-faint);
         }
         .quality-toggle {
           display: inline-flex;

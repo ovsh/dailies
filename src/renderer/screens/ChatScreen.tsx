@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AgentAnswer, AnswerHit, ExportItem, ExportKind } from "../../shared/types";
+import type { AgentAnswer, AnswerHit, Episode, ExportItem, ExportKind } from "../../shared/types";
 import { ActivityLine } from "../components/ActivityLine";
+import { EpisodeBar } from "../components/EpisodeBar";
 import { HitCard } from "../components/HitCard";
 import { Toast } from "../components/Toast";
 
@@ -10,6 +11,11 @@ interface ChatScreenProps {
   /** null while settings are loading; false shows the setup hint. */
   geminiKeySet?: boolean | null;
   onOpenSettings?: () => void;
+  /** Current episode scope; null = whole project. */
+  episodeId: number | null;
+  episodes: Episode[];
+  onEpisodeChange: (id: number | null) => void;
+  onCreateEpisode: (code: string) => Promise<void>;
 }
 
 interface ActivityEvent {
@@ -35,7 +41,15 @@ function confidenceRank(c: AnswerHit["confidence"]): number {
   return c === "high" ? 3 : c === "medium" ? 2 : 1;
 }
 
-export function ChatScreen({ onOpenClip, geminiKeySet, onOpenSettings }: ChatScreenProps) {
+export function ChatScreen({
+  onOpenClip,
+  geminiKeySet,
+  onOpenSettings,
+  episodeId,
+  episodes,
+  onEpisodeChange,
+  onCreateEpisode,
+}: ChatScreenProps) {
   const [chatId, setChatId] = useState<number | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -77,7 +91,7 @@ export function ChatScreen({ onOpenClip, geminiKeySet, onOpenSettings }: ChatScr
     setTurns((prev) => [...prev, { id: turnId, question: text, activity: [], answer: null, error: null, pending: true }]);
 
     try {
-      const res = await api.sendChatMessage(chatId, text);
+      const res = await api.sendChatMessage(chatId, text, episodeId);
       setChatId(res.chatId);
     } catch (err) {
       setTurns((prev) =>
@@ -110,11 +124,22 @@ export function ChatScreen({ onOpenClip, geminiKeySet, onOpenSettings }: ChatScr
   }
 
   const isEmpty = turns.length === 0;
+  const activeEpisode = episodeId === null ? null : episodes.find((e) => e.id === episodeId) ?? null;
 
   return (
     <div className="chat-screen">
       <div className="chat-scroll" ref={scrollRef}>
         <div className="chat-column">
+          <div className="chat-episode-bar">
+            <EpisodeBar
+              episodes={episodes}
+              activeEpisodeId={episodeId}
+              onSelect={onEpisodeChange}
+              onCreate={onCreateEpisode}
+              size="centered"
+            />
+          </div>
+
           {isEmpty && (
             <div className="chat-empty">
               <p className="display chat-empty-line">Ask your footage anything.</p>
@@ -122,6 +147,7 @@ export function ChatScreen({ onOpenClip, geminiKeySet, onOpenSettings }: ChatScr
                 Search transcripts and visuals together — "bears fishing at the river bend," "where does Marsh mention the
                 salmon run."
               </p>
+              {activeEpisode && <p className="chat-empty-scope mono">Searching episode {activeEpisode.code}</p>}
               {geminiKeySet === false && onOpenSettings && (
                 <button className="chat-key-hint" onClick={onOpenSettings}>
                   No Gemini key yet — set one up in Settings →
@@ -199,8 +225,13 @@ export function ChatScreen({ onOpenClip, geminiKeySet, onOpenSettings }: ChatScr
           max-width: 680px;
           margin: 0 auto;
         }
+        .chat-episode-bar {
+          display: flex;
+          justify-content: center;
+          padding-top: 4px;
+        }
         .chat-empty {
-          padding-top: 18vh;
+          padding-top: 14vh;
           text-align: center;
         }
         .chat-empty-line {
@@ -214,6 +245,11 @@ export function ChatScreen({ onOpenClip, geminiKeySet, onOpenSettings }: ChatScr
           max-width: 440px;
           margin: 0 auto;
           line-height: 1.6;
+        }
+        .chat-empty-scope {
+          margin: 18px 0 0;
+          font-size: 11px;
+          color: var(--ink-faint);
         }
         .chat-key-hint {
           margin-top: 26px;

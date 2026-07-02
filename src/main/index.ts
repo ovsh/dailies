@@ -2,11 +2,10 @@ import { app, BrowserWindow, net, protocol } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
-import { openDatabase } from "./db/database";
-import { createPipeline, type Pipeline } from "./pipeline";
+import { IPC } from "../shared/ipc";
+import { createAppSettings } from "./app-settings";
+import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
-import { getWatchedFolders, getWhisperModel, getApiKey } from "./settings";
-import { createGeminiEmbedder, createGeminiIndexer } from "./agents/gemini";
 
 let win: BrowserWindow | null = null;
 
@@ -53,33 +52,23 @@ void app.whenReady().then(() => {
   const dataDir = app.getPath("userData");
   fs.mkdirSync(dataDir, { recursive: true });
 
-  const db = openDatabase(path.join(dataDir, "dailies.db"));
-  db.resetRunningJobs();
-
-  const pipeline: Pipeline = createPipeline({
-    db,
+  const settings = createAppSettings(dataDir);
+  const manager = createProjectManager({
     dataDir,
-    whisperModel: getWhisperModel(db),
-    gemini: () => {
-      const key = getApiKey(db, "gemini");
-      return key ? createGeminiIndexer(() => key) : null;
-    },
-    embedder: () => {
-      const key = getApiKey(db, "gemini");
-      return key ? createGeminiEmbedder(() => key) : null;
-    },
+    settings,
     onUpdate: () => {
-      win?.webContents.send("dailies:indexUpdate");
+      win?.webContents.send(IPC.projectUpdate);
     },
   });
 
-  registerIpcHandlers({ db, pipeline, getWindow: () => win });
+  registerIpcHandlers({ manager, settings, getWindow: () => win });
 
-  for (const folder of getWatchedFolders(db)) {
-    pipeline.watchFolder(folder);
-    void pipeline.scanFolder(folder);
+  // Re-open the last project (adopts a pre-projects install on first boot).
+  try {
+    manager.openLastProject();
+  } catch (err) {
+    console.error("Failed to open last project:", err);
   }
-  pipeline.start();
 
   win = createWindow();
 
@@ -88,8 +77,7 @@ void app.whenReady().then(() => {
   });
 
   app.on("before-quit", () => {
-    void pipeline.stop();
-    db.close();
+    void manager.closeCurrent();
   });
 });
 

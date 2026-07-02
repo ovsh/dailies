@@ -97,8 +97,9 @@ export async function searchTranscriptsTool(
   query: string,
   extraTerms: string[],
   embedder: TextEmbedder | null,
+  episodeId: number | null,
 ): Promise<TranscriptHit[]> {
-  const ftsHits = db.searchTranscripts([...expandTerms(query), ...extraTerms]);
+  const ftsHits = db.searchTranscripts([...expandTerms(query), ...extraTerms], undefined, episodeId ?? undefined);
   if (!embedder) return ftsHits;
 
   try {
@@ -110,7 +111,9 @@ export async function searchTranscriptsTool(
       (refId) => db.getTranscriptHit(refId),
       HYBRID_LIMIT,
     );
-    return fuseRanked([ftsHits, semanticHits], (h) => h.segmentId, HYBRID_LIMIT);
+    const scopedSemanticHits =
+      episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
+    return fuseRanked([ftsHits, scopedSemanticHits], (h) => h.segmentId, HYBRID_LIMIT);
   } catch {
     return ftsHits;
   }
@@ -121,9 +124,12 @@ export async function searchVisualsTool(
   query: string,
   extraTerms: string[],
   embedder: TextEmbedder | null,
+  episodeId: number | null,
   filters?: VisualSearchFilters,
 ): Promise<VisualHit[]> {
-  const ftsHits = db.searchVisuals([...expandTerms(query), ...extraTerms], filters);
+  const scopedFilters: VisualSearchFilters | undefined =
+    episodeId === null ? filters : { ...filters, episodeId };
+  const ftsHits = db.searchVisuals([...expandTerms(query), ...extraTerms], scopedFilters);
   if (!embedder) return ftsHits;
 
   try {
@@ -135,7 +141,9 @@ export async function searchVisualsTool(
       (refId) => db.getVisualHitByScene(refId),
       HYBRID_LIMIT,
     );
-    return fuseRanked([ftsHits, semanticHits], (h) => h.sceneId, HYBRID_LIMIT);
+    const scopedSemanticHits =
+      episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
+    return fuseRanked([ftsHits, scopedSemanticHits], (h) => h.sceneId, HYBRID_LIMIT);
   } catch {
     return ftsHits;
   }
@@ -146,8 +154,9 @@ export async function searchNotesTool(
   query: string,
   extraTerms: string[],
   embedder: TextEmbedder | null,
+  episodeId: number | null,
 ): Promise<DocumentHit[]> {
-  const ftsHits = db.searchDocuments([...expandTerms(query), ...extraTerms]);
+  const ftsHits = db.searchDocuments([...expandTerms(query), ...extraTerms], undefined, episodeId ?? undefined);
   if (!embedder) return ftsHits;
 
   try {
@@ -159,7 +168,9 @@ export async function searchNotesTool(
       (refId) => db.getDocChunk(refId),
       HYBRID_LIMIT,
     );
-    return fuseRanked([ftsHits, semanticHits], (h) => h.chunkId, HYBRID_LIMIT);
+    const scopedSemanticHits =
+      episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
+    return fuseRanked([ftsHits, scopedSemanticHits], (h) => h.chunkId, HYBRID_LIMIT);
   } catch {
     return ftsHits;
   }

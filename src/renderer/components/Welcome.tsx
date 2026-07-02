@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { api } from "../api";
-import type { AppSettings, MediaRole } from "../../shared/types";
+import type { AppSettings, MediaRole, ProjectFolder } from "../../shared/types";
 
 interface WelcomeProps {
   settings: AppSettings;
+  folders: ProjectFolder[];
   onSettingsChanged: () => void;
   onDismiss: () => void;
 }
@@ -12,11 +13,11 @@ interface WelcomeProps {
  * First-run setup. Shown when no API key is set and no folder is watched —
  * the two things Dailies cannot work without.
  */
-export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps) {
+export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: WelcomeProps) {
   const [geminiKey, setGeminiKey] = useState("");
   const [saving, setSaving] = useState<"gemini" | null>(null);
 
-  const configured = settings.geminiKeySet || settings.watchedFolders.length > 0;
+  const configured = settings.geminiKeySet || folders.length > 0;
 
   async function saveKey(provider: "gemini", key: string) {
     if (!key.trim()) return;
@@ -28,7 +29,7 @@ export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps
   }
 
   async function chooseFolder(role: MediaRole) {
-    const folder = await api.addWatchedFolder(role);
+    const folder = await api.addProjectFolder(role, null);
     if (folder) onSettingsChanged();
   }
 
@@ -75,14 +76,14 @@ export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps
           <div className="welcome-step-head">
             <span className="welcome-step-num mono">02</span>
             <span className="label">Footage folder</span>
-            {settings.watchedFolders.length > 0 && <span className="welcome-check">watching</span>}
+            {folders.length > 0 && <span className="welcome-check">watching</span>}
           </div>
           <p className="welcome-step-why">
             Point Dailies at a folder. Files are indexed in place — nothing is moved or copied — and
             new footage dropped in later is picked up automatically.
           </p>
-          {settings.watchedFolders.map((f) => (
-            <p key={f.path} className="welcome-folder mono">
+          {folders.map((f) => (
+            <p key={f.id} className="welcome-folder mono">
               <span className="welcome-folder-role label">{f.role === "raw" ? "RAW" : "FINAL"}</span>
               {f.path}
             </p>

@@ -33,6 +33,7 @@ export interface ChatTurnOptions {
   qualityMode: QualityMode; // "high" => supervisor tries the pro model first
   gemini: GeminiIndexer | null;
   embedder: TextEmbedder | null;
+  episodeId: number | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
 }
 
@@ -45,6 +46,9 @@ Use transcript_scout to find spoken references, and visual_scout to find visual 
 Hits carry a role: "raw" means camera media (source timecode); "final" means an exported cut, where the timecode is the TIMELINE TC in the finished episode — describe those hits as "in the final at {tc}" rather than implying they are source camera footage. When producer notes or scripts have been ingested, consider calling search_notes to connect notes to footage — it searches the producer notes / scripts / documents that were dropped into watched folders.
 
 When you have gathered and verified enough evidence, ALWAYS finish by calling final_answer exactly once, with clear prose and a list of hits (each with accurate in/out timecodes and seconds, kind, honest confidence, and role when known).`;
+
+const EPISODE_SCOPE_NOTICE =
+  "The editor has scoped this conversation to a single episode; all search results are already restricted to it.";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -218,11 +222,13 @@ function isModelUnavailableError(err: unknown): boolean {
 // ---------- main entry ----------
 
 export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
-  const { db, history, userText, geminiKey, qualityMode, gemini, embedder, emit } = opts;
+  const { db, history, userText, geminiKey, qualityMode, gemini, embedder, episodeId, emit } = opts;
   const ai = new GoogleGenAI({ apiKey: geminiKey });
   const subagentModel = GEMINI_MODELS.subagent;
 
   let supervisorModel: string = qualityMode === "high" ? GEMINI_MODELS.supervisorHigh : GEMINI_MODELS.supervisor;
+  const systemInstruction =
+    episodeId === null ? SUPERVISOR_SYSTEM : `${SUPERVISOR_SYSTEM}\n\n${EPISODE_SCOPE_NOTICE}`;
 
   const contents: Content[] = [
     ...history.map((m): Content => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
@@ -238,14 +244,14 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     if (name === "transcript_scout") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "transcript scout", status: `transcript scout — searching spoken references for "${query}"` });
-      const result = await runTranscriptScout({ ai, model: subagentModel, db, query, embedder });
+      const result = await runTranscriptScout({ ai, model: subagentModel, db, query, embedder, episodeId });
       return JSON.stringify(result);
     }
 
     if (name === "visual_scout") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "visual scout", status: `visual scout — searching visual matches for "${query}"` });
-      const result = await runVisualScout({ ai, model: subagentModel, db, query, gemini, embedder });
+      const result = await runVisualScout({ ai, model: subagentModel, db, query, gemini, embedder, episodeId });
       for (const hit of result.hits) visualHitCache.set(hit.sceneId, hit);
       return JSON.stringify(result);
     }
@@ -253,7 +259,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     if (name === "search_notes") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "search notes", status: `search notes — searching producer notes for "${query}"` });
-      const hits = await searchNotesTool(db, query, [], embedder);
+      const hits = await searchNotesTool(db, query, [], embedder, episodeId);
       return JSON.stringify(hits);
     }
 
@@ -289,7 +295,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     ai.models.generateContent({
       model: supervisorModel,
       contents,
-      config: { systemInstruction: SUPERVISOR_SYSTEM, tools: [{ functionDeclarations: SUPERVISOR_DECLARATIONS }] },
+      config: { systemInstruction, tools: [{ functionDeclarations: SUPERVISOR_DECLARATIONS }] },
     });
 
   try {

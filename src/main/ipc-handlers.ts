@@ -9,42 +9,123 @@ import type {
   FileDetail,
   MediaRole,
   QualityMode,
-  WatchedFolder,
 } from "../shared/types";
-import type { DailiesDB } from "./db/types";
-import type { Pipeline } from "./pipeline";
+import type { ProjectManager } from "./project-manager";
+import type { AppSettingsStore } from "./app-settings";
 import { checkAvailability } from "./pipeline/binaries";
+import { DOC_EXTENSIONS } from "./pipeline/docs";
 import { runChatTurn } from "./agents/supervisor";
 import { createGeminiEmbedder, createGeminiIndexer } from "./agents/gemini";
 import { writeExport } from "./export";
-import {
-  getApiKey,
-  getQualityMode,
-  getWatchedFolders,
-  getWhisperModel,
-  hasApiKey,
-  setApiKey,
-  setQualityMode,
-  setWatchedFolders,
-} from "./settings";
 
 export interface IpcContext {
-  db: DailiesDB;
-  pipeline: Pipeline;
+  manager: ProjectManager;
+  settings: AppSettingsStore;
   getWindow: () => BrowserWindow | null;
 }
 
 export function registerIpcHandlers(ctx: IpcContext): void {
-  const { db, pipeline } = ctx;
+  const { manager, settings } = ctx;
 
   const emitChatEvent = (ev: ChatEvent) => {
     ctx.getWindow()?.webContents.send(IPC.chatEvent, ev);
   };
+  const emitProjectUpdate = () => {
+    ctx.getWindow()?.webContents.send(IPC.projectUpdate);
+  };
+
+  /** Every project-scoped handler goes through this. */
+  const requireProject = () => {
+    const c = manager.current();
+    if (!c) throw new Error("No project is open");
+    return c;
+  };
+
+  // ---- projects ----
+  ipcMain.handle(IPC.listProjects, () => manager.listProjects());
+  ipcMain.handle(IPC.createProject, (_e, name: string) => manager.createProject(name));
+  ipcMain.handle(IPC.openProject, (_e, id: string) => manager.openProject(id));
+  ipcMain.handle(IPC.getProjectState, () => manager.currentState());
+
+  // ---- episodes & folders ----
+  ipcMain.handle(IPC.createEpisode, (_e, code: string) => {
+    const { db } = requireProject();
+    const ep = db.createEpisode(code);
+    emitProjectUpdate();
+    return ep;
+  });
+
+  ipcMain.handle(IPC.addProjectFolder, async (_e, role: MediaRole, episodeId: number | null) => {
+    const c = requireProject();
+    const win = ctx.getWindow();
+    if (!win) return null;
+    const res = await dialog.showOpenDialog(win, {
+      properties: ["openDirectory"],
+      title: role === "final" ? "Choose a finals folder to watch" : "Choose a footage folder to watch",
+    });
+    const folderPath = res.filePaths[0];
+    if (res.canceled || !folderPath) return null;
+    const folder = c.db.addFolder(folderPath, role, episodeId);
+    c.pipeline.watchFolder(folder);
+    void c.pipeline.scanFolder(folder).then(() => {
+      c.db.setFolderScanned(folder.id, new Date().toISOString());
+      emitProjectUpdate();
+    });
+    emitProjectUpdate();
+    return folder;
+  });
+
+  ipcMain.handle(IPC.removeProjectFolder, (_e, folderId: number) => {
+    const c = requireProject();
+    const folder = c.db.listFolders().find((f) => f.id === folderId);
+    if (folder) {
+      c.pipeline.unwatchFolder(folder.path);
+      c.db.removeFolder(folderId);
+      emitProjectUpdate();
+    }
+  });
+
+  ipcMain.handle(IPC.rescanFolders, async (_e, episodeId: number | null) => {
+    const c = requireProject();
+    const folders = c.db
+      .listFolders()
+      .filter((f) => episodeId === null || f.episodeId === episodeId);
+    await Promise.all(
+      folders.map(async (f) => {
+        await c.pipeline.scanFolder(f);
+        c.db.setFolderScanned(f.id, new Date().toISOString());
+      }),
+    );
+    emitProjectUpdate();
+  });
+
+  ipcMain.handle(IPC.importDocuments, async (_e, episodeId: number | null) => {
+    const c = requireProject();
+    const win = ctx.getWindow();
+    if (!win) return 0;
+    const res = await dialog.showOpenDialog(win, {
+      properties: ["openFile", "multiSelections"],
+      title: "Import notes, documents, spreadsheets",
+      filters: [
+        { name: "Documents", extensions: DOC_EXTENSIONS.map((e) => e.replace(/^\./, "")) },
+      ],
+    });
+    if (res.canceled) return 0;
+    let count = 0;
+    for (const p of res.filePaths) {
+      if (await c.pipeline.ingestDocument(p, episodeId)) count += 1;
+    }
+    emitProjectUpdate();
+    return count;
+  });
 
   // ---- library ----
-  ipcMain.handle(IPC.listFiles, () => db.listFiles());
+  ipcMain.handle(IPC.listFiles, (_e, episodeId?: number) =>
+    requireProject().db.listFiles(episodeId),
+  );
 
   ipcMain.handle(IPC.getFileDetail, (_e, fileId: number): FileDetail => {
+    const { db } = requireProject();
     const file = db.getFile(fileId);
     if (!file) throw new Error(`Unknown file ${fileId}`);
     return {
@@ -55,111 +136,83 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     };
   });
 
-  ipcMain.handle(IPC.getWords, (_e, segmentId: number) => db.getWords(segmentId));
+  ipcMain.handle(IPC.getWords, (_e, segmentId: number) => requireProject().db.getWords(segmentId));
+  ipcMain.handle(IPC.listJobs, () => requireProject().db.listJobs());
 
-  // ---- jobs & folders ----
-  ipcMain.handle(IPC.listJobs, () => db.listJobs());
-
-  ipcMain.handle(IPC.addWatchedFolder, async (_e, role: MediaRole) => {
-    const win = ctx.getWindow();
-    if (!win) return null;
-    const res = await dialog.showOpenDialog(win, {
-      properties: ["openDirectory"],
-      title: role === "final" ? "Choose a finals folder to watch" : "Choose a footage folder to watch",
-    });
-    const folder = res.filePaths[0];
-    if (res.canceled || !folder) return null;
-    const folders = getWatchedFolders(db);
-    if (!folders.some((f) => f.path === folder)) {
-      const entry: WatchedFolder = { path: folder, role };
-      setWatchedFolders(db, [...folders, entry]);
-      pipeline.watchFolder(entry);
-      void pipeline.scanFolder(entry);
-    }
-    return folder;
-  });
-
-  ipcMain.handle(IPC.removeWatchedFolder, (_e, folder: string) => {
-    setWatchedFolders(
-      db,
-      getWatchedFolders(db).filter((f) => f.path !== folder),
-    );
-    pipeline.unwatchFolder(folder);
-  });
-
-  // ---- settings ----
+  // ---- settings (global) ----
   ipcMain.handle(IPC.getSettings, (): AppSettings => {
     const avail = checkAvailability();
     return {
-      geminiKeySet: hasApiKey(db, "gemini"),
-      watchedFolders: getWatchedFolders(db),
-      qualityMode: getQualityMode(db),
-      whisperModel: getWhisperModel(db),
+      geminiKeySet: settings.hasApiKey(),
+      qualityMode: settings.getQualityMode(),
+      whisperModel: settings.getWhisperModel(),
       whisperAvailable: avail.whisper,
       ffmpegAvailable: avail.ffmpeg,
     };
   });
 
-  ipcMain.handle(IPC.setApiKey, (_e, provider: "gemini", key: string) =>
-    setApiKey(db, provider, key),
-  );
-
-  ipcMain.handle(IPC.setQualityMode, (_e, mode: QualityMode) => setQualityMode(db, mode));
+  ipcMain.handle(IPC.setApiKey, (_e, _provider: "gemini", key: string) => settings.setApiKey(key));
+  ipcMain.handle(IPC.setQualityMode, (_e, mode: QualityMode) => settings.setQualityMode(mode));
 
   // ---- chat ----
-  ipcMain.handle(IPC.listChats, () => db.listChats());
-  ipcMain.handle(IPC.getChat, (_e, chatId: number) => db.getChatMessages(chatId));
+  ipcMain.handle(IPC.listChats, () => requireProject().db.listChats());
+  ipcMain.handle(IPC.getChat, (_e, chatId: number) => requireProject().db.getChatMessages(chatId));
 
-  ipcMain.handle(IPC.sendChatMessage, (_e, chatId: number | null, text: string) => {
-    const chat =
-      chatId !== null && db.listChats().some((c) => c.id === chatId)
-        ? { id: chatId }
-        : db.createChat(text.slice(0, 48));
-    const id = chat.id;
+  ipcMain.handle(
+    IPC.sendChatMessage,
+    (_e, chatId: number | null, text: string, episodeId: number | null) => {
+      const c = requireProject();
+      const chat =
+        chatId !== null && c.db.listChats().some((ch) => ch.id === chatId)
+          ? { id: chatId }
+          : c.db.createChat(text.slice(0, 48));
+      const id = chat.id;
 
-    db.addChatMessage(id, "user", text);
+      c.db.addChatMessage(id, "user", text);
 
-    // Run the turn asynchronously; progress + answer arrive as events.
-    void (async () => {
-      const geminiKey = getApiKey(db, "gemini");
-      if (!geminiKey) {
-        emitChatEvent({
-          type: "error",
-          chatId: id,
-          message: "Add your Gemini API key in Settings to start chatting.",
-        });
-        emitChatEvent({ type: "done", chatId: id });
-        return;
-      }
-      try {
-        const answer = await runChatTurn({
-          db,
-          history: db.getChatMessages(id).slice(0, -1),
-          userText: text,
-          geminiKey,
-          qualityMode: getQualityMode(db),
-          gemini: createGeminiIndexer(() => geminiKey),
-          embedder: createGeminiEmbedder(() => geminiKey),
-          emit: (ev) => emitChatEvent({ ...ev, chatId: id }),
-        });
-        db.addChatMessage(id, "assistant", answer.prose, answer.hits);
-        emitChatEvent({ type: "answer", chatId: id, answer });
-      } catch (err) {
-        emitChatEvent({
-          type: "error",
-          chatId: id,
-          message: err instanceof Error ? err.message : String(err),
-        });
-      } finally {
-        emitChatEvent({ type: "done", chatId: id });
-      }
-    })();
+      void (async () => {
+        const geminiKey = settings.getApiKey();
+        if (!geminiKey) {
+          emitChatEvent({
+            type: "error",
+            chatId: id,
+            message: "Add your Gemini API key in Settings to start chatting.",
+          });
+          emitChatEvent({ type: "done", chatId: id });
+          return;
+        }
+        try {
+          const answer = await runChatTurn({
+            db: c.db,
+            history: c.db.getChatMessages(id).slice(0, -1),
+            userText: text,
+            geminiKey,
+            qualityMode: settings.getQualityMode(),
+            gemini: createGeminiIndexer(() => geminiKey),
+            embedder: createGeminiEmbedder(() => geminiKey),
+            episodeId,
+            emit: (ev) => emitChatEvent({ ...ev, chatId: id }),
+          });
+          c.db.addChatMessage(id, "assistant", answer.prose, answer.hits);
+          emitChatEvent({ type: "answer", chatId: id, answer });
+        } catch (err) {
+          emitChatEvent({
+            type: "error",
+            chatId: id,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        } finally {
+          emitChatEvent({ type: "done", chatId: id });
+        }
+      })();
 
-    return { chatId: id };
-  });
+      return { chatId: id };
+    },
+  );
 
   // ---- export ----
   ipcMain.handle(IPC.exportHits, (_e, kind: ExportKind, items: ExportItem[]) => {
+    const { db } = requireProject();
     const outDir = path.join(app.getPath("documents"), "Dailies Exports");
     return writeExport(kind, items, (fid) => db.getFile(fid), outDir);
   });

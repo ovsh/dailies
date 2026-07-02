@@ -1,5 +1,8 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "./api";
+import type { AppSettings } from "../shared/types";
 import { Rail } from "./components/Rail";
+import { Welcome } from "./components/Welcome";
 import { ChatScreen } from "./screens/ChatScreen";
 import { LibraryScreen } from "./screens/LibraryScreen";
 import { ClipScreen } from "./screens/ClipScreen";
@@ -16,6 +19,16 @@ export function App() {
   const [screen, setScreen] = useState<Screen>("chat");
   const [clipTarget, setClipTarget] = useState<ClipTarget | null>(null);
   const [returnScreen, setReturnScreen] = useState<Screen>("chat");
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [welcomeDismissed, setWelcomeDismissed] = useState(false);
+
+  const refreshSettings = useCallback(() => {
+    void api.getSettings().then(setSettings);
+  }, []);
+
+  useEffect(() => {
+    refreshSettings();
+  }, [refreshSettings]);
 
   function openClip(fileId: number, seekS = 0, from: Screen = screen) {
     setClipTarget({ fileId, seekS });
@@ -27,15 +40,35 @@ export function App() {
     setScreen(next);
   }
 
+  // First run: nothing configured yet, nothing to look at — walk through setup.
+  const forceWelcome = new URLSearchParams(window.location.search).has("onboard");
+  const needsWelcome =
+    settings !== null &&
+    !welcomeDismissed &&
+    (forceWelcome || (!settings.anthropicKeySet && settings.watchedFolders.length === 0));
+
   return (
     <div className="app-root">
       <Rail screen={screen === "clip" ? returnScreen : screen} onNavigate={navigate} />
       <main className="app-main">
-        {screen === "chat" && <ChatScreen onOpenClip={(fileId, seekS) => openClip(fileId, seekS, "chat")} />}
+        {screen === "chat" && (
+          <ChatScreen
+            onOpenClip={(fileId, seekS) => openClip(fileId, seekS, "chat")}
+            anthropicKeySet={settings?.anthropicKeySet ?? null}
+            onOpenSettings={() => setScreen("jobs")}
+          />
+        )}
         {screen === "library" && <LibraryScreen onOpenClip={(fileId) => openClip(fileId, 0, "library")} />}
-        {screen === "jobs" && <JobsSettingsScreen />}
+        {screen === "jobs" && <JobsSettingsScreen onSettingsChanged={refreshSettings} />}
         {screen === "clip" && clipTarget && (
           <ClipScreen fileId={clipTarget.fileId} seekS={clipTarget.seekS} onBack={() => setScreen(returnScreen)} />
+        )}
+        {needsWelcome && settings && (
+          <Welcome
+            settings={settings}
+            onSettingsChanged={refreshSettings}
+            onDismiss={() => setWelcomeDismissed(true)}
+          />
         )}
       </main>
       <style>{`

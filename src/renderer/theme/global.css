@@ -142,6 +142,30 @@ button {
   cursor: pointer;
 }
 
+/* quiet bordered action — shared across screens */
+.ghost-btn {
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  color: var(--ink-dim);
+  padding: 8px 14px;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.ghost-btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--accent-dim);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ghost-btn:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+
 input {
   font-family: var(--font-body);
 }

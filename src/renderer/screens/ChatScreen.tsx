@@ -7,6 +7,9 @@ import { Toast } from "../components/Toast";
 
 interface ChatScreenProps {
   onOpenClip: (fileId: number, seekS: number) => void;
+  /** null while settings are loading; false shows the setup hint. */
+  anthropicKeySet?: boolean | null;
+  onOpenSettings?: () => void;
 }
 
 interface ActivityEvent {
@@ -32,7 +35,7 @@ function confidenceRank(c: AnswerHit["confidence"]): number {
   return c === "high" ? 3 : c === "medium" ? 2 : 1;
 }
 
-export function ChatScreen({ onOpenClip }: ChatScreenProps) {
+export function ChatScreen({ onOpenClip, anthropicKeySet, onOpenSettings }: ChatScreenProps) {
   const [chatId, setChatId] = useState<number | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -119,6 +122,11 @@ export function ChatScreen({ onOpenClip }: ChatScreenProps) {
                 Search transcripts and visuals together — "bears fishing at the river bend," "where does Marsh mention the
                 salmon run."
               </p>
+              {anthropicKeySet === false && onOpenSettings && (
+                <button className="chat-key-hint" onClick={onOpenSettings}>
+                  No API key yet — set one up in Settings →
+                </button>
+              )}
             </div>
           )}
 
@@ -206,6 +214,20 @@ export function ChatScreen({ onOpenClip }: ChatScreenProps) {
           max-width: 440px;
           margin: 0 auto;
           line-height: 1.6;
+        }
+        .chat-key-hint {
+          margin-top: 26px;
+          background: transparent;
+          border: 1px solid var(--hairline-strong);
+          border-radius: 6px;
+          padding: 9px 16px;
+          font-size: 12px;
+          color: var(--accent);
+          transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+        }
+        .chat-key-hint:hover {
+          border-color: var(--accent-dim);
+          background: var(--accent-wash);
         }
         .turn {
           margin-bottom: 48px;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, mediaUrl } from "../api";
 import type { FileDetail, Scene, TranscriptSegment } from "../../shared/types";
 import { TimecodeText } from "../components/TimecodeText";
 
@@ -98,7 +98,7 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
             <div className="scene-strip-row">
               {scenes.map((scene: Scene) => (
                 <button key={scene.id} className="scene-chip" onClick={() => seekTo(scene.startS)}>
-                  {scene.keyframePath && <img src={scene.keyframePath} alt="" />}
+                  {scene.keyframePath && <img src={mediaUrl(scene.keyframePath)} alt="" />}
                   <span className="scene-chip-tc mono">{scene.startTc}</span>
                 </button>
               ))}

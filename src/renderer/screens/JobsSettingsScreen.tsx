@@ -9,7 +9,11 @@ const STATUS_COLOR: Record<Job["status"], string> = {
   error: "var(--status-error)",
 };
 
-export function JobsSettingsScreen() {
+interface JobsSettingsScreenProps {
+  onSettingsChanged?: () => void;
+}
+
+export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProps) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [anthropicKey, setAnthropicKey] = useState("");
@@ -27,12 +31,16 @@ export function JobsSettingsScreen() {
 
   async function handleAddFolder() {
     const path = await api.addWatchedFolder();
-    if (path) setSettings(await api.getSettings());
+    if (path) {
+      setSettings(await api.getSettings());
+      onSettingsChanged?.();
+    }
   }
 
   async function handleRemoveFolder(path: string) {
     await api.removeWatchedFolder(path);
     setSettings(await api.getSettings());
+    onSettingsChanged?.();
   }
 
   async function handleSaveKey(provider: "anthropic" | "gemini") {
@@ -41,6 +49,7 @@ export function JobsSettingsScreen() {
     setSavingProvider(provider);
     await api.setApiKey(provider, key.trim());
     setSettings(await api.getSettings());
+    onSettingsChanged?.();
     if (provider === "anthropic") setAnthropicKey("");
     else setGeminiKey("");
     setSavingProvider(null);

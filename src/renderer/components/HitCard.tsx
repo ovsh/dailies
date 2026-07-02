@@ -1,4 +1,5 @@
 import type { AnswerHit } from "../../shared/types";
+import { mediaUrl } from "../api";
 import { TimecodeText } from "./TimecodeText";
 
 interface HitCardProps {
@@ -20,7 +21,7 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
     <div className="hit-card" style={{ animationDelay: `${index * 70}ms` }}>
       <button className="hit-thumb" onClick={() => onOpen(hit)} aria-label={`Open ${hit.filename} at ${hit.inTc}`}>
         {hit.keyframePath ? (
-          <img src={hit.keyframePath} alt="" loading="lazy" />
+          <img src={mediaUrl(hit.keyframePath)} alt="" loading="lazy" />
         ) : (
           <div className="hit-thumb-empty" />
         )}

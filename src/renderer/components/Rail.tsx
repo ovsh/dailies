@@ -28,11 +28,11 @@ const ITEMS: { screen: Screen; label: string; icon: ReactElement }[] = [
   },
   {
     screen: "jobs",
-    label: "Jobs & Settings",
+    label: "Settings & Jobs",
     icon: (
       <>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 8v4l2.6 2.6" />
+        <circle cx="12" cy="12" r="3.1" />
+        <path d="M12 2.8v3.1M12 18.1v3.1M2.8 12h3.1M18.1 12h3.1M5.5 5.5l2.2 2.2M16.3 16.3l2.2 2.2M18.5 5.5l-2.2 2.2M7.7 16.3l-2.2 2.2" />
       </>
     ),
   },

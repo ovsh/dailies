@@ -6,7 +6,8 @@ import { readFile } from "node:fs/promises";
 
 import { GoogleGenAI } from "@google/genai";
 
-import type { GeminiIndexer, SceneAnnotationRequest, VisualAnnotationInput } from "../../shared/types";
+import type { GeminiIndexer, SceneAnnotationRequest, TextEmbedder, VisualAnnotationInput } from "../../shared/types";
+import { EMBEDDING_DIM, GEMINI_MODELS } from "../../shared/types";
 
 const MODEL = "gemini-2.5-flash";
 
@@ -114,6 +115,51 @@ export function createGeminiIndexer(getKey: () => string | null): GeminiIndexer 
         contents: [{ role: "user", parts: [...imageParts, { text: question }] }],
       });
       return response.text ?? "";
+    },
+  };
+}
+
+// ---------- text embedder ----------
+
+/** embedContent accepts at most this many strings per call. */
+const EMBED_BATCH_SIZE = 100;
+
+function l2Normalize(values: number[]): Float32Array {
+  let sumSq = 0;
+  for (const v of values) sumSq += v * v;
+  const norm = Math.sqrt(sumSq);
+  const out = new Float32Array(values.length);
+  if (norm === 0) return out;
+  for (let i = 0; i < values.length; i++) out[i] = values[i] / norm;
+  return out;
+}
+
+export function createGeminiEmbedder(getKey: () => string | null): TextEmbedder {
+  function getClient(): GoogleGenAI {
+    const key = getKey();
+    if (!key) throw new Error("Gemini API key not set");
+    return new GoogleGenAI({ apiKey: key });
+  }
+
+  return {
+    async embed(texts: string[]): Promise<Float32Array[]> {
+      const client = getClient();
+      const vectors: Float32Array[] = [];
+
+      for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+        const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
+        const response = await client.models.embedContent({
+          model: GEMINI_MODELS.embedding,
+          contents: batch,
+          config: { outputDimensionality: EMBEDDING_DIM },
+        });
+        const embeddings = response.embeddings ?? [];
+        for (const embedding of embeddings) {
+          vectors.push(l2Normalize(embedding.values ?? []));
+        }
+      }
+
+      return vectors;
     },
   };
 }

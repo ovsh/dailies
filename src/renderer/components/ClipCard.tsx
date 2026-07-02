@@ -40,9 +40,10 @@ export function ClipCard({ file, keyframe, onOpen }: ClipCardProps) {
       <div className="clip-thumb">
         {keyframe ? <img src={keyframe} alt="" loading="lazy" /> : <div className="clip-thumb-empty" />}
         {file.status !== "ready" && <span className="clip-status label">{file.status}</span>}
+        {file.role === "final" && <span className="clip-final-tag label">FINAL</span>}
       </div>
       <div className="clip-meta">
-        <span className="clip-filename mono">{file.filename}</span>
+        <span className="clip-filename mono">{file.clipName ?? file.filename}</span>
         <div className="clip-meta-row">
           <TimecodeText tc={file.startTc} dim />
           <span className="clip-dur mono">{formatDuration(file.durationS)}</span>
@@ -97,6 +98,16 @@ export function ClipCard({ file, keyframe, onOpen }: ClipCardProps) {
           background: rgba(19, 17, 22, 0.78);
           border: 1px solid var(--hairline-strong);
           color: var(--accent);
+          padding: 3px 7px;
+          border-radius: 4px;
+        }
+        .clip-final-tag {
+          position: absolute;
+          top: 8px;
+          left: 8px;
+          background: rgba(19, 17, 22, 0.78);
+          border: 1px solid var(--hairline-strong);
+          color: var(--ink-dimmer);
           padding: 3px 7px;
           border-radius: 4px;
         }

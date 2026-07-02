@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 
 import type { Part } from "@google/genai";
 
-import type { TranscriptHit, VisualHit, VisualSearchFilters } from "../../shared/types";
+import type { DocumentHit, TextEmbedder, TranscriptHit, VisualHit, VisualSearchFilters } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
 
 const STOPWORDS = new Set([
@@ -45,17 +45,124 @@ export function expandTerms(query: string): string[] {
   return terms;
 }
 
-export function searchTranscriptsTool(db: DailiesDB, query: string, extraTerms: string[]): TranscriptHit[] {
-  return db.searchTranscripts([...expandTerms(query), ...extraTerms]);
+const HYBRID_LIMIT = 40;
+const RRF_K = 60;
+
+/**
+ * Reciprocal-rank fusion of two ranked hit lists, deduped by key, scores
+ * normalized to 0..1, best first, capped at `limit`.
+ */
+function fuseRanked<T>(lists: T[][], keyOf: (item: T) => number | string, limit: number): T[] {
+  const rrfScore = new Map<number | string, number>();
+  const itemByKey = new Map<number | string, T>();
+
+  for (const list of lists) {
+    list.forEach((item, rank) => {
+      const key = keyOf(item);
+      if (!itemByKey.has(key)) itemByKey.set(key, item);
+      rrfScore.set(key, (rrfScore.get(key) ?? 0) + 1 / (RRF_K + rank + 1));
+    });
+  }
+
+  const ranked = [...rrfScore.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
+  const maxScore = ranked.length > 0 ? ranked[0][1] : 1;
+
+  return ranked.map(([key, score]) => {
+    const item = itemByKey.get(key) as T;
+    return { ...item, score: maxScore > 0 ? score / maxScore : 0 };
+  });
 }
 
-export function searchVisualsTool(
+async function semanticHydrate<T>(
+  db: DailiesDB,
+  embedder: TextEmbedder,
+  kind: "segment" | "scene" | "doc",
+  query: string,
+  hydrate: (refId: number) => T | null,
+  limit: number,
+): Promise<T[]> {
+  const [vector] = await embedder.embed([query]);
+  if (!vector) return [];
+  const semanticHits = db.semanticSearch(kind, vector, limit);
+  const hydrated: T[] = [];
+  for (const { refId } of semanticHits) {
+    const hit = hydrate(refId);
+    if (hit) hydrated.push(hit);
+  }
+  return hydrated;
+}
+
+export async function searchTranscriptsTool(
   db: DailiesDB,
   query: string,
   extraTerms: string[],
+  embedder: TextEmbedder | null,
+): Promise<TranscriptHit[]> {
+  const ftsHits = db.searchTranscripts([...expandTerms(query), ...extraTerms]);
+  if (!embedder) return ftsHits;
+
+  try {
+    const semanticHits = await semanticHydrate(
+      db,
+      embedder,
+      "segment",
+      query,
+      (refId) => db.getTranscriptHit(refId),
+      HYBRID_LIMIT,
+    );
+    return fuseRanked([ftsHits, semanticHits], (h) => h.segmentId, HYBRID_LIMIT);
+  } catch {
+    return ftsHits;
+  }
+}
+
+export async function searchVisualsTool(
+  db: DailiesDB,
+  query: string,
+  extraTerms: string[],
+  embedder: TextEmbedder | null,
   filters?: VisualSearchFilters,
-): VisualHit[] {
-  return db.searchVisuals([...expandTerms(query), ...extraTerms], filters);
+): Promise<VisualHit[]> {
+  const ftsHits = db.searchVisuals([...expandTerms(query), ...extraTerms], filters);
+  if (!embedder) return ftsHits;
+
+  try {
+    const semanticHits = await semanticHydrate(
+      db,
+      embedder,
+      "scene",
+      query,
+      (refId) => db.getVisualHitByScene(refId),
+      HYBRID_LIMIT,
+    );
+    return fuseRanked([ftsHits, semanticHits], (h) => h.sceneId, HYBRID_LIMIT);
+  } catch {
+    return ftsHits;
+  }
+}
+
+export async function searchNotesTool(
+  db: DailiesDB,
+  query: string,
+  extraTerms: string[],
+  embedder: TextEmbedder | null,
+): Promise<DocumentHit[]> {
+  const ftsHits = db.searchDocuments([...expandTerms(query), ...extraTerms]);
+  if (!embedder) return ftsHits;
+
+  try {
+    const semanticHits = await semanticHydrate(
+      db,
+      embedder,
+      "doc",
+      query,
+      (refId) => db.getDocChunk(refId),
+      HYBRID_LIMIT,
+    );
+    return fuseRanked([ftsHits, semanticHits], (h) => h.chunkId, HYBRID_LIMIT);
+  } catch {
+    return ftsHits;
+  }
 }
 
 function fmtMmSs(totalS: number): string {

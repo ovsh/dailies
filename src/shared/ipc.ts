@@ -13,6 +13,7 @@ import type {
   FileDetail,
   Job,
   MediaFile,
+  MediaRole,
   QualityMode,
   WordTiming,
 } from "./types";
@@ -26,7 +27,7 @@ export interface DailiesAPI {
   // jobs & folders
   listJobs(): Promise<Job[]>;
   /** Opens a native folder picker; returns the chosen path or null. */
-  addWatchedFolder(): Promise<string | null>;
+  addWatchedFolder(role: MediaRole): Promise<string | null>;
   removeWatchedFolder(path: string): Promise<void>;
 
   // settings

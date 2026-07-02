@@ -8,6 +8,15 @@
 
 export type FileStatus = "pending" | "processing" | "ready" | "offline" | "error";
 
+/** raw = camera media / dailies; final = exported cuts (timecode is timeline TC). */
+export type MediaRole = "raw" | "final";
+export type MediaKind = "standard" | "opatom";
+
+export interface WatchedFolder {
+  path: string;
+  role: MediaRole;
+}
+
 export interface MediaFile {
   id: number;
   path: string;
@@ -25,6 +34,14 @@ export interface MediaFile {
   hasTranscript: boolean;
   hasVisualIndex: boolean;
   proxyPath: string | null;
+  role: MediaRole;
+  /** Avid OP-Atom: clip name from the MXF material package; shown instead of the atom filename. */
+  clipName: string | null;
+  mediaKind: MediaKind;
+  /** OP-Atom: every essence-atom path belonging to this clip. */
+  memberPaths: string[] | null;
+  /** OP-Atom: material package UMID — the grouping key. */
+  clipKey: string | null;
 }
 
 export interface Scene {
@@ -79,6 +96,11 @@ export interface FileInput {
   codec: string;
   audioChannels: number;
   fileHash: string;
+  role?: MediaRole;
+  clipName?: string | null;
+  mediaKind?: MediaKind;
+  memberPaths?: string[] | null;
+  clipKey?: string | null;
 }
 
 export interface SceneInput {
@@ -110,7 +132,14 @@ export interface VisualAnnotationInput {
 
 // ---------- jobs ----------
 
-export type JobStage = "probe" | "audio" | "proxy" | "scenes" | "transcribe" | "visual_index";
+export type JobStage =
+  | "probe"
+  | "audio"
+  | "proxy"
+  | "scenes"
+  | "transcribe"
+  | "visual_index"
+  | "embed";
 export type JobStatus = "queued" | "running" | "done" | "error";
 
 export interface Job {
@@ -129,6 +158,7 @@ export interface Job {
 export interface TranscriptHit {
   fileId: number;
   filename: string;
+  role: MediaRole;
   segmentId: number;
   startS: number;
   endS: number;
@@ -141,6 +171,7 @@ export interface TranscriptHit {
 export interface VisualHit {
   fileId: number;
   filename: string;
+  role: MediaRole;
   sceneId: number;
   startS: number;
   endS: number;
@@ -166,6 +197,7 @@ export type Confidence = "high" | "medium" | "low";
 export interface AnswerHit {
   fileId: number;
   filename: string;
+  role?: MediaRole;
   kind: HitKind;
   inTc: string;
   outTc: string;
@@ -235,15 +267,58 @@ export const GEMINI_MODELS = {
   supervisorHigh: "gemini-3.5-pro",
   subagent: "gemini-3.5-flash",
   visualIndex: "gemini-3.5-flash",
+  embedding: "gemini-embedding-001",
 } as const;
+
+/** Embedding vector length (gemini-embedding-001 with outputDimensionality). */
+export const EMBEDDING_DIM = 768;
 
 export interface AppSettings {
   geminiKeySet: boolean;
-  watchedFolders: string[];
+  watchedFolders: WatchedFolder[];
   qualityMode: QualityMode;
   whisperModel: string;
   whisperAvailable: boolean;
   ffmpegAvailable: boolean;
+}
+
+// ---------- documents (producer notes, scripts) ----------
+
+export type DocumentKind = "pdf" | "txt" | "md";
+
+export interface DocumentInput {
+  path: string;
+  filename: string;
+  kind: DocumentKind;
+  content: string;
+  /** Pre-chunked content (~1200 chars per chunk, paragraph-aligned). */
+  chunks: string[];
+}
+
+export interface DocumentRecord {
+  id: number;
+  path: string;
+  filename: string;
+  kind: DocumentKind;
+  addedAt: string;
+  chunkCount: number;
+}
+
+export interface DocumentHit {
+  docId: number;
+  chunkId: number;
+  filename: string;
+  text: string;
+  score: number;
+}
+
+// ---------- embeddings ----------
+
+export type EmbeddingKind = "segment" | "scene" | "doc";
+
+export interface TextEmbedder {
+  /** Embeds up to ~100 texts per call; vectors are EMBEDDING_DIM floats. */
+  embed(texts: string[]): Promise<Float32Array[]>;
 }
 
 // ---------- Gemini (visual indexing) ----------

@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, mediaUrl } from "../api";
-import type { MediaFile } from "../../shared/types";
+import type { MediaFile, MediaRole } from "../../shared/types";
 import { ClipCard } from "../components/ClipCard";
 
 interface LibraryScreenProps {
   onOpenClip: (fileId: number) => void;
 }
 
+type RoleFilter = "all" | MediaRole;
+
 export function LibraryScreen({ onOpenClip }: LibraryScreenProps) {
   const [files, setFiles] = useState<MediaFile[] | null>(null);
   const [keyframes, setKeyframes] = useState<Record<number, string | null>>({});
   const [watching, setWatching] = useState<string | null>(null);
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
 
   const load = useCallback(async () => {
     const f = await api.listFiles();
@@ -33,8 +36,8 @@ export function LibraryScreen({ onOpenClip }: LibraryScreenProps) {
     void load();
   }, [load]);
 
-  async function addFolder() {
-    const folder = await api.addWatchedFolder();
+  async function addFolder(role: MediaRole) {
+    const folder = await api.addWatchedFolder(role);
     if (folder) {
       setWatching(folder);
       void load();
@@ -42,6 +45,7 @@ export function LibraryScreen({ onOpenClip }: LibraryScreenProps) {
   }
 
   const isEmpty = files !== null && files.length === 0;
+  const visibleFiles = files?.filter((f) => roleFilter === "all" || f.role === roleFilter) ?? null;
 
   return (
     <div className="library-screen">
@@ -52,10 +56,28 @@ export function LibraryScreen({ onOpenClip }: LibraryScreenProps) {
             <h1 className="display">Footage</h1>
             {files && files.length > 0 && <p className="library-count mono">{files.length} clips</p>}
           </div>
-          <button className="ghost-btn label" onClick={addFolder}>
-            Add folder…
-          </button>
+          <div className="library-header-btns">
+            <button className="ghost-btn label" onClick={() => addFolder("raw")}>
+              Add raw folder…
+            </button>
+            <button className="ghost-btn label" onClick={() => addFolder("final")}>
+              Add finals…
+            </button>
+          </div>
         </div>
+        {files && files.length > 0 && (
+          <div className="library-filters">
+            {(["all", "raw", "final"] as RoleFilter[]).map((r) => (
+              <button
+                key={r}
+                className={`library-filter-chip label${roleFilter === r ? " active" : ""}`}
+                onClick={() => setRoleFilter(r)}
+              >
+                {r === "all" ? "ALL" : r === "raw" ? "RAW" : "FINALS"}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <div className="library-scroll">
@@ -68,9 +90,14 @@ export function LibraryScreen({ onOpenClip }: LibraryScreenProps) {
               Point Dailies at a footage folder. Clips are indexed in place — transcribed and
               visually catalogued — and new files are picked up automatically.
             </p>
-            <button className="ghost-btn label" onClick={addFolder}>
-              Choose a footage folder…
-            </button>
+            <div className="library-header-btns">
+              <button className="ghost-btn label" onClick={() => addFolder("raw")}>
+                Add raw folder…
+              </button>
+              <button className="ghost-btn label" onClick={() => addFolder("final")}>
+                Add finals…
+              </button>
+            </div>
             {watching && (
               <p className="library-watching mono">
                 Watching {watching} — clips appear here as they're indexed.
@@ -79,9 +106,9 @@ export function LibraryScreen({ onOpenClip }: LibraryScreenProps) {
           </div>
         )}
 
-        {files && files.length > 0 && (
+        {visibleFiles && visibleFiles.length > 0 && (
           <div className="library-grid">
-            {files.map((f) => (
+            {visibleFiles.map((f) => (
               <ClipCard
                 key={f.id}
                 file={f}
@@ -118,6 +145,30 @@ export function LibraryScreen({ onOpenClip }: LibraryScreenProps) {
         .library-count {
           font-size: 11px;
           color: var(--ink-dimmer);
+        }
+        .library-header-btns {
+          display: flex;
+          gap: 10px;
+        }
+        .library-filters {
+          display: flex;
+          gap: 8px;
+          margin-top: 18px;
+        }
+        .library-filter-chip {
+          background: transparent;
+          border: 1px solid var(--hairline-strong);
+          border-radius: 6px;
+          color: var(--ink-dimmer);
+          padding: 5px 11px;
+          transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+        }
+        .library-filter-chip:hover {
+          color: var(--ink-dim);
+        }
+        .library-filter-chip.active {
+          color: var(--accent);
+          border-color: var(--accent-dim);
         }
         .library-scroll {
           flex: 1;

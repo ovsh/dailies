@@ -6,7 +6,7 @@ import { openDatabase } from "./db/database";
 import { createPipeline, type Pipeline } from "./pipeline";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { getWatchedFolders, getWhisperModel, getApiKey } from "./settings";
-import { createGeminiIndexer } from "./agents/gemini";
+import { createGeminiEmbedder, createGeminiIndexer } from "./agents/gemini";
 
 let win: BrowserWindow | null = null;
 
@@ -63,6 +63,10 @@ void app.whenReady().then(() => {
     gemini: () => {
       const key = getApiKey(db, "gemini");
       return key ? createGeminiIndexer(() => key) : null;
+    },
+    embedder: () => {
+      const key = getApiKey(db, "gemini");
+      return key ? createGeminiEmbedder(() => key) : null;
     },
     onUpdate: () => {
       win?.webContents.send("dailies:indexUpdate");

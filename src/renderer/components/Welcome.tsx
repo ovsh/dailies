@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import type { AppSettings } from "../../shared/types";
+import type { AppSettings, MediaRole } from "../../shared/types";
 
 interface WelcomeProps {
   settings: AppSettings;
@@ -27,8 +27,8 @@ export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps
     onSettingsChanged();
   }
 
-  async function chooseFolder() {
-    const folder = await api.addWatchedFolder();
+  async function chooseFolder(role: MediaRole) {
+    const folder = await api.addWatchedFolder(role);
     if (folder) onSettingsChanged();
   }
 
@@ -82,11 +82,19 @@ export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps
             new footage dropped in later is picked up automatically.
           </p>
           {settings.watchedFolders.map((f) => (
-            <p key={f} className="welcome-folder mono">{f}</p>
+            <p key={f.path} className="welcome-folder mono">
+              <span className="welcome-folder-role label">{f.role === "raw" ? "RAW" : "FINAL"}</span>
+              {f.path}
+            </p>
           ))}
-          <button className="ghost-btn label" onClick={chooseFolder}>
-            {settings.watchedFolders.length > 0 ? "Add another folder…" : "Choose a folder…"}
-          </button>
+          <div className="welcome-folder-btns">
+            <button className="ghost-btn label" onClick={() => chooseFolder("raw")}>
+              Choose raw footage folder…
+            </button>
+            <button className="ghost-btn label" onClick={() => chooseFolder("final")}>
+              Choose finals folder…
+            </button>
+          </div>
         </div>
 
         <div className="welcome-footer">
@@ -176,9 +184,20 @@ export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps
           color: var(--ink-faint);
         }
         .welcome-folder {
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
           font-size: 11.5px;
           color: var(--ink-dim);
           margin: 0 0 10px;
+        }
+        .welcome-folder-role {
+          color: var(--ink-dimmer);
+          font-size: 9.5px;
+        }
+        .welcome-folder-btns {
+          display: flex;
+          gap: 10px;
         }
         .welcome-footer {
           border-top: 1px solid var(--hairline);

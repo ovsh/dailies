@@ -1,14 +1,18 @@
 /**
  * Orchestrates the local media-processing pipeline: watches folders, walks
- * files through probe -> {audio, proxy, scenes} -> transcribe / visual_index,
- * persisting every result via DailiesDB and notifying the renderer.
+ * files through probe -> {audio, proxy, scenes} -> transcribe / visual_index
+ * -> embed, persisting every result via DailiesDB and notifying the
+ * renderer. Also ingests documents (producer notes, scripts) alongside
+ * media, and groups Avid OP-Atom MXF essence atoms into single clips.
  */
 import { mkdir, readdir } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 import type { DailiesDB } from "../db/types";
-import type { GeminiIndexer, Job } from "../../shared/types";
-import { findWhisperBinary, findWhisperModel } from "./binaries";
+import type { FileInput, GeminiIndexer, Job, MediaRole, TextEmbedder, WatchedFolder } from "../../shared/types";
+import { findFfprobeBinary, findWhisperBinary, findWhisperModel } from "./binaries";
+import { DOC_EXTENSIONS, extractDocument } from "./docs";
+import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo, type OpAtomClip } from "./opatom";
 import { extractAudio, extractKeyframe, makeProxy } from "./proxy";
 import { probeFile } from "./probe";
 import { detectScenes } from "./scenes";
@@ -22,30 +26,34 @@ export interface PipelineOptions {
   whisperModel: string;
   /** late-bound; null when no API key is configured. */
   gemini: () => GeminiIndexer | null;
+  /** late-bound; null when no API key is configured. */
+  embedder: () => TextEmbedder | null;
   /** fires after any job/file state change so the renderer can refresh. */
   onUpdate: () => void;
 }
 
 export interface Pipeline {
-  watchFolder(path: string): void;
+  watchFolder(folder: WatchedFolder): void;
   unwatchFolder(path: string): void;
-  scanFolder(path: string): Promise<void>;
+  scanFolder(folder: WatchedFolder): Promise<void>;
   start(): void;
   stop(): Promise<void>;
 }
 
 const VIDEO_EXTENSIONS = new Set([".mov", ".mp4", ".mxf", ".avi", ".m4v", ".mts"]);
+const DOC_EXTENSIONS_SET = new Set(DOC_EXTENSIONS);
 const MAX_CONCURRENCY = 2;
 const MAX_TRANSCRIBE_CONCURRENCY = 1;
 const MAX_KEYFRAMES_PER_FILE = 40;
 const IDLE_POLL_MS = 1500;
 const UPDATE_DEBOUNCE_MS = 300;
+const EMBED_BATCH_SIZE = 64;
 
 function mediaDirFor(dataDir: string, fileId: number): string {
   return join(dataDir, "media", String(fileId));
 }
 
-async function walkVideoFiles(root: string): Promise<string[]> {
+async function walkFiles(root: string): Promise<string[]> {
   const found: string[] = [];
   const entries = await readdir(root, { withFileTypes: true });
   for (const entry of entries) {
@@ -53,18 +61,16 @@ async function walkVideoFiles(root: string): Promise<string[]> {
     const full = join(root, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === ".dailies") continue;
-      found.push(...(await walkVideoFiles(full)));
+      found.push(...(await walkFiles(full)));
     } else if (entry.isFile()) {
-      if (VIDEO_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-        found.push(full);
-      }
+      found.push(full);
     }
   }
   return found;
 }
 
 export function createPipeline(opts: PipelineOptions): Pipeline {
-  const { db, dataDir, whisperModel, gemini, onUpdate } = opts;
+  const { db, dataDir, whisperModel, gemini, embedder, onUpdate } = opts;
 
   let running = false;
   let loopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -75,6 +81,10 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
   /** Transcribe jobs claimed from the DB but held back because one is already running. */
   const pendingTranscribeJobs: Job[] = [];
 
+  // folder path -> role, used to resolve a discovered file's role by
+  // longest-prefix match against watched folders. Default "raw".
+  const watchedFolderRoles: WatchedFolder[] = [];
+
   function scheduleUpdate(): void {
     if (updateDebounceTimer) return;
     updateDebounceTimer = setTimeout(() => {
@@ -83,7 +93,127 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     }, UPDATE_DEBOUNCE_MS);
   }
 
+  function roleForPath(path: string): MediaRole {
+    let best: WatchedFolder | null = null;
+    for (const folder of watchedFolderRoles) {
+      if (!path.startsWith(folder.path)) continue;
+      if (!best || folder.path.length > best.path.length) {
+        best = folder;
+      }
+    }
+    return best?.role ?? "raw";
+  }
+
+  async function embedDocChunks(): Promise<void> {
+    const e = embedder();
+    if (!e) return;
+    try {
+      const pending = db.listUnembeddedDocChunks(EMBED_BATCH_SIZE);
+      if (pending.length === 0) return;
+      const vectors = await e.embed(pending.map((c) => c.text));
+      pending.forEach((chunk, i) => {
+        const vector = vectors[i];
+        if (vector) db.upsertEmbedding("doc", chunk.refId, vector);
+      });
+    } catch (err) {
+      console.error("[pipeline] doc embedding failed:", err);
+    }
+  }
+
+  async function onDocFound(path: string): Promise<void> {
+    try {
+      if (db.getDocumentByPath(path)) return;
+
+      const doc = await extractDocument(path);
+      if (!doc) return;
+
+      db.upsertDocument(doc);
+      await embedDocChunks();
+      onUpdate();
+    } catch (err) {
+      console.error(`[pipeline] failed to ingest document ${path}:`, err);
+    }
+  }
+
+  const grouper = new OpAtomGrouper({
+    onClip: (clip) => {
+      void onOpAtomClip(clip);
+    },
+  });
+
+  async function onOpAtomClip(clip: OpAtomClip): Promise<void> {
+    const videoAtoms = clip.atoms.filter((a) => a.essence === "video");
+    const audioAtoms = clip.atoms.filter((a) => a.essence === "audio");
+    const primaryAtom = videoAtoms[0] ?? audioAtoms[0];
+    if (!primaryAtom) return;
+
+    // Ordered [videoAtoms..., audioAtoms...] with the primary path always
+    // first, so the audio stage can iterate in a predictable order and the
+    // proxy/scenes stages can tell a video atom exists via memberPaths[0].
+    const memberPaths = [...videoAtoms, ...audioAtoms].map((a) => a.path);
+
+    const existing = db.getFileByClipKey(clip.clipKey);
+    const fileHash = await computePartialHashSafe(primaryAtom.path);
+    if (
+      existing &&
+      existing.memberPaths &&
+      existing.memberPaths.length === memberPaths.length &&
+      existing.fileHash === fileHash
+    ) {
+      return;
+    }
+
+    const input: FileInput = {
+      path: primaryAtom.path,
+      filename: clip.clipName ?? basenameOf(primaryAtom.path),
+      durationS: Math.max(...clip.atoms.map((a) => a.durationS)),
+      fps: primaryAtom.fps,
+      dropFrame: primaryAtom.dropFrame,
+      startTc: primaryAtom.startTc,
+      codec: primaryAtom.codec,
+      audioChannels: audioAtoms.length > 0 ? 1 : 0,
+      fileHash,
+      role: roleForPath(primaryAtom.path),
+      clipName: clip.clipName,
+      mediaKind: "opatom",
+      memberPaths,
+      clipKey: clip.clipKey,
+    };
+
+    const file = db.upsertFile(input);
+    db.enqueueJob(file.id, "probe");
+    scheduleUpdate();
+  }
+
+  /** Thin wrapper around probeFile's hashing so we don't duplicate it here. */
+  async function computePartialHashSafe(path: string): Promise<string> {
+    try {
+      const probed = await probeFile(path);
+      return probed.fileHash;
+    } catch {
+      return "";
+    }
+  }
+
+  function basenameOf(path: string): string {
+    const parts = path.split(/[\\/]/);
+    return parts[parts.length - 1] ?? path;
+  }
+
   async function onFileFound(path: string): Promise<void> {
+    const ext = extname(path).toLowerCase();
+
+    if (ext === ".mxf") {
+      const ffprobeBin = findFfprobeBinary();
+      const atomInfo: MxfAtomInfo | null = await analyzeMxf(ffprobeBin, path);
+      if (atomInfo) {
+        grouper.addAtom(atomInfo);
+        return;
+      }
+      // Not OP-Atom (e.g. carries both audio and video) — fall through to
+      // standard ingest below.
+    }
+
     const existing = db.getFileByPath(path);
 
     // db.upsertFile() is the only way to obtain a fileId, and it requires a
@@ -92,6 +222,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     // (audio/proxy/scenes/transcribe/visual_index) is still fully deferred
     // to the worker loop via enqueueJob — this call never dispatches those.
     const probed = await probeFile(path);
+    probed.role = roleForPath(path);
 
     if (existing && existing.fileHash === probed.fileHash) {
       // Unchanged since we last saw it; nothing to do.
@@ -107,20 +238,31 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     onFileFound: (path) => {
       void onFileFound(path);
     },
+    onDocFound: (path) => {
+      void onDocFound(path);
+    },
   });
 
-  function watchFolder(path: string): void {
-    watcher.watchFolder(path);
+  function watchFolder(folder: WatchedFolder): void {
+    watchedFolderRoles.push(folder);
+    watcher.watchFolder(folder.path);
   }
 
   function unwatchFolder(path: string): void {
+    const idx = watchedFolderRoles.findIndex((f) => f.path === path);
+    if (idx >= 0) watchedFolderRoles.splice(idx, 1);
     watcher.unwatchFolder(path);
   }
 
-  async function scanFolder(path: string): Promise<void> {
-    const files = await walkVideoFiles(path);
+  async function scanFolder(folder: WatchedFolder): Promise<void> {
+    const files = await walkFiles(folder.path);
     for (const file of files) {
-      await onFileFound(file);
+      const ext = extname(file).toLowerCase();
+      if (VIDEO_EXTENSIONS.has(ext)) {
+        await onFileFound(file);
+      } else if (DOC_EXTENSIONS_SET.has(ext)) {
+        await onDocFound(file);
+      }
     }
   }
 
@@ -130,6 +272,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
 
     // The file row (including its hash) was already written by onFileFound;
     // this stage just transitions status and fans out the next stages.
+    // OP-Atom clips are already in their final shape (merged from atoms at
+    // discovery time) — never re-probe them into standard shape.
     db.setFileStatus(file.id, "processing");
 
     db.enqueueJob(file.id, "audio");
@@ -147,15 +291,52 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     await mkdir(mediaDir, { recursive: true });
     const audioPath = join(mediaDir, "audio.wav");
 
-    await extractAudio(file.path, audioPath);
+    if (file.mediaKind === "opatom") {
+      const candidates = file.memberPaths ?? [file.path];
+      let extracted = false;
+      for (const candidate of candidates) {
+        try {
+          await extractAudio(candidate, audioPath);
+          extracted = true;
+          break;
+        } catch {
+          continue;
+        }
+      }
+      if (!extracted) {
+        throw new Error(`No member path of opatom clip ${file.id} yielded audio`);
+      }
+    } else {
+      await extractAudio(file.path, audioPath);
+    }
+
     db.enqueueJob(file.id, "transcribe");
 
     db.completeJob(job.id);
   }
 
+  /**
+   * True when the file has a video essence to work from: always true for
+   * standard media; for opatom clips, true iff the primary path (always
+   * memberPaths[0], since memberPaths is ordered [videoAtoms..., audioAtoms...])
+   * is itself a video atom.
+   */
+  async function hasVideoAtom(file: { mediaKind: string; path: string }): Promise<boolean> {
+    if (file.mediaKind !== "opatom") return true;
+    const ffprobeBin = findFfprobeBinary();
+    const info = await analyzeMxf(ffprobeBin, file.path);
+    return info?.essence === "video";
+  }
+
   async function handleProxy(job: Job): Promise<void> {
     const file = db.getFile(job.fileId);
     if (!file) throw new Error(`Job ${job.id}: file ${job.fileId} not found`);
+
+    if (!(await hasVideoAtom(file))) {
+      // Audio-only opatom clip — nothing to make a proxy from.
+      db.completeJob(job.id);
+      return;
+    }
 
     const mediaDir = mediaDirFor(dataDir, file.id);
     await mkdir(mediaDir, { recursive: true });
@@ -169,6 +350,12 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
   async function handleScenes(job: Job): Promise<void> {
     const file = db.getFile(job.fileId);
     if (!file) throw new Error(`Job ${job.id}: file ${job.fileId} not found`);
+
+    if (!(await hasVideoAtom(file))) {
+      // Audio-only opatom clip — no video to scene-detect.
+      db.completeJob(job.id);
+      return;
+    }
 
     const mediaDir = mediaDirFor(dataDir, file.id);
     await mkdir(mediaDir, { recursive: true });
@@ -239,6 +426,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     db.markTranscribed(file.id);
     maybeMarkReady(file.id);
 
+    db.enqueueJob(file.id, "embed");
+
     db.completeJob(job.id);
   }
 
@@ -278,6 +467,39 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     }
 
     db.markVisuallyIndexed(file.id);
+
+    db.enqueueJob(file.id, "embed");
+
+    db.completeJob(job.id);
+  }
+
+  async function handleEmbed(job: Job): Promise<void> {
+    const e = embedder();
+    if (!e) {
+      db.failJob(job.id, "Gemini API key not set");
+      return;
+    }
+
+    const segments = db.listUnembeddedSegments(job.fileId);
+    for (let i = 0; i < segments.length; i += EMBED_BATCH_SIZE) {
+      const batch = segments.slice(i, i + EMBED_BATCH_SIZE);
+      const vectors = await e.embed(batch.map((s) => s.text));
+      batch.forEach((seg, idx) => {
+        const vector = vectors[idx];
+        if (vector) db.upsertEmbedding("segment", seg.refId, vector);
+      });
+    }
+
+    const annotations = db.listUnembeddedAnnotations(job.fileId);
+    for (let i = 0; i < annotations.length; i += EMBED_BATCH_SIZE) {
+      const batch = annotations.slice(i, i + EMBED_BATCH_SIZE);
+      const vectors = await e.embed(batch.map((a) => a.text));
+      batch.forEach((ann, idx) => {
+        const vector = vectors[idx];
+        if (vector) db.upsertEmbedding("scene", ann.refId, vector);
+      });
+    }
+
     db.completeJob(job.id);
   }
 
@@ -301,6 +523,9 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
           break;
         case "visual_index":
           await handleVisualIndex(job);
+          break;
+        case "embed":
+          await handleEmbed(job);
           break;
       }
     } catch (err) {

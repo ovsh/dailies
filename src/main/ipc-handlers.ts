@@ -7,13 +7,15 @@ import type {
   ExportItem,
   ExportKind,
   FileDetail,
+  MediaRole,
   QualityMode,
+  WatchedFolder,
 } from "../shared/types";
 import type { DailiesDB } from "./db/types";
 import type { Pipeline } from "./pipeline";
 import { checkAvailability } from "./pipeline/binaries";
 import { runChatTurn } from "./agents/supervisor";
-import { createGeminiIndexer } from "./agents/gemini";
+import { createGeminiEmbedder, createGeminiIndexer } from "./agents/gemini";
 import { writeExport } from "./export";
 import {
   getApiKey,
@@ -58,20 +60,21 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   // ---- jobs & folders ----
   ipcMain.handle(IPC.listJobs, () => db.listJobs());
 
-  ipcMain.handle(IPC.addWatchedFolder, async () => {
+  ipcMain.handle(IPC.addWatchedFolder, async (_e, role: MediaRole) => {
     const win = ctx.getWindow();
     if (!win) return null;
     const res = await dialog.showOpenDialog(win, {
       properties: ["openDirectory"],
-      title: "Choose a footage folder to watch",
+      title: role === "final" ? "Choose a finals folder to watch" : "Choose a footage folder to watch",
     });
     const folder = res.filePaths[0];
     if (res.canceled || !folder) return null;
     const folders = getWatchedFolders(db);
-    if (!folders.includes(folder)) {
-      setWatchedFolders(db, [...folders, folder]);
-      pipeline.watchFolder(folder);
-      void pipeline.scanFolder(folder);
+    if (!folders.some((f) => f.path === folder)) {
+      const entry: WatchedFolder = { path: folder, role };
+      setWatchedFolders(db, [...folders, entry]);
+      pipeline.watchFolder(entry);
+      void pipeline.scanFolder(entry);
     }
     return folder;
   });
@@ -79,7 +82,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC.removeWatchedFolder, (_e, folder: string) => {
     setWatchedFolders(
       db,
-      getWatchedFolders(db).filter((f) => f !== folder),
+      getWatchedFolders(db).filter((f) => f.path !== folder),
     );
     pipeline.unwatchFolder(folder);
   });
@@ -136,6 +139,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
           geminiKey,
           qualityMode: getQualityMode(db),
           gemini: createGeminiIndexer(() => geminiKey),
+          embedder: createGeminiEmbedder(() => geminiKey),
           emit: (ev) => emitChatEvent({ ...ev, chatId: id }),
         });
         db.addChatMessage(id, "assistant", answer.prose, answer.hits);

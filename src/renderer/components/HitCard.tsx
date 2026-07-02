@@ -25,7 +25,10 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
         ) : (
           <div className="hit-thumb-empty" />
         )}
-        <span className="hit-kind label">{hit.kind === "spoken" ? "SAID" : "SEEN"}</span>
+        <span className="hit-kind-group">
+          <span className="hit-kind label">{hit.kind === "spoken" ? "SAID" : "SEEN"}</span>
+          {hit.role === "final" && <span className="hit-final-tag label">FINAL</span>}
+        </span>
       </button>
 
       <div className="hit-body">
@@ -94,13 +97,25 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
           height: 100%;
           background: var(--ground-raised);
         }
-        .hit-kind {
+        .hit-kind-group {
           position: absolute;
           top: 8px;
           left: 8px;
+          display: flex;
+          gap: 6px;
+        }
+        .hit-kind {
           background: rgba(19, 17, 22, 0.78);
           border: 1px solid var(--hairline-strong);
           color: var(--ink-dim);
+          padding: 3px 7px;
+          border-radius: 4px;
+          font-size: 9.5px;
+        }
+        .hit-final-tag {
+          background: rgba(19, 17, 22, 0.78);
+          border: 1px solid var(--hairline-strong);
+          color: var(--ink-dimmer);
           padding: 3px 7px;
           border-radius: 4px;
           font-size: 9.5px;

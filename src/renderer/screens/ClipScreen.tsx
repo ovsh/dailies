@@ -74,7 +74,8 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
         </button>
         <h1 className="display clip-title">{file.filename}</h1>
         <p className="clip-meta-line mono">
-          {file.fps.toFixed(3)} FPS · <TimecodeText tc={file.startTc} dim /> · {formatDuration(file.durationS)} · {file.codec}
+          {file.fps.toFixed(3)} FPS · <TimecodeText tc={file.startTc} dim /> · {formatDuration(file.durationS)} · {file.codec} ·{" "}
+          {file.role === "raw" ? "RAW" : "FINAL"}
         </p>
       </header>
 

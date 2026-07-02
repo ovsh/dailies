@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC, type DailiesAPI } from "../shared/ipc";
-import type { ChatEvent, ExportItem, ExportKind, QualityMode } from "../shared/types";
+import type { ChatEvent, ExportItem, ExportKind, MediaRole, QualityMode } from "../shared/types";
 
 const api: DailiesAPI = {
   listFiles: () => ipcRenderer.invoke(IPC.listFiles),
@@ -8,7 +8,7 @@ const api: DailiesAPI = {
   getWords: (segmentId: number) => ipcRenderer.invoke(IPC.getWords, segmentId),
 
   listJobs: () => ipcRenderer.invoke(IPC.listJobs),
-  addWatchedFolder: () => ipcRenderer.invoke(IPC.addWatchedFolder),
+  addWatchedFolder: (role: MediaRole) => ipcRenderer.invoke(IPC.addWatchedFolder, role),
   removeWatchedFolder: (path: string) => ipcRenderer.invoke(IPC.removeWatchedFolder, path),
 
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),

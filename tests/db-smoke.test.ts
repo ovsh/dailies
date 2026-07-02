@@ -98,6 +98,58 @@ describe("db end-to-end smoke", () => {
     expect(msgs).toHaveLength(2);
     expect(msgs[1].hits?.[0].kind).toBe("visual");
 
+    // roles + hit hydration
+    expect(spoken[0].role).toBe("raw");
+    const hydrated = db.getTranscriptHit(spoken[0].segmentId);
+    expect(hydrated?.startTc).toBe(spoken[0].startTc);
+
+    // OP-Atom clip lookup by UMID
+    const atom = db.upsertFile({
+      path: "/avid/MXF/1/BEARV01.mxf",
+      filename: "A001C012 BEAR RIVER WS",
+      durationS: 60,
+      fps: 25,
+      dropFrame: false,
+      startTc: "05:00:00:00",
+      codec: "dnxhd",
+      audioChannels: 0,
+      fileHash: "atomhash",
+      role: "raw",
+      clipName: "A001C012 BEAR RIVER WS",
+      mediaKind: "opatom",
+      memberPaths: ["/avid/MXF/1/BEARV01.mxf", "/avid/MXF/1/BEARA01.mxf"],
+      clipKey: "umid-123",
+    });
+    expect(db.getFileByClipKey("umid-123")?.id).toBe(atom.id);
+    expect(db.getFile(atom.id)?.memberPaths).toHaveLength(2);
+
+    // documents + chunk FTS
+    const doc = db.upsertDocument({
+      path: "/notes/producer-notes.txt",
+      filename: "producer-notes.txt",
+      kind: "txt",
+      content: "We need more bear content in episode two.",
+      chunks: ["We need more bear content in episode two.", "Also check the salmon aerials."],
+    });
+    expect(doc.chunkCount).toBe(2);
+    const noteHits = db.searchDocuments(["bear"]);
+    expect(noteHits).toHaveLength(1);
+    expect(noteHits[0].filename).toBe("producer-notes.txt");
+
+    // embeddings: store two orthogonal-ish vectors, nearest neighbour wins
+    const unembedded = db.listUnembeddedSegments(file.id);
+    expect(unembedded).toHaveLength(2);
+    const vecA = new Float32Array(768).fill(0);
+    vecA[0] = 1;
+    const vecB = new Float32Array(768).fill(0);
+    vecB[1] = 1;
+    db.upsertEmbedding("segment", unembedded[0].refId, vecA);
+    db.upsertEmbedding("segment", unembedded[1].refId, vecB);
+    expect(db.listUnembeddedSegments(file.id)).toHaveLength(0);
+    const nearest = db.semanticSearch("segment", vecA, 2);
+    expect(nearest[0].refId).toBe(unembedded[0].refId);
+    expect(nearest[0].score).toBeGreaterThan(nearest[1].score);
+
     db.close();
   });
 });

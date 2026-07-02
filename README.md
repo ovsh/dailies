@@ -31,7 +31,7 @@ See `docs/` and `src/shared/types.ts` (the cross-boundary contract). Modules:
 | Path | What |
 |---|---|
 | `src/main/db/` | SQLite index (better-sqlite3, FTS5) |
-| `src/main/pipeline/` | watch → probe → audio/proxy/scenes → whisper → Gemini visual index |
+| `src/main/pipeline/` | watch → probe → audio/proxy/scenes → whisper → Gemini visual index → embeddings; Avid OP-Atom MXF grouping; document (notes/script) ingest |
 | `src/main/agents/` | Gemini 3.5 Flash supervisor + scouts/verifier (3.5 Pro optional), Gemini indexer |
 | `src/main/export/` | Avid locator lists + CMX3600 EDL (frame-accurate, DF-aware) |
 | `src/renderer/` | React UI ("screening room" design) |

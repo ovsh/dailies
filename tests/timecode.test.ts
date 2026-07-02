@@ -170,6 +170,11 @@ const fileA: MediaFile = {
   hasTranscript: false,
   hasVisualIndex: false,
   proxyPath: null,
+  role: "raw" as const,
+  clipName: null,
+  mediaKind: "standard" as const,
+  memberPaths: null,
+  clipKey: null,
 };
 
 const fileB: MediaFile = {
@@ -188,6 +193,11 @@ const fileB: MediaFile = {
   hasTranscript: false,
   hasVisualIndex: false,
   proxyPath: null,
+  role: "raw" as const,
+  clipName: null,
+  mediaKind: "standard" as const,
+  memberPaths: null,
+  clipKey: null,
 };
 
 function getFile(id: number): MediaFile | null {

@@ -13,12 +13,14 @@ import type {
   Confidence,
   GeminiIndexer,
   HitKind,
+  MediaRole,
   QualityMode,
+  TextEmbedder,
   VisualHit,
 } from "../../shared/types";
 import { GEMINI_MODELS } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
-import { getFileInfoTool } from "./tools";
+import { getFileInfoTool, searchNotesTool } from "./tools";
 import { runClipReader, runFrameVerifier, runTranscriptScout, runVisualScout } from "./subagents";
 
 const MAX_ITERS = 16;
@@ -30,6 +32,7 @@ export interface ChatTurnOptions {
   geminiKey: string;
   qualityMode: QualityMode; // "high" => supervisor tries the pro model first
   gemini: GeminiIndexer | null;
+  embedder: TextEmbedder | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
 }
 
@@ -39,7 +42,9 @@ Distinguish carefully between footage that VISUALLY SHOWS a subject (kind "visua
 
 Use transcript_scout to find spoken references, and visual_scout to find visual matches. Any visual candidate must be verified with frame_verifier before you present it as high confidence — do not skip verification. Use clip_reader when you need to read more of a specific file's transcript to answer a question. Use get_file_info for file metadata.
 
-When you have gathered and verified enough evidence, ALWAYS finish by calling final_answer exactly once, with clear prose and a list of hits (each with accurate in/out timecodes and seconds, kind, and honest confidence).`;
+Hits carry a role: "raw" means camera media (source timecode); "final" means an exported cut, where the timecode is the TIMELINE TC in the finished episode — describe those hits as "in the final at {tc}" rather than implying they are source camera footage. When producer notes or scripts have been ingested, consider calling search_notes to connect notes to footage — it searches the producer notes / scripts / documents that were dropped into watched folders.
+
+When you have gathered and verified enough evidence, ALWAYS finish by calling final_answer exactly once, with clear prose and a list of hits (each with accurate in/out timecodes and seconds, kind, honest confidence, and role when known).`;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -99,6 +104,15 @@ const SUPERVISOR_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "search_notes",
+    description: "Search the producer notes / scripts / documents that were dropped into watched folders.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: { query: { type: Type.STRING } },
+      required: ["query"],
+    },
+  },
+  {
     name: "final_answer",
     description: "Deliver the final answer to the editor. Call this exactly once, when you are done researching.",
     parameters: {
@@ -112,6 +126,7 @@ const SUPERVISOR_DECLARATIONS: FunctionDeclaration[] = [
             properties: {
               fileId: { type: Type.NUMBER },
               filename: { type: Type.STRING },
+              role: { type: Type.STRING, enum: ["raw", "final"] },
               kind: { type: Type.STRING, enum: ["visual", "spoken"] },
               inTc: { type: Type.STRING },
               outTc: { type: Type.STRING },
@@ -137,6 +152,8 @@ function coerceHit(raw: unknown): AnswerHit | null {
   if (!isRecord(raw)) return null;
   const fileId = typeof raw.fileId === "number" ? raw.fileId : 0;
   const filename = typeof raw.filename === "string" ? raw.filename : null;
+  const roleRaw = raw.role;
+  const role: MediaRole | undefined = roleRaw === "raw" || roleRaw === "final" ? roleRaw : undefined;
   const kindRaw = raw.kind;
   const kind: HitKind | null = kindRaw === "visual" || kindRaw === "spoken" ? kindRaw : null;
   const inTc = typeof raw.inTc === "string" ? raw.inTc : null;
@@ -161,6 +178,7 @@ function coerceHit(raw: unknown): AnswerHit | null {
     outS,
     confidence,
   };
+  if (role !== undefined) hit.role = role;
   if (typeof raw.quote === "string") hit.quote = raw.quote;
   if (typeof raw.description === "string") hit.description = raw.description;
   if (typeof raw.keyframePath === "string" || raw.keyframePath === null) hit.keyframePath = raw.keyframePath;
@@ -200,7 +218,7 @@ function isModelUnavailableError(err: unknown): boolean {
 // ---------- main entry ----------
 
 export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
-  const { db, history, userText, geminiKey, qualityMode, gemini, emit } = opts;
+  const { db, history, userText, geminiKey, qualityMode, gemini, embedder, emit } = opts;
   const ai = new GoogleGenAI({ apiKey: geminiKey });
   const subagentModel = GEMINI_MODELS.subagent;
 
@@ -220,16 +238,23 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     if (name === "transcript_scout") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "transcript scout", status: `transcript scout — searching spoken references for "${query}"` });
-      const result = await runTranscriptScout({ ai, model: subagentModel, db, query });
+      const result = await runTranscriptScout({ ai, model: subagentModel, db, query, embedder });
       return JSON.stringify(result);
     }
 
     if (name === "visual_scout") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "visual scout", status: `visual scout — searching visual matches for "${query}"` });
-      const result = await runVisualScout({ ai, model: subagentModel, db, query, gemini });
+      const result = await runVisualScout({ ai, model: subagentModel, db, query, gemini, embedder });
       for (const hit of result.hits) visualHitCache.set(hit.sceneId, hit);
       return JSON.stringify(result);
+    }
+
+    if (name === "search_notes") {
+      const query = typeof rec.query === "string" ? rec.query : "";
+      emit({ type: "activity", agent: "search notes", status: `search notes — searching producer notes for "${query}"` });
+      const hits = await searchNotesTool(db, query, [], embedder);
+      return JSON.stringify(hits);
     }
 
     if (name === "frame_verifier") {

@@ -8,12 +8,18 @@ import type {
   AnswerHit,
   ChatMessageRecord,
   ChatSummary,
+  DocumentHit,
+  DocumentInput,
+  DocumentRecord,
+  EmbeddingKind,
   FileInput,
   FileStatus,
   Job,
   JobStage,
   JobStatus,
   MediaFile,
+  MediaKind,
+  MediaRole,
   Scene,
   SceneInput,
   SegmentInput,
@@ -45,6 +51,11 @@ interface FileRow {
   has_transcript: number;
   has_visual_index: number;
   proxy_path: string | null;
+  role: string;
+  clip_name: string | null;
+  media_kind: string;
+  member_paths: string | null;
+  clip_key: string | null;
 }
 
 interface SceneRow {
@@ -119,6 +130,7 @@ interface TranscriptSearchRow {
   segment_id: number;
   file_id: number;
   filename: string;
+  role: string;
   fps: number;
   drop_frame: number;
   start_tc: string;
@@ -133,6 +145,7 @@ interface VisualSearchRow {
   scene_id: number;
   file_id: number;
   filename: string;
+  role: string;
   fps: number;
   drop_frame: number;
   start_tc: string;
@@ -143,6 +156,36 @@ interface VisualSearchRow {
   shot_type: string | null;
   keyframe_path: string | null;
   rank: number;
+}
+
+interface DocumentRow {
+  id: number;
+  path: string;
+  filename: string;
+  kind: string;
+  content: string;
+  added_at: string;
+}
+
+interface DocChunkRow {
+  id: number;
+  doc_id: number;
+  seq: number;
+  text: string;
+}
+
+interface DocumentSearchRow {
+  chunk_id: number;
+  doc_id: number;
+  filename: string;
+  text: string;
+  rank: number;
+}
+
+interface EmbeddingRow {
+  kind: string;
+  ref_id: number;
+  vector: Buffer;
 }
 
 // ---------- row -> domain mapping helpers ----------
@@ -164,6 +207,11 @@ function mapFile(row: FileRow): MediaFile {
     hasTranscript: row.has_transcript === 1,
     hasVisualIndex: row.has_visual_index === 1,
     proxyPath: row.proxy_path,
+    role: row.role as MediaRole,
+    clipName: row.clip_name,
+    mediaKind: row.media_kind as MediaKind,
+    memberPaths: row.member_paths ? (JSON.parse(row.member_paths) as string[]) : null,
+    clipKey: row.clip_key,
   };
 }
 
@@ -244,6 +292,17 @@ function mapChatMessage(row: ChatMessageRow): ChatMessageRecord {
     content: row.content,
     hits: row.hits ? (JSON.parse(row.hits) as AnswerHit[]) : null,
     createdAt: row.created_at,
+  };
+}
+
+function mapDocument(row: DocumentRow, chunkCount: number): DocumentRecord {
+  return {
+    id: row.id,
+    path: row.path,
+    filename: row.filename,
+    kind: row.kind as DocumentRecord["kind"],
+    addedAt: row.added_at,
+    chunkCount,
   };
 }
 
@@ -355,6 +414,24 @@ function secondsToTc(
   return framesToNonDropTc(startFrames + offsetFrames, nominalFps);
 }
 
+// ---------- embedding helpers ----------
+
+function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    dot += av * bv;
+    normA += av * av;
+    normB += bv * bv;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 // ---------- FTS helpers ----------
 
 /** Builds an FTS5 MATCH expression OR-ing sanitized terms. */
@@ -379,6 +456,36 @@ function normalizeScores<T extends { rank: number }>(rows: T[]): number[] {
   return rows.map((r) => (max - r.rank) / (max - min));
 }
 
+// ---------- migration ----------
+
+interface TableInfoRow {
+  name: string;
+}
+
+/**
+ * Adds columns to `files` that pre-date this schema version. CREATE TABLE IF NOT EXISTS
+ * leaves existing tables untouched, so older databases are missing these columns.
+ * Idempotent: reads PRAGMA table_info and only ALTERs what's missing.
+ */
+function migrate(db: BetterSqlite3Database): void {
+  const existingColumns = new Set(
+    (db.pragma("table_info(files)") as TableInfoRow[]).map((c) => c.name),
+  );
+  const wantedColumns: Array<[string, string]> = [
+    ["role", "TEXT NOT NULL DEFAULT 'raw'"],
+    ["clip_name", "TEXT"],
+    ["media_kind", "TEXT NOT NULL DEFAULT 'standard'"],
+    ["member_paths", "TEXT"],
+    ["clip_key", "TEXT"],
+  ];
+  for (const [name, ddl] of wantedColumns) {
+    if (!existingColumns.has(name)) {
+      db.exec(`ALTER TABLE files ADD COLUMN ${name} ${ddl}`);
+    }
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_files_clip_key ON files(clip_key)");
+}
+
 // ---------- database implementation ----------
 
 export function openDatabase(dbPath: string): DailiesDB {
@@ -386,11 +493,15 @@ export function openDatabase(dbPath: string): DailiesDB {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA_SQL);
+  migrate(db);
 
   // ---------- prepared statements ----------
 
   const stmtGetFileById = db.prepare<[number], FileRow>("SELECT * FROM files WHERE id = ?");
   const stmtGetFileByPath = db.prepare<[string], FileRow>("SELECT * FROM files WHERE path = ?");
+  const stmtGetFileByClipKey = db.prepare<[string], FileRow>(
+    "SELECT * FROM files WHERE clip_key = ?",
+  );
   const stmtInsertFile = db.prepare<
     [
       string,
@@ -403,18 +514,42 @@ export function openDatabase(dbPath: string): DailiesDB {
       number,
       string,
       string,
+      string,
+      string | null,
+      string,
+      string | null,
+      string | null,
     ],
     FileRow
   >(
-    `INSERT INTO files (path, filename, duration_s, fps, drop_frame, start_tc, codec, audio_channels, file_hash, status, added_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `INSERT INTO files (
+       path, filename, duration_s, fps, drop_frame, start_tc, codec, audio_channels, file_hash,
+       status, added_at, role, clip_name, media_kind, member_paths, clip_key
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
      RETURNING *`,
   );
   const stmtUpdateFile = db.prepare<
-    [string, number, number, number, string, string, number, string, number],
+    [
+      string,
+      number,
+      number,
+      number,
+      string,
+      string,
+      number,
+      string,
+      string,
+      string | null,
+      string,
+      string | null,
+      string | null,
+      number,
+    ],
     FileRow
   >(
-    `UPDATE files SET filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?
+    `UPDATE files SET filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?,
+       role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?
      WHERE id = ?
      RETURNING *`,
   );
@@ -483,6 +618,108 @@ export function openDatabase(dbPath: string): DailiesDB {
     "SELECT * FROM visual_annotations WHERE file_id = ? ORDER BY id ASC",
   );
 
+  // ---------- documents ----------
+
+  const stmtGetDocumentByPath = db.prepare<[string], DocumentRow>(
+    "SELECT * FROM documents WHERE path = ?",
+  );
+  const stmtGetDocumentById = db.prepare<[number], DocumentRow>(
+    "SELECT * FROM documents WHERE id = ?",
+  );
+  const stmtInsertDocument = db.prepare<[string, string, string, string, string], DocumentRow>(
+    `INSERT INTO documents (path, filename, kind, content, added_at)
+     VALUES (?, ?, ?, ?, ?)
+     RETURNING *`,
+  );
+  const stmtUpdateDocument = db.prepare<[string, string, string, number], DocumentRow>(
+    `UPDATE documents SET filename = ?, kind = ?, content = ?
+     WHERE id = ?
+     RETURNING *`,
+  );
+  const stmtListDocuments = db.prepare<[], DocumentRow>(
+    "SELECT * FROM documents ORDER BY added_at DESC",
+  );
+  const stmtCountDocChunks = db.prepare<[number], { count: number }>(
+    "SELECT COUNT(*) AS count FROM doc_chunks WHERE doc_id = ?",
+  );
+  const stmtGetDocChunkIds = db.prepare<[number], { id: number }>(
+    "SELECT id FROM doc_chunks WHERE doc_id = ?",
+  );
+  const stmtDeleteDocChunks = db.prepare<[number]>("DELETE FROM doc_chunks WHERE doc_id = ?");
+  const stmtDeleteDocFts = db.prepare<[number]>("DELETE FROM doc_fts WHERE doc_id = ?");
+  const stmtInsertDocChunk = db.prepare<[number, number, string], DocChunkRow>(
+    `INSERT INTO doc_chunks (doc_id, seq, text)
+     VALUES (?, ?, ?)
+     RETURNING *`,
+  );
+  const stmtInsertDocFts = db.prepare<[string, number, number]>(
+    "INSERT INTO doc_fts (text, doc_id, chunk_id) VALUES (?, ?, ?)",
+  );
+  const stmtGetDocChunkById = db.prepare<[number], DocChunkRow>(
+    "SELECT * FROM doc_chunks WHERE id = ?",
+  );
+
+  const stmtSearchDocuments = db.prepare<[string, number], DocumentSearchRow>(
+    `SELECT
+       doc_fts.chunk_id AS chunk_id,
+       doc_fts.doc_id AS doc_id,
+       documents.filename AS filename,
+       doc_chunks.text AS text,
+       bm25(doc_fts) AS rank
+     FROM doc_fts
+     JOIN doc_chunks ON doc_chunks.id = doc_fts.chunk_id
+     JOIN documents ON documents.id = doc_fts.doc_id
+     WHERE doc_fts MATCH ?
+     ORDER BY rank ASC
+     LIMIT ?`,
+  );
+
+  // ---------- embeddings ----------
+
+  const stmtUpsertEmbedding = db.prepare<[string, number, Buffer]>(
+    `INSERT INTO embeddings (kind, ref_id, vector) VALUES (?, ?, ?)
+     ON CONFLICT(kind, ref_id) DO UPDATE SET vector = excluded.vector`,
+  );
+  const stmtDeleteEmbedding = db.prepare<[string, number]>(
+    "DELETE FROM embeddings WHERE kind = ? AND ref_id = ?",
+  );
+  const stmtListUnembeddedSegments = db.prepare<[number], { ref_id: number; text: string }>(
+    `SELECT transcript_segments.id AS ref_id, transcript_segments.text AS text
+     FROM transcript_segments
+     WHERE transcript_segments.file_id = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM embeddings
+         WHERE embeddings.kind = 'segment' AND embeddings.ref_id = transcript_segments.id
+       )`,
+  );
+  const stmtListUnembeddedAnnotations = db.prepare<
+    [number],
+    { ref_id: number; description: string; objects: string }
+  >(
+    `SELECT
+       visual_annotations.scene_id AS ref_id,
+       visual_annotations.description AS description,
+       visual_annotations.objects AS objects
+     FROM visual_annotations
+     WHERE visual_annotations.file_id = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM embeddings
+         WHERE embeddings.kind = 'scene' AND embeddings.ref_id = visual_annotations.scene_id
+       )`,
+  );
+  const stmtListUnembeddedDocChunks = db.prepare<[number], { ref_id: number; text: string }>(
+    `SELECT doc_chunks.id AS ref_id, doc_chunks.text AS text
+     FROM doc_chunks
+     WHERE NOT EXISTS (
+       SELECT 1 FROM embeddings
+       WHERE embeddings.kind = 'doc' AND embeddings.ref_id = doc_chunks.id
+     )
+     LIMIT ?`,
+  );
+  const stmtListEmbeddingsByKind = db.prepare<[string], EmbeddingRow>(
+    "SELECT kind, ref_id, vector FROM embeddings WHERE kind = ?",
+  );
+
   const stmtEnqueueJob = db.prepare<[number, string, string]>(
     "INSERT INTO jobs (file_id, stage, status, attempts, updated_at) VALUES (?, ?, 'queued', 0, ?)",
   );
@@ -543,6 +780,7 @@ export function openDatabase(dbPath: string): DailiesDB {
        transcript_fts.segment_id AS segment_id,
        transcript_fts.file_id AS file_id,
        files.filename AS filename,
+       files.role AS role,
        files.fps AS fps,
        files.drop_frame AS drop_frame,
        files.start_tc AS start_tc,
@@ -558,6 +796,24 @@ export function openDatabase(dbPath: string): DailiesDB {
      LIMIT ?`,
   );
 
+  const stmtGetTranscriptHit = db.prepare<[number], TranscriptSearchRow>(
+    `SELECT
+       transcript_segments.id AS segment_id,
+       transcript_segments.file_id AS file_id,
+       files.filename AS filename,
+       files.role AS role,
+       files.fps AS fps,
+       files.drop_frame AS drop_frame,
+       files.start_tc AS start_tc,
+       transcript_segments.start_s AS start_s,
+       transcript_segments.end_s AS end_s,
+       transcript_segments.text AS text,
+       0 AS rank
+     FROM transcript_segments
+     JOIN files ON files.id = transcript_segments.file_id
+     WHERE transcript_segments.id = ?`,
+  );
+
   function buildVisualSearchStmt(filters?: VisualSearchFilters) {
     const clauses: string[] = ["visual_fts MATCH ?"];
     if (filters?.shotType) clauses.push("visual_annotations.shot_type = ?");
@@ -567,6 +823,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         visual_fts.scene_id AS scene_id,
         visual_fts.file_id AS file_id,
         files.filename AS filename,
+        files.role AS role,
         files.fps AS fps,
         files.drop_frame AS drop_frame,
         files.start_tc AS start_tc,
@@ -587,9 +844,43 @@ export function openDatabase(dbPath: string): DailiesDB {
     return db.prepare<unknown[], VisualSearchRow>(sql);
   }
 
+  const stmtGetVisualHitByScene = db.prepare<[number], VisualSearchRow>(
+    `SELECT
+       visual_annotations.id AS ann_id,
+       scenes.id AS scene_id,
+       scenes.file_id AS file_id,
+       files.filename AS filename,
+       files.role AS role,
+       files.fps AS fps,
+       files.drop_frame AS drop_frame,
+       files.start_tc AS start_tc,
+       scenes.start_s AS scene_start_s,
+       scenes.end_s AS scene_end_s,
+       visual_annotations.description AS description,
+       visual_annotations.objects AS objects,
+       visual_annotations.shot_type AS shot_type,
+       scenes.keyframe_path AS keyframe_path,
+       0 AS rank
+     FROM scenes
+     JOIN files ON files.id = scenes.file_id
+     LEFT JOIN visual_annotations ON visual_annotations.scene_id = scenes.id
+     WHERE scenes.id = ?`,
+  );
+
   // ---------- transactional helpers ----------
 
+  const stmtGetSceneIdsForFile = db.prepare<[number], { id: number }>(
+    "SELECT id FROM scenes WHERE file_id = ?",
+  );
+  const stmtGetSegmentIdsForFile = db.prepare<[number], { id: number }>(
+    "SELECT id FROM transcript_segments WHERE file_id = ?",
+  );
+
   const replaceScenesTx = db.transaction((fileId: number, scenes: SceneInput[]): Scene[] => {
+    const staleSceneIds = stmtGetSceneIdsForFile.all(fileId);
+    for (const { id } of staleSceneIds) {
+      stmtDeleteEmbedding.run("scene", id);
+    }
     stmtDeleteScenes.run(fileId);
     const inserted: Scene[] = [];
     for (const s of scenes) {
@@ -607,6 +898,10 @@ export function openDatabase(dbPath: string): DailiesDB {
   });
 
   const replaceTranscriptTx = db.transaction((fileId: number, segments: SegmentInput[]): void => {
+    const staleSegmentIds = stmtGetSegmentIdsForFile.all(fileId);
+    for (const { id } of staleSegmentIds) {
+      stmtDeleteEmbedding.run("segment", id);
+    }
     stmtDeleteSegments.run(fileId);
     stmtDeleteTranscriptFts.run(fileId);
     for (const seg of segments) {
@@ -658,11 +953,53 @@ export function openDatabase(dbPath: string): DailiesDB {
     return withFilename ? mapJob(withFilename) : null;
   });
 
+  const upsertDocumentTx = db.transaction((input: DocumentInput): DocumentRecord => {
+    const existing = stmtGetDocumentByPath.get(input.path);
+    let doc: DocumentRow;
+    if (existing) {
+      const staleChunkIds = stmtGetDocChunkIds.all(existing.id);
+      for (const { id } of staleChunkIds) {
+        stmtDeleteEmbedding.run("doc", id);
+      }
+      stmtDeleteDocFts.run(existing.id);
+      stmtDeleteDocChunks.run(existing.id);
+      const updated = stmtUpdateDocument.get(
+        input.filename,
+        input.kind,
+        input.content,
+        existing.id,
+      );
+      doc = updated ?? existing;
+    } else {
+      const inserted = stmtInsertDocument.get(
+        input.path,
+        input.filename,
+        input.kind,
+        input.content,
+        new Date().toISOString(),
+      );
+      if (!inserted) throw new Error("upsertDocument: insert failed");
+      doc = inserted;
+    }
+    input.chunks.forEach((text, seq) => {
+      const chunk = stmtInsertDocChunk.get(doc.id, seq, text);
+      if (!chunk) return;
+      stmtInsertDocFts.run(text, doc.id, chunk.id);
+    });
+    const { count } = stmtCountDocChunks.get(doc.id) ?? { count: 0 };
+    return mapDocument(doc, count);
+  });
+
   // ---------- DailiesDB implementation ----------
 
   return {
     // files
     upsertFile(input: FileInput): MediaFile {
+      const role = input.role ?? "raw";
+      const mediaKind = input.mediaKind ?? "standard";
+      const clipName = input.clipName ?? null;
+      const memberPaths = input.memberPaths ? JSON.stringify(input.memberPaths) : null;
+      const clipKey = input.clipKey ?? null;
       const existing = stmtGetFileByPath.get(input.path);
       if (existing) {
         const updated = stmtUpdateFile.get(
@@ -674,6 +1011,11 @@ export function openDatabase(dbPath: string): DailiesDB {
           input.codec,
           input.audioChannels,
           input.fileHash,
+          role,
+          clipName,
+          mediaKind,
+          memberPaths,
+          clipKey,
           existing.id,
         );
         return mapFile(updated ?? existing);
@@ -689,6 +1031,11 @@ export function openDatabase(dbPath: string): DailiesDB {
         input.audioChannels,
         input.fileHash,
         new Date().toISOString(),
+        role,
+        clipName,
+        mediaKind,
+        memberPaths,
+        clipKey,
       );
       if (!row) throw new Error("upsertFile: insert failed");
       return mapFile(row);
@@ -701,6 +1048,11 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     getFileByPath(path: string): MediaFile | null {
       const row = stmtGetFileByPath.get(path);
+      return row ? mapFile(row) : null;
+    },
+
+    getFileByClipKey(clipKey: string): MediaFile | null {
+      const row = stmtGetFileByClipKey.get(clipKey);
       return row ? mapFile(row) : null;
     },
 
@@ -775,6 +1127,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       return rows.map((row, i) => ({
         fileId: row.file_id,
         filename: row.filename,
+        role: row.role as MediaRole,
         segmentId: row.segment_id,
         startS: row.start_s,
         endS: row.end_s,
@@ -798,6 +1151,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       return rows.map((row, i) => ({
         fileId: row.file_id,
         filename: row.filename,
+        role: row.role as MediaRole,
         sceneId: row.scene_id,
         startS: row.scene_start_s,
         endS: row.scene_end_s,
@@ -808,6 +1162,142 @@ export function openDatabase(dbPath: string): DailiesDB {
         shotType: row.shot_type,
         keyframePath: row.keyframe_path,
         score: scores[i] ?? 0,
+      }));
+    },
+
+    getTranscriptHit(segmentId: number): TranscriptHit | null {
+      const row = stmtGetTranscriptHit.get(segmentId);
+      if (!row) return null;
+      return {
+        fileId: row.file_id,
+        filename: row.filename,
+        role: row.role as MediaRole,
+        segmentId: row.segment_id,
+        startS: row.start_s,
+        endS: row.end_s,
+        startTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.start_s),
+        endTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.end_s),
+        text: row.text,
+        score: 0,
+      };
+    },
+
+    getVisualHitByScene(sceneId: number): VisualHit | null {
+      const row = stmtGetVisualHitByScene.get(sceneId);
+      if (!row) return null;
+      return {
+        fileId: row.file_id,
+        filename: row.filename,
+        role: row.role as MediaRole,
+        sceneId: row.scene_id,
+        startS: row.scene_start_s,
+        endS: row.scene_end_s,
+        startTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.scene_start_s),
+        endTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.scene_end_s),
+        description: row.description ?? "",
+        objects: row.objects ? (JSON.parse(row.objects) as string[]) : [],
+        shotType: row.shot_type,
+        keyframePath: row.keyframe_path,
+        score: 0,
+      };
+    },
+
+    // documents
+    upsertDocument(input: DocumentInput): DocumentRecord {
+      return upsertDocumentTx(input);
+    },
+
+    getDocumentByPath(path: string): DocumentRecord | null {
+      const row = stmtGetDocumentByPath.get(path);
+      if (!row) return null;
+      const { count } = stmtCountDocChunks.get(row.id) ?? { count: 0 };
+      return mapDocument(row, count);
+    },
+
+    listDocuments(): DocumentRecord[] {
+      return stmtListDocuments.all().map((row) => {
+        const { count } = stmtCountDocChunks.get(row.id) ?? { count: 0 };
+        return mapDocument(row, count);
+      });
+    },
+
+    searchDocuments(terms: string[], limit = 20): DocumentHit[] {
+      const query = buildFtsQuery(terms);
+      if (!query) return [];
+      const rows = stmtSearchDocuments.all(query, limit);
+      const scores = normalizeScores(rows);
+      return rows.map((row, i) => ({
+        docId: row.doc_id,
+        chunkId: row.chunk_id,
+        filename: row.filename,
+        text: row.text,
+        score: scores[i] ?? 0,
+      }));
+    },
+
+    getDocChunk(chunkId: number): DocumentHit | null {
+      const row = stmtGetDocChunkById.get(chunkId);
+      if (!row) return null;
+      const doc = stmtGetDocumentById.get(row.doc_id);
+      return {
+        docId: row.doc_id,
+        chunkId: row.id,
+        filename: doc?.filename ?? "",
+        text: row.text,
+        score: 0,
+      };
+    },
+
+    // embeddings
+    upsertEmbedding(kind: EmbeddingKind, refId: number, vector: Float32Array): void {
+      const buffer = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+      stmtUpsertEmbedding.run(kind, refId, buffer);
+    },
+
+    listUnembeddedSegments(fileId: number): Array<{ refId: number; text: string }> {
+      return stmtListUnembeddedSegments
+        .all(fileId)
+        .map((row) => ({ refId: row.ref_id, text: row.text }));
+    },
+
+    listUnembeddedAnnotations(fileId: number): Array<{ refId: number; text: string }> {
+      return stmtListUnembeddedAnnotations.all(fileId).map((row) => {
+        const objects = JSON.parse(row.objects) as string[];
+        return { refId: row.ref_id, text: `${row.description} ${objects.join(" ")}` };
+      });
+    },
+
+    listUnembeddedDocChunks(limit = 500): Array<{ refId: number; text: string }> {
+      return stmtListUnembeddedDocChunks
+        .all(limit)
+        .map((row) => ({ refId: row.ref_id, text: row.text }));
+    },
+
+    semanticSearch(
+      kind: EmbeddingKind,
+      query: Float32Array,
+      limit = 40,
+    ): Array<{ refId: number; score: number }> {
+      const rows = stmtListEmbeddingsByKind.all(kind);
+      const scored = rows.map((row) => {
+        const vector = new Float32Array(
+          row.vector.buffer,
+          row.vector.byteOffset,
+          row.vector.byteLength / Float32Array.BYTES_PER_ELEMENT,
+        );
+        return { refId: row.ref_id, similarity: cosineSimilarity(query, vector) };
+      });
+      scored.sort((a, b) => b.similarity - a.similarity);
+      const top = scored.slice(0, limit);
+      if (top.length === 0) return [];
+      const max = top[0]?.similarity ?? 0;
+      const min = top[top.length - 1]?.similarity ?? 0;
+      if (max === min) {
+        return top.map((r) => ({ refId: r.refId, score: 1 }));
+      }
+      return top.map((r) => ({
+        refId: r.refId,
+        score: (r.similarity - min) / (max - min),
       }));
     },
 

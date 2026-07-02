@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { AppSettings, Job, QualityMode } from "../../shared/types";
+import type { AppSettings, Job, MediaRole, QualityMode } from "../../shared/types";
 
 const STATUS_COLOR: Record<Job["status"], string> = {
   queued: "var(--ink-faint)",
@@ -28,8 +28,8 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
     setJobs(await api.listJobs());
   }
 
-  async function handleAddFolder() {
-    const path = await api.addWatchedFolder();
+  async function handleAddFolder(role: MediaRole) {
+    const path = await api.addWatchedFolder(role);
     if (path) {
       setSettings(await api.getSettings());
       onSettingsChanged?.();
@@ -117,9 +117,12 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
 
             <div className="folder-list">
               {settings?.watchedFolders.map((folder) => (
-                <div key={folder} className="folder-row">
-                  <span className="mono folder-path">{folder}</span>
-                  <button className="ghost-btn label" onClick={() => handleRemoveFolder(folder)}>
+                <div key={folder.path} className="folder-row">
+                  <span className="folder-path-row">
+                    <span className="folder-role-tag label">{folder.role === "raw" ? "RAW" : "FINAL"}</span>
+                    <span className="mono folder-path">{folder.path}</span>
+                  </span>
+                  <button className="ghost-btn label" onClick={() => handleRemoveFolder(folder.path)}>
                     Remove
                   </button>
                 </div>
@@ -128,9 +131,14 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
                 <p className="jobs-empty mono">No folders watched.</p>
               )}
             </div>
-            <button className="ghost-btn label" onClick={handleAddFolder} style={{ marginTop: 14 }}>
-              + Add folder
-            </button>
+            <div className="folder-add-btns" style={{ marginTop: 14 }}>
+              <button className="ghost-btn label" onClick={() => handleAddFolder("raw")}>
+                + Add raw folder
+              </button>
+              <button className="ghost-btn label" onClick={() => handleAddFolder("final")}>
+                + Add finals folder
+              </button>
+            </div>
           </section>
 
           <section className="jobs-section">
@@ -274,9 +282,22 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
           padding: 11px 0;
           border-bottom: 1px solid var(--hairline);
         }
+        .folder-path-row {
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
+        }
+        .folder-role-tag {
+          color: var(--ink-dimmer);
+          font-size: 9.5px;
+        }
         .folder-path {
           font-size: 12px;
           color: var(--ink-dim);
+        }
+        .folder-add-btns {
+          display: flex;
+          gap: 10px;
         }
         .quality-toggle {
           display: inline-flex;

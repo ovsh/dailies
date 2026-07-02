@@ -12,9 +12,12 @@ import type {
   FileDetail,
   Job,
   MediaFile,
+  MediaKind,
+  MediaRole,
   Scene,
   TranscriptSegment,
   VisualAnnotation,
+  WatchedFolder,
 } from "../../shared/types";
 
 // ---------- keyframe placeholder generator ----------
@@ -61,6 +64,9 @@ interface MockFileSeed {
   status: MediaFile["status"];
   hasTranscript: boolean;
   hasVisualIndex: boolean;
+  role?: MediaRole;
+  clipName?: string | null;
+  mediaKind?: MediaKind;
 }
 
 const FILE_SEEDS: MockFileSeed[] = [
@@ -76,6 +82,8 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: false,
     hasVisualIndex: true,
+    clipName: "A001C012_230715_BEAR RIVER WS",
+    mediaKind: "opatom",
   },
   {
     id: 2,
@@ -118,7 +126,7 @@ const FILE_SEEDS: MockFileSeed[] = [
   },
   {
     id: 5,
-    filename: "B001_C001_0717_aerial_river_bend.mov",
+    filename: "EP101_v12_FINAL.mov",
     durationS: 214,
     fps: 29.97,
     dropFrame: true,
@@ -128,10 +136,12 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: false,
     hasVisualIndex: true,
+    role: "final",
+    clipName: null,
   },
   {
     id: 6,
-    filename: "B001_C004_0717_aerial_treeline.mov",
+    filename: "EP102_v08_FINAL.mov",
     durationS: 187,
     fps: 29.97,
     dropFrame: true,
@@ -141,6 +151,8 @@ const FILE_SEEDS: MockFileSeed[] = [
     status: "ready",
     hasTranscript: false,
     hasVisualIndex: true,
+    role: "final",
+    clipName: null,
   },
   {
     id: 7,
@@ -212,6 +224,11 @@ export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => ({
   hasTranscript: s.hasTranscript,
   hasVisualIndex: s.hasVisualIndex,
   proxyPath: s.status === "ready" ? `/Volumes/DAILIES_01/proxies/${s.filename.replace(".mov", "_proxy.mp4")}` : null,
+  role: s.role ?? "raw",
+  clipName: s.clipName ?? null,
+  mediaKind: s.mediaKind ?? "standard",
+  memberPaths: null,
+  clipKey: null,
 }));
 
 // ---------- scenes ----------
@@ -374,7 +391,7 @@ export const MOCK_JOBS: Job[] = [
   { id: 3, fileId: 8, filename: "A003_C027_0718_camp_broll_evening.mov", stage: "visual_index", status: "queued", attempts: 0, error: null, updatedAt: new Date(Date.UTC(2026, 6, 20, 15, 2)).toISOString() },
   { id: 4, fileId: 9, filename: "A004_C002_0719_guide_interview_night.mov", stage: "visual_index", status: "error", attempts: 3, error: "Gemini API request timed out after 3 attempts.", updatedAt: new Date(Date.UTC(2026, 6, 20, 11, 41)).toISOString() },
   { id: 5, fileId: 10, filename: "A004_C018_0719_bear_river_salmon_run.mov", stage: "transcribe", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 19, 18, 12)).toISOString() },
-  { id: 6, fileId: 6, filename: "B001_C004_0717_aerial_treeline.mov", stage: "scenes", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 19, 9, 30)).toISOString() },
+  { id: 6, fileId: 6, filename: "EP102_v08_FINAL.mov", stage: "scenes", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 19, 9, 30)).toISOString() },
   { id: 7, fileId: 1, filename: "A001_C012_0715_bear_river.mov", stage: "visual_index", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 18, 20, 5)).toISOString() },
 ];
 
@@ -382,7 +399,11 @@ export const MOCK_JOBS: Job[] = [
 
 export const MOCK_SETTINGS: AppSettings = {
   geminiKeySet: true,
-  watchedFolders: ["/Volumes/DAILIES_01/footage", "/Volumes/DAILIES_01/b-roll"],
+  watchedFolders: [
+    { path: "/Volumes/DAILIES_01/footage", role: "raw" },
+    { path: "/Volumes/DAILIES_01/b-roll", role: "raw" },
+    { path: "/Volumes/DAILIES_01/exports", role: "final" },
+  ] satisfies WatchedFolder[],
   qualityMode: "high",
   whisperModel: "large-v3",
   whisperAvailable: true,
@@ -423,6 +444,7 @@ function hit(
   return {
     fileId,
     filename: file.filename,
+    role: file.role,
     kind,
     inTc: addTc(file.startTc, inS, file.fps, file.dropFrame),
     outTc: addTc(file.startTc, outS, file.fps, file.dropFrame),
@@ -453,6 +475,9 @@ export function buildMockAnswer(question: string): AgentAnswer {
     }),
     hit(9, "spoken", 60, 71, "low", {
       quote: "The bears are less cautious after dark. Fewer people on the river, less competition for the good spots.",
+    }),
+    hit(5, "visual", 0, 8, "low", {
+      description: "Aerial wide of the river bend cutting through boreal forest, as cut in the current episode assembly.",
     }),
   ];
 

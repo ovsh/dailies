@@ -18,8 +18,15 @@ CREATE TABLE IF NOT EXISTS files (
   added_at TEXT NOT NULL,
   has_transcript INTEGER NOT NULL DEFAULT 0,
   has_visual_index INTEGER NOT NULL DEFAULT 0,
-  proxy_path TEXT
+  proxy_path TEXT,
+  role TEXT NOT NULL DEFAULT 'raw',
+  clip_name TEXT,
+  media_kind TEXT NOT NULL DEFAULT 'standard',
+  member_paths TEXT,
+  clip_key TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_files_clip_key ON files(clip_key);
 
 CREATE TABLE IF NOT EXISTS scenes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,5 +124,36 @@ CREATE VIRTUAL TABLE IF NOT EXISTS visual_fts USING fts5(
   content,
   file_id UNINDEXED,
   scene_id UNINDEXED
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  path TEXT NOT NULL UNIQUE,
+  filename TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content TEXT NOT NULL,
+  added_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS doc_chunks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  text TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_doc_id ON doc_chunks(doc_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(
+  text,
+  doc_id UNINDEXED,
+  chunk_id UNINDEXED
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+  kind TEXT NOT NULL,
+  ref_id INTEGER NOT NULL,
+  vector BLOB NOT NULL,
+  PRIMARY KEY (kind, ref_id)
 );
 `;

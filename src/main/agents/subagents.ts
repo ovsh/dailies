@@ -9,6 +9,7 @@ import { Type } from "@google/genai";
 import type {
   GeminiIndexer,
   SceneAnnotationRequest,
+  TextEmbedder,
   TranscriptHit,
   VisualHit,
 } from "../../shared/types";
@@ -93,6 +94,7 @@ export interface TranscriptScoutOptions {
   model: string;
   db: DailiesDB;
   query: string;
+  embedder: TextEmbedder | null;
 }
 
 const TRANSCRIPT_SCOUT_SYSTEM = `You are a footage researcher on a documentary editing team. Your job is to find where things are SAID in the raw footage transcripts — not where they are shown, only where they are spoken about.
@@ -135,7 +137,7 @@ const TRANSCRIPT_SCOUT_DECLARATIONS: FunctionDeclaration[] = [
 export async function runTranscriptScout(
   opts: TranscriptScoutOptions,
 ): Promise<{ hits: TranscriptHit[]; notes: string }> {
-  const { ai, model, db, query } = opts;
+  const { ai, model, db, query, embedder } = opts;
   const cache = new Map<number, TranscriptHit>();
 
   const executeTool = async (name: string, args: unknown): Promise<string> => {
@@ -145,7 +147,7 @@ export async function runTranscriptScout(
       const extra = Array.isArray(rec.extra_terms)
         ? rec.extra_terms.filter((x): x is string => typeof x === "string")
         : [];
-      const hits = searchTranscriptsTool(db, q, extra);
+      const hits = await searchTranscriptsTool(db, q, extra, embedder);
       for (const hit of hits) cache.set(hit.segmentId, hit);
       return JSON.stringify(hits);
     }
@@ -190,6 +192,7 @@ export interface VisualScoutOptions {
   db: DailiesDB;
   query: string;
   gemini: GeminiIndexer | null;
+  embedder: TextEmbedder | null;
 }
 
 const VISUAL_SCOUT_SYSTEM = `You are a footage researcher on a documentary editing team. Your job is to find footage that VISUALLY SHOWS a subject — not people talking about it, the actual imagery.
@@ -237,7 +240,7 @@ function buildVisualScoutDeclarations(geminiEnabled: boolean): FunctionDeclarati
 }
 
 export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: VisualHit[]; notes: string }> {
-  const { ai, model, db, query, gemini } = opts;
+  const { ai, model, db, query, gemini, embedder } = opts;
   const cache = new Map<number, VisualHit>();
 
   const executeTool = async (name: string, args: unknown): Promise<string> => {
@@ -254,7 +257,7 @@ export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: 
               ...(typeof rec.time_of_day === "string" ? { timeOfDay: rec.time_of_day } : {}),
             }
           : undefined;
-      const hits = searchVisualsTool(db, q, extra, filters);
+      const hits = await searchVisualsTool(db, q, extra, embedder, filters);
       for (const hit of hits) cache.set(hit.sceneId, hit);
       return JSON.stringify(hits);
     }

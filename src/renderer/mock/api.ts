@@ -2,7 +2,7 @@
  * Full in-browser mock of DailiesAPI so `vite dev` runs with no Electron.
  */
 import type { DailiesAPI } from "../../shared/ipc";
-import type { ChatEvent, ExportItem, ExportKind, ExportResult, FileDetail, WordTiming } from "../../shared/types";
+import type { ChatEvent, ExportItem, ExportKind, ExportResult, FileDetail, MediaRole, WordTiming } from "../../shared/types";
 import {
   AGENT_STAGES,
   buildMockAnswer,
@@ -44,16 +44,17 @@ export function createMockApi(): DailiesAPI {
       return MOCK_JOBS;
     },
 
-    async addWatchedFolder() {
-      const path = "/Volumes/DAILIES_02/footage_incoming";
-      if (!settings.watchedFolders.includes(path)) {
-        settings = { ...settings, watchedFolders: [...settings.watchedFolders, path] };
+    async addWatchedFolder(role: MediaRole) {
+      const path =
+        role === "raw" ? "/Volumes/DAILIES_02/footage_incoming" : "/Volumes/DAILIES_02/finals_incoming";
+      if (!settings.watchedFolders.some((f) => f.path === path)) {
+        settings = { ...settings, watchedFolders: [...settings.watchedFolders, { path, role }] };
       }
       return path;
     },
 
     async removeWatchedFolder(path: string) {
-      settings = { ...settings, watchedFolders: settings.watchedFolders.filter((p) => p !== path) };
+      settings = { ...settings, watchedFolders: settings.watchedFolders.filter((f) => f.path !== path) };
     },
 
     async getSettings() {

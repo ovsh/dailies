@@ -3,13 +3,8 @@
  * scouts, the frame verifier, and the clip reader as tools, then emits one
  * final structured answer for the editor.
  */
-import Anthropic from "@anthropic-ai/sdk";
-import type {
-  MessageParam,
-  Tool,
-  ToolResultBlockParam,
-  ToolUseBlock,
-} from "@anthropic-ai/sdk/resources/messages";
+import type { Content, FunctionDeclaration, Part } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 
 import type {
   AgentAnswer,
@@ -21,20 +16,19 @@ import type {
   QualityMode,
   VisualHit,
 } from "../../shared/types";
+import { GEMINI_MODELS } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
 import { getFileInfoTool } from "./tools";
 import { runClipReader, runFrameVerifier, runTranscriptScout, runVisualScout } from "./subagents";
 
-const SUPERVISOR_MODEL = "claude-opus-4-8";
-const MAX_TOKENS = 8192;
 const MAX_ITERS = 16;
 
 export interface ChatTurnOptions {
   db: DailiesDB;
   history: ChatMessageRecord[]; // oldest first
   userText: string;
-  anthropicKey: string;
-  qualityMode: QualityMode; // "high" => subagents also run on opus
+  geminiKey: string;
+  qualityMode: QualityMode; // "high" => supervisor tries the pro model first
   gemini: GeminiIndexer | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
 }
@@ -53,32 +47,32 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 // ---------- supervisor tool schemas ----------
 
-const SUPERVISOR_TOOLS: Tool[] = [
+const SUPERVISOR_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "transcript_scout",
     description: "Search the transcripts for spoken references to a topic. Returns hits and researcher notes.",
-    input_schema: {
-      type: "object",
-      properties: { query: { type: "string" } },
+    parameters: {
+      type: Type.OBJECT,
+      properties: { query: { type: Type.STRING } },
       required: ["query"],
     },
   },
   {
     name: "visual_scout",
     description: "Search the visual index for scenes that visually show a subject. Returns hits and researcher notes.",
-    input_schema: {
-      type: "object",
-      properties: { query: { type: "string" } },
+    parameters: {
+      type: Type.OBJECT,
+      properties: { query: { type: Type.STRING } },
       required: ["query"],
     },
   },
   {
     name: "frame_verifier",
     description: "Verify a list of candidate visual scene IDs (from visual_scout) by inspecting their keyframes.",
-    input_schema: {
-      type: "object",
+    parameters: {
+      type: Type.OBJECT,
       properties: {
-        scene_ids: { type: "array", items: { type: "number" } },
+        scene_ids: { type: Type.ARRAY, items: { type: Type.NUMBER } },
       },
       required: ["scene_ids"],
     },
@@ -86,11 +80,11 @@ const SUPERVISOR_TOOLS: Tool[] = [
   {
     name: "clip_reader",
     description: "Read the full transcript of one file and answer a question about it.",
-    input_schema: {
-      type: "object",
+    parameters: {
+      type: Type.OBJECT,
       properties: {
-        file_id: { type: "number" },
-        question: { type: "string" },
+        file_id: { type: Type.NUMBER },
+        question: { type: Type.STRING },
       },
       required: ["file_id", "question"],
     },
@@ -98,35 +92,35 @@ const SUPERVISOR_TOOLS: Tool[] = [
   {
     name: "get_file_info",
     description: "Get compact metadata for a file (duration, fps, status, etc).",
-    input_schema: {
-      type: "object",
-      properties: { file_id: { type: "number" } },
+    parameters: {
+      type: Type.OBJECT,
+      properties: { file_id: { type: Type.NUMBER } },
       required: ["file_id"],
     },
   },
   {
     name: "final_answer",
     description: "Deliver the final answer to the editor. Call this exactly once, when you are done researching.",
-    input_schema: {
-      type: "object",
+    parameters: {
+      type: Type.OBJECT,
       properties: {
-        prose: { type: "string" },
+        prose: { type: Type.STRING },
         hits: {
-          type: "array",
+          type: Type.ARRAY,
           items: {
-            type: "object",
+            type: Type.OBJECT,
             properties: {
-              fileId: { type: "number" },
-              filename: { type: "string" },
-              kind: { type: "string", enum: ["visual", "spoken"] },
-              inTc: { type: "string" },
-              outTc: { type: "string" },
-              inS: { type: "number" },
-              outS: { type: "number" },
-              quote: { type: "string" },
-              description: { type: "string" },
-              confidence: { type: "string", enum: ["high", "medium", "low"] },
-              keyframePath: { type: ["string", "null"] },
+              fileId: { type: Type.NUMBER },
+              filename: { type: Type.STRING },
+              kind: { type: Type.STRING, enum: ["visual", "spoken"] },
+              inTc: { type: Type.STRING },
+              outTc: { type: Type.STRING },
+              inS: { type: Type.NUMBER },
+              outS: { type: Type.NUMBER },
+              quote: { type: Type.STRING },
+              description: { type: Type.STRING },
+              confidence: { type: Type.STRING, enum: ["high", "medium", "low"] },
+              keyframePath: { type: Type.STRING, nullable: true },
             },
             required: ["fileId", "filename", "kind", "inTc", "outTc", "inS", "outS", "confidence"],
           },
@@ -173,43 +167,67 @@ function coerceHit(raw: unknown): AnswerHit | null {
   return hit;
 }
 
-function coerceFinalAnswer(input: unknown): AgentAnswer {
-  const rec = isRecord(input) ? input : {};
+function coerceFinalAnswer(args: unknown): AgentAnswer {
+  const rec = isRecord(args) ? args : {};
   const prose = typeof rec.prose === "string" ? rec.prose : "";
   const hitsRaw = Array.isArray(rec.hits) ? rec.hits : [];
   const hits = hitsRaw.map(coerceHit).filter((h): h is AnswerHit => h !== null);
   return { prose, hits };
 }
 
+// ---------- error helper ----------
+
+function describeError(err: unknown): string {
+  if (isRecord(err)) {
+    const status = typeof err.status === "number" || typeof err.status === "string" ? err.status : undefined;
+    const message = typeof err.message === "string" ? err.message : undefined;
+    if (status !== undefined || message !== undefined) {
+      return `${status ?? "unknown"}: ${message ?? String(err)}`;
+    }
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isModelUnavailableError(err: unknown): boolean {
+  const rec = isRecord(err) ? err : {};
+  const status = rec.status;
+  const message = typeof rec.message === "string" ? rec.message : err instanceof Error ? err.message : String(err);
+  const statusUnavailable = status === 404 || status === 403 || status === "404" || status === "403";
+  const messageUnavailable = /not found/i.test(message);
+  return statusUnavailable || messageUnavailable;
+}
+
 // ---------- main entry ----------
 
 export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
-  const { db, history, userText, anthropicKey, qualityMode, gemini, emit } = opts;
-  const client = new Anthropic({ apiKey: anthropicKey });
-  const subagentModel = qualityMode === "high" ? "claude-opus-4-8" : "claude-sonnet-5";
+  const { db, history, userText, geminiKey, qualityMode, gemini, emit } = opts;
+  const ai = new GoogleGenAI({ apiKey: geminiKey });
+  const subagentModel = GEMINI_MODELS.subagent;
 
-  const messages: MessageParam[] = [
-    ...history.map((m): MessageParam => ({ role: m.role, content: m.content })),
-    { role: "user", content: userText },
+  let supervisorModel: string = qualityMode === "high" ? GEMINI_MODELS.supervisorHigh : GEMINI_MODELS.supervisor;
+
+  const contents: Content[] = [
+    ...history.map((m): Content => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+    { role: "user", parts: [{ text: userText }] },
   ];
 
   // turn-local cache of visual hits so frame_verifier can resolve scene ids
   const visualHitCache = new Map<number, VisualHit>();
 
-  const executeTool = async (name: string, input: unknown): Promise<string> => {
-    const rec = isRecord(input) ? input : {};
+  const executeTool = async (name: string, args: unknown): Promise<string> => {
+    const rec = isRecord(args) ? args : {};
 
     if (name === "transcript_scout") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "transcript scout", status: `transcript scout — searching spoken references for "${query}"` });
-      const result = await runTranscriptScout({ client, model: subagentModel, db, query });
+      const result = await runTranscriptScout({ ai, model: subagentModel, db, query });
       return JSON.stringify(result);
     }
 
     if (name === "visual_scout") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "visual scout", status: `visual scout — searching visual matches for "${query}"` });
-      const result = await runVisualScout({ client, model: subagentModel, db, query, gemini });
+      const result = await runVisualScout({ ai, model: subagentModel, db, query, gemini });
       for (const hit of result.hits) visualHitCache.set(hit.sceneId, hit);
       return JSON.stringify(result);
     }
@@ -222,7 +240,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       const candidates = sceneIds
         .map((id) => visualHitCache.get(id))
         .filter((h): h is VisualHit => h !== undefined);
-      const verdicts = await runFrameVerifier({ client, model: subagentModel, db, candidates });
+      const verdicts = await runFrameVerifier({ ai, model: subagentModel, db, candidates });
       return JSON.stringify(verdicts);
     }
 
@@ -230,7 +248,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       const fileId = typeof rec.file_id === "number" ? rec.file_id : 0;
       const question = typeof rec.question === "string" ? rec.question : "";
       emit({ type: "activity", agent: "clip reader", status: `clip reader — reading file ${fileId}` });
-      return runClipReader({ client, model: subagentModel, db, fileId, question });
+      return runClipReader({ ai, model: subagentModel, db, fileId, question });
     }
 
     if (name === "get_file_info") {
@@ -242,68 +260,65 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     return `error: unknown tool ${name}`;
   };
 
-  try {
-    let response = await client.messages.create({
-      model: SUPERVISOR_MODEL,
-      max_tokens: MAX_TOKENS,
-      thinking: { type: "adaptive" },
-      system: [{ type: "text", text: SUPERVISOR_SYSTEM, cache_control: { type: "ephemeral" } }],
-      tools: SUPERVISOR_TOOLS,
-      messages,
+  const generate = () =>
+    ai.models.generateContent({
+      model: supervisorModel,
+      contents,
+      config: { systemInstruction: SUPERVISOR_SYSTEM, tools: [{ functionDeclarations: SUPERVISOR_DECLARATIONS }] },
     });
+
+  try {
+    let response;
+    try {
+      response = await generate();
+    } catch (err) {
+      if (qualityMode === "high" && supervisorModel === GEMINI_MODELS.supervisorHigh && isModelUnavailableError(err)) {
+        supervisorModel = GEMINI_MODELS.supervisor;
+        emit({
+          type: "activity",
+          agent: "supervisor",
+          status: "gemini-3.5-pro unavailable on this key — using flash",
+        });
+        response = await generate();
+      } else {
+        throw err;
+      }
+    }
 
     let iters = 0;
     while (iters < MAX_ITERS) {
-      const finalUse = response.content.find(
-        (b): b is ToolUseBlock => b.type === "tool_use" && b.name === "final_answer",
-      );
-      if (finalUse) {
-        return coerceFinalAnswer(finalUse.input);
+      const calls = response.functionCalls ?? [];
+      const finalCall = calls.find((c) => c.name === "final_answer");
+      if (finalCall) {
+        return coerceFinalAnswer(finalCall.args);
       }
 
-      if (response.stop_reason !== "tool_use") {
-        const lastText = response.content
-          .filter((b): b is Anthropic.TextBlock => b.type === "text")
-          .map((b) => b.text)
-          .join("\n");
-        return { prose: lastText, hits: [] };
+      if (calls.length === 0) {
+        return { prose: response.text ?? "", hits: [] };
       }
 
       iters += 1;
-      messages.push({ role: "assistant", content: response.content });
+      const modelContent = response.candidates?.[0]?.content;
+      contents.push(modelContent ?? { role: "model", parts: [] });
 
-      const toolUseBlocks = response.content.filter((b): b is ToolUseBlock => b.type === "tool_use");
-      const resultBlocks: ToolResultBlockParam[] = [];
-      for (const block of toolUseBlocks) {
+      const responseParts: Part[] = [];
+      for (const call of calls) {
+        const name = call.name ?? "";
         let content: string;
         try {
-          content = await executeTool(block.name, block.input);
+          content = await executeTool(name, call.args);
         } catch (err) {
           content = `error: ${err instanceof Error ? err.message : String(err)}`;
         }
-        resultBlocks.push({ type: "tool_result", tool_use_id: block.id, content });
+        responseParts.push({ functionResponse: { name, response: { result: content } } });
       }
-      messages.push({ role: "user", content: resultBlocks });
+      contents.push({ role: "user", parts: responseParts });
 
-      response = await client.messages.create({
-        model: SUPERVISOR_MODEL,
-        max_tokens: MAX_TOKENS,
-        thinking: { type: "adaptive" },
-        system: [{ type: "text", text: SUPERVISOR_SYSTEM, cache_control: { type: "ephemeral" } }],
-        tools: SUPERVISOR_TOOLS,
-        messages,
-      });
+      response = await generate();
     }
 
-    const lastText = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("\n");
-    return { prose: lastText, hits: [] };
+    return { prose: response.text ?? "", hits: [] };
   } catch (err) {
-    if (err instanceof Anthropic.APIError) {
-      throw new Error(`${err.status ?? "unknown"}: ${err.message}`);
-    }
-    throw err;
+    throw new Error(describeError(err));
   }
 }

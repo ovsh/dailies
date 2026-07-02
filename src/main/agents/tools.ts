@@ -4,7 +4,7 @@
  */
 import { readFile } from "node:fs/promises";
 
-import type { ImageBlockParam } from "@anthropic-ai/sdk/resources/messages";
+import type { Part } from "@google/genai";
 
 import type { TranscriptHit, VisualHit, VisualSearchFilters } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
@@ -96,19 +96,16 @@ export function getFileInfoTool(db: DailiesDB, fileId: number): object {
 
 const MAX_KEYFRAME_BLOCKS = 6;
 
-export async function readKeyframesAsImageBlocks(paths: string[]): Promise<ImageBlockParam[]> {
-  const blocks: ImageBlockParam[] = [];
+export async function readKeyframesAsParts(paths: string[]): Promise<Part[]> {
+  const parts: Part[] = [];
   for (const path of paths) {
-    if (blocks.length >= MAX_KEYFRAME_BLOCKS) break;
+    if (parts.length >= MAX_KEYFRAME_BLOCKS) break;
     try {
       const buf = await readFile(path);
-      blocks.push({
-        type: "image",
-        source: { type: "base64", media_type: "image/jpeg", data: buf.toString("base64") },
-      });
+      parts.push({ inlineData: { mimeType: "image/jpeg", data: buf.toString("base64") } });
     } catch {
       // skip missing/unreadable keyframe
     }
   }
-  return blocks;
+  return parts;
 }

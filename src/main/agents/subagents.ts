@@ -1,16 +1,10 @@
 /**
  * Subagents invoked by the supervisor: transcript scout, visual scout,
- * frame verifier, and clip reader. Each wraps a focused Claude call (or a
- * manual tool-use loop) over the DailiesDB search surface.
+ * frame verifier, and clip reader. Each wraps a focused Gemini call (or a
+ * manual function-calling loop) over the DailiesDB search surface.
  */
-import Anthropic from "@anthropic-ai/sdk";
-import type {
-  ImageBlockParam,
-  MessageParam,
-  Tool,
-  ToolResultBlockParam,
-  ToolUseBlock,
-} from "@anthropic-ai/sdk/resources/messages";
+import type { Content, FunctionDeclaration, GoogleGenAI, Part } from "@google/genai";
+import { Type } from "@google/genai";
 
 import type {
   GeminiIndexer,
@@ -23,71 +17,63 @@ import {
   expandTerms,
   getFullTranscriptTool,
   getTranscriptWindowTool,
-  readKeyframesAsImageBlocks,
+  readKeyframesAsParts,
   searchTranscriptsTool,
   searchVisualsTool,
 } from "./tools";
 
-const MAX_TOKENS = 4096;
-
-// ---------- shared tool loop ----------
+// ---------- shared function-calling loop ----------
 
 interface RunToolLoopOptions {
-  client: Anthropic;
+  ai: GoogleGenAI;
   model: string;
-  system: string;
-  tools: Tool[];
+  systemInstruction: string;
+  functionDeclarations: FunctionDeclaration[];
   userText: string;
-  executeTool: (name: string, input: unknown) => Promise<string>;
+  executeTool: (name: string, args: unknown) => Promise<string>;
   maxIters: number;
 }
 
 async function runToolLoop(opts: RunToolLoopOptions): Promise<string> {
-  const { client, model, system, tools, userText, executeTool, maxIters } = opts;
-  const messages: MessageParam[] = [{ role: "user", content: userText }];
+  const { ai, model, systemInstruction, functionDeclarations, userText, executeTool, maxIters } = opts;
+  const contents: Content[] = [{ role: "user", parts: [{ text: userText }] }];
 
-  let response = await client.messages.create({
+  let res = await ai.models.generateContent({
     model,
-    max_tokens: MAX_TOKENS,
-    thinking: { type: "adaptive" },
-    system,
-    tools,
-    messages,
+    contents,
+    config: { systemInstruction, tools: [{ functionDeclarations }] },
   });
 
   let iters = 0;
-  while (response.stop_reason === "tool_use" && iters < maxIters) {
+  let calls = res.functionCalls ?? [];
+  while (calls.length > 0 && iters < maxIters) {
     iters += 1;
-    messages.push({ role: "assistant", content: response.content });
 
-    const toolUseBlocks = response.content.filter((b): b is ToolUseBlock => b.type === "tool_use");
-    const resultBlocks: ToolResultBlockParam[] = [];
-    for (const block of toolUseBlocks) {
-      let content: string;
+    const modelContent = res.candidates?.[0]?.content;
+    contents.push(modelContent ?? { role: "model", parts: [] });
+
+    const responseParts: Part[] = [];
+    for (const call of calls) {
+      const name = call.name ?? "";
+      let resultText: string;
       try {
-        content = await executeTool(block.name, block.input);
+        resultText = await executeTool(name, call.args);
       } catch (err) {
-        content = `error: ${err instanceof Error ? err.message : String(err)}`;
+        resultText = `error: ${err instanceof Error ? err.message : String(err)}`;
       }
-      resultBlocks.push({ type: "tool_result", tool_use_id: block.id, content });
+      responseParts.push({ functionResponse: { name, response: { result: resultText } } });
     }
-    messages.push({ role: "user", content: resultBlocks });
+    contents.push({ role: "user", parts: responseParts });
 
-    response = await client.messages.create({
+    res = await ai.models.generateContent({
       model,
-      max_tokens: MAX_TOKENS,
-      thinking: { type: "adaptive" },
-      system,
-      tools,
-      messages,
+      contents,
+      config: { systemInstruction, tools: [{ functionDeclarations }] },
     });
+    calls = res.functionCalls ?? [];
   }
 
-  const finalText = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
-  return finalText;
+  return res.text ?? "";
 }
 
 function stripFences(raw: string): string {
@@ -103,7 +89,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 // ---------- transcript scout ----------
 
 export interface TranscriptScoutOptions {
-  client: Anthropic;
+  ai: GoogleGenAI;
   model: string;
   db: DailiesDB;
   query: string;
@@ -115,15 +101,19 @@ Use the tools to search transcripts and pull surrounding context windows before 
 When you are done, reply with ONLY a JSON object (no prose, no markdown fences) of the exact shape:
 {"keep": [segmentId, segmentId, ...], "notes": "short summary of what you found and why"}`;
 
-const TRANSCRIPT_SCOUT_TOOLS: Tool[] = [
+const TRANSCRIPT_SCOUT_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "search_transcripts",
     description: "Full-text search over spoken transcripts. Provide the main query plus extra synonym/related terms.",
-    input_schema: {
-      type: "object",
+    parameters: {
+      type: Type.OBJECT,
       properties: {
-        query: { type: "string", description: "Primary search query" },
-        extra_terms: { type: "array", items: { type: "string" }, description: "Additional synonym/related terms" },
+        query: { type: Type.STRING, description: "Primary search query" },
+        extra_terms: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: "Additional synonym/related terms",
+        },
       },
       required: ["query", "extra_terms"],
     },
@@ -131,11 +121,11 @@ const TRANSCRIPT_SCOUT_TOOLS: Tool[] = [
   {
     name: "get_transcript_window",
     description: "Get transcript text around a given timestamp in a file, for extra context.",
-    input_schema: {
-      type: "object",
+    parameters: {
+      type: Type.OBJECT,
       properties: {
-        file_id: { type: "number" },
-        center_s: { type: "number" },
+        file_id: { type: Type.NUMBER },
+        center_s: { type: Type.NUMBER },
       },
       required: ["file_id", "center_s"],
     },
@@ -145,12 +135,12 @@ const TRANSCRIPT_SCOUT_TOOLS: Tool[] = [
 export async function runTranscriptScout(
   opts: TranscriptScoutOptions,
 ): Promise<{ hits: TranscriptHit[]; notes: string }> {
-  const { client, model, db, query } = opts;
+  const { ai, model, db, query } = opts;
   const cache = new Map<number, TranscriptHit>();
 
-  const executeTool = async (name: string, input: unknown): Promise<string> => {
+  const executeTool = async (name: string, args: unknown): Promise<string> => {
     if (name === "search_transcripts") {
-      const rec = isRecord(input) ? input : {};
+      const rec = isRecord(args) ? args : {};
       const q = typeof rec.query === "string" ? rec.query : query;
       const extra = Array.isArray(rec.extra_terms)
         ? rec.extra_terms.filter((x): x is string => typeof x === "string")
@@ -160,7 +150,7 @@ export async function runTranscriptScout(
       return JSON.stringify(hits);
     }
     if (name === "get_transcript_window") {
-      const rec = isRecord(input) ? input : {};
+      const rec = isRecord(args) ? args : {};
       const fileId = typeof rec.file_id === "number" ? rec.file_id : 0;
       const centerS = typeof rec.center_s === "number" ? rec.center_s : 0;
       return getTranscriptWindowTool(db, fileId, centerS, 30);
@@ -169,10 +159,10 @@ export async function runTranscriptScout(
   };
 
   const finalText = await runToolLoop({
-    client,
+    ai,
     model,
-    system: TRANSCRIPT_SCOUT_SYSTEM,
-    tools: TRANSCRIPT_SCOUT_TOOLS,
+    systemInstruction: TRANSCRIPT_SCOUT_SYSTEM,
+    functionDeclarations: TRANSCRIPT_SCOUT_DECLARATIONS,
     userText: `Find footage where people talk about: ${query}`,
     executeTool,
     maxIters: 8,
@@ -195,7 +185,7 @@ export async function runTranscriptScout(
 // ---------- visual scout ----------
 
 export interface VisualScoutOptions {
-  client: Anthropic;
+  ai: GoogleGenAI;
   model: string;
   db: DailiesDB;
   query: string;
@@ -208,47 +198,51 @@ If a candidate scene's description is ambiguous, use gemini_look to ask a clarif
 When you are done, reply with ONLY a JSON object (no prose, no markdown fences) of the exact shape:
 {"keep": [sceneId, sceneId, ...], "notes": "short summary of what you found and why"}`;
 
-function buildVisualScoutTools(geminiEnabled: boolean): Tool[] {
-  const tools: Tool[] = [
+function buildVisualScoutDeclarations(geminiEnabled: boolean): FunctionDeclaration[] {
+  const declarations: FunctionDeclaration[] = [
     {
       name: "search_visuals",
       description: "Search visual scene annotations. Optionally filter by shot_type or time_of_day.",
-      input_schema: {
-        type: "object",
+      parameters: {
+        type: Type.OBJECT,
         properties: {
-          query: { type: "string", description: "Primary search query" },
-          extra_terms: { type: "array", items: { type: "string" }, description: "Additional synonym/related terms" },
-          shot_type: { type: "string", description: "Optional shot type filter: WS|MS|CU|ECU|aerial|insert" },
-          time_of_day: { type: "string", description: "Optional time of day filter: dawn|day|dusk|night" },
+          query: { type: Type.STRING, description: "Primary search query" },
+          extra_terms: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: "Additional synonym/related terms",
+          },
+          shot_type: { type: Type.STRING, description: "Optional shot type filter: WS|MS|CU|ECU|aerial|insert" },
+          time_of_day: { type: Type.STRING, description: "Optional time of day filter: dawn|day|dusk|night" },
         },
         required: ["query", "extra_terms"],
       },
     },
   ];
   if (geminiEnabled) {
-    tools.push({
+    declarations.push({
       name: "gemini_look",
       description: "Ask Gemini a free-form visual question about a specific scene's keyframe(s).",
-      input_schema: {
-        type: "object",
+      parameters: {
+        type: Type.OBJECT,
         properties: {
-          scene_id: { type: "number" },
-          question: { type: "string" },
+          scene_id: { type: Type.NUMBER },
+          question: { type: Type.STRING },
         },
         required: ["scene_id", "question"],
       },
     });
   }
-  return tools;
+  return declarations;
 }
 
 export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: VisualHit[]; notes: string }> {
-  const { client, model, db, query, gemini } = opts;
+  const { ai, model, db, query, gemini } = opts;
   const cache = new Map<number, VisualHit>();
 
-  const executeTool = async (name: string, input: unknown): Promise<string> => {
+  const executeTool = async (name: string, args: unknown): Promise<string> => {
     if (name === "search_visuals") {
-      const rec = isRecord(input) ? input : {};
+      const rec = isRecord(args) ? args : {};
       const q = typeof rec.query === "string" ? rec.query : query;
       const extra = Array.isArray(rec.extra_terms)
         ? rec.extra_terms.filter((x): x is string => typeof x === "string")
@@ -266,7 +260,7 @@ export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: 
     }
     if (name === "gemini_look") {
       if (!gemini) return "error: gemini not available";
-      const rec = isRecord(input) ? input : {};
+      const rec = isRecord(args) ? args : {};
       const sceneId = typeof rec.scene_id === "number" ? rec.scene_id : 0;
       const question = typeof rec.question === "string" ? rec.question : "";
       const scene = db.getScene(sceneId);
@@ -285,10 +279,10 @@ export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: 
   };
 
   const finalText = await runToolLoop({
-    client,
+    ai,
     model,
-    system: VISUAL_SCOUT_SYSTEM,
-    tools: buildVisualScoutTools(gemini !== null),
+    systemInstruction: VISUAL_SCOUT_SYSTEM,
+    functionDeclarations: buildVisualScoutDeclarations(gemini !== null),
     userText: `Find footage that visually shows: ${query}`,
     executeTool,
     maxIters: 8,
@@ -311,7 +305,7 @@ export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: 
 // ---------- frame verifier ----------
 
 export interface FrameVerifierOptions {
-  client: Anthropic;
+  ai: GoogleGenAI;
   model: string;
   db: DailiesDB;
   candidates: VisualHit[];
@@ -329,17 +323,12 @@ Respond with STRICT JSON only (no markdown fences, no commentary): an array of o
 One entry per scene, in the order the scenes were given.`;
 
 const BATCH_SIZE = 6;
-const VERIFIER_MAX_TOKENS = 8192;
 
 function isVerdict(v: string): v is FrameVerdict["verdict"] {
   return v === "confirm" || v === "reject" || v === "unsure";
 }
 
-async function verifyBatch(
-  client: Anthropic,
-  model: string,
-  batch: VisualHit[],
-): Promise<FrameVerdict[]> {
+async function verifyBatch(ai: GoogleGenAI, model: string, batch: VisualHit[]): Promise<FrameVerdict[]> {
   const withKeyframe = batch.filter((c) => c.keyframePath !== null);
   const withoutKeyframe = batch.filter((c) => c.keyframePath === null);
 
@@ -351,30 +340,18 @@ async function verifyBatch(
 
   if (withKeyframe.length === 0) return withoutResults;
 
-  const imageBlocks: ImageBlockParam[] = await readKeyframesAsImageBlocks(
-    withKeyframe.map((c) => c.keyframePath as string),
-  );
+  const imageParts: Part[] = await readKeyframesAsParts(withKeyframe.map((c) => c.keyframePath as string));
   const listText = withKeyframe
     .map((c, i) => `Image ${i + 1}: sceneId=${c.sceneId}, claimed: ${c.description}`)
     .join("\n");
 
-  const response = await client.messages.create({
+  const res = await ai.models.generateContent({
     model,
-    max_tokens: VERIFIER_MAX_TOKENS,
-    thinking: { type: "adaptive" },
-    system: FRAME_VERIFIER_SYSTEM,
-    messages: [
-      {
-        role: "user",
-        content: [...imageBlocks, { type: "text", text: listText }],
-      },
-    ],
+    contents: [{ role: "user", parts: [...imageParts, { text: listText }] }],
+    config: { systemInstruction: FRAME_VERIFIER_SYSTEM, responseMimeType: "application/json" },
   });
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  const text = res.text ?? "";
 
   try {
     const parsed: unknown = JSON.parse(stripFences(text));
@@ -403,11 +380,11 @@ async function verifyBatch(
 }
 
 export async function runFrameVerifier(opts: FrameVerifierOptions): Promise<FrameVerdict[]> {
-  const { client, model, candidates } = opts;
+  const { ai, model, candidates } = opts;
   const results: FrameVerdict[] = [];
   for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
     const batch = candidates.slice(i, i + BATCH_SIZE);
-    const batchResults = await verifyBatch(client, model, batch);
+    const batchResults = await verifyBatch(ai, model, batch);
     results.push(...batchResults);
   }
   return results;
@@ -416,33 +393,26 @@ export async function runFrameVerifier(opts: FrameVerifierOptions): Promise<Fram
 // ---------- clip reader ----------
 
 export interface ClipReaderOptions {
-  client: Anthropic;
+  ai: GoogleGenAI;
   model: string;
   db: DailiesDB;
   fileId: number;
   question: string;
 }
 
-const CLIP_READER_MAX_TOKENS = 4096;
-
 export async function runClipReader(opts: ClipReaderOptions): Promise<string> {
-  const { client, model, db, fileId, question } = opts;
+  const { ai, model, db, fileId, question } = opts;
   const transcript = getFullTranscriptTool(db, fileId);
-  const response = await client.messages.create({
+  const res = await ai.models.generateContent({
     model,
-    max_tokens: CLIP_READER_MAX_TOKENS,
-    thinking: { type: "adaptive" },
-    messages: [
+    contents: [
       {
         role: "user",
-        content: `Here is the full transcript for file ${fileId}:\n\n${transcript}\n\nQuestion: ${question}`,
+        parts: [{ text: `Here is the full transcript for file ${fileId}:\n\n${transcript}\n\nQuestion: ${question}` }],
       },
     ],
   });
-  return response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
+  return res.text ?? "";
 }
 
 // re-export for supervisor.ts convenience

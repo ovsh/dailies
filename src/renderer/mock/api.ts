@@ -60,12 +60,8 @@ export function createMockApi(): DailiesAPI {
       return settings;
     },
 
-    async setApiKey(provider: "anthropic" | "gemini") {
-      settings = {
-        ...settings,
-        anthropicKeySet: provider === "anthropic" ? true : settings.anthropicKeySet,
-        geminiKeySet: provider === "gemini" ? true : settings.geminiKeySet,
-      };
+    async setApiKey(_provider: "gemini") {
+      settings = { ...settings, geminiKeySet: true };
       return true;
     },
 

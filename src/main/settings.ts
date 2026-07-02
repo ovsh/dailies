@@ -6,7 +6,7 @@ import { safeStorage } from "electron";
 import type { DailiesDB } from "./db/types";
 import type { QualityMode } from "../shared/types";
 
-type Provider = "anthropic" | "gemini";
+type Provider = "gemini";
 
 const keyName = (p: Provider) => `apiKey.${p}.enc`;
 

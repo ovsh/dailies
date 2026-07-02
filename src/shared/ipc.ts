@@ -31,7 +31,7 @@ export interface DailiesAPI {
 
   // settings
   getSettings(): Promise<AppSettings>;
-  setApiKey(provider: "anthropic" | "gemini", key: string): Promise<boolean>;
+  setApiKey(provider: "gemini", key: string): Promise<boolean>;
   setQualityMode(mode: QualityMode): Promise<void>;
 
   // chat

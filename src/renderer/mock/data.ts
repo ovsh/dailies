@@ -381,7 +381,6 @@ export const MOCK_JOBS: Job[] = [
 // ---------- settings ----------
 
 export const MOCK_SETTINGS: AppSettings = {
-  anthropicKeySet: true,
   geminiKeySet: true,
   watchedFolders: ["/Volumes/DAILIES_01/footage", "/Volumes/DAILIES_01/b-roll"],
   qualityMode: "high",

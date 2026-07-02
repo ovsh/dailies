@@ -12,7 +12,7 @@ const api: DailiesAPI = {
   removeWatchedFolder: (path: string) => ipcRenderer.invoke(IPC.removeWatchedFolder, path),
 
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
-  setApiKey: (provider: "anthropic" | "gemini", key: string) =>
+  setApiKey: (provider: "gemini", key: string) =>
     ipcRenderer.invoke(IPC.setApiKey, provider, key),
   setQualityMode: (mode: QualityMode) => ipcRenderer.invoke(IPC.setQualityMode, mode),
 

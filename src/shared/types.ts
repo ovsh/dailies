@@ -229,8 +229,15 @@ export interface ExportResult {
 
 export type QualityMode = "standard" | "high";
 
+/** Gemini model routing. Flash is GA; Pro falls back to Flash when unavailable. */
+export const GEMINI_MODELS = {
+  supervisor: "gemini-3.5-flash",
+  supervisorHigh: "gemini-3.5-pro",
+  subagent: "gemini-3.5-flash",
+  visualIndex: "gemini-3.5-flash",
+} as const;
+
 export interface AppSettings {
-  anthropicKeySet: boolean;
   geminiKeySet: boolean;
   watchedFolders: string[];
   qualityMode: QualityMode;

@@ -88,7 +88,6 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC.getSettings, (): AppSettings => {
     const avail = checkAvailability();
     return {
-      anthropicKeySet: hasApiKey(db, "anthropic"),
       geminiKeySet: hasApiKey(db, "gemini"),
       watchedFolders: getWatchedFolders(db),
       qualityMode: getQualityMode(db),
@@ -98,7 +97,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     };
   });
 
-  ipcMain.handle(IPC.setApiKey, (_e, provider: "anthropic" | "gemini", key: string) =>
+  ipcMain.handle(IPC.setApiKey, (_e, provider: "gemini", key: string) =>
     setApiKey(db, provider, key),
   );
 
@@ -119,25 +118,24 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
     // Run the turn asynchronously; progress + answer arrive as events.
     void (async () => {
-      const anthropicKey = getApiKey(db, "anthropic");
-      if (!anthropicKey) {
+      const geminiKey = getApiKey(db, "gemini");
+      if (!geminiKey) {
         emitChatEvent({
           type: "error",
           chatId: id,
-          message: "Add your Anthropic API key in Settings to start chatting.",
+          message: "Add your Gemini API key in Settings to start chatting.",
         });
         emitChatEvent({ type: "done", chatId: id });
         return;
       }
       try {
-        const geminiKey = getApiKey(db, "gemini");
         const answer = await runChatTurn({
           db,
           history: db.getChatMessages(id).slice(0, -1),
           userText: text,
-          anthropicKey,
+          geminiKey,
           qualityMode: getQualityMode(db),
-          gemini: geminiKey ? createGeminiIndexer(() => geminiKey) : null,
+          gemini: createGeminiIndexer(() => geminiKey),
           emit: (ev) => emitChatEvent({ ...ev, chatId: id }),
         });
         db.addChatMessage(id, "assistant", answer.prose, answer.hits);

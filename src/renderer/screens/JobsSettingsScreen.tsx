@@ -16,9 +16,8 @@ interface JobsSettingsScreenProps {
 export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProps) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
-  const [savingProvider, setSavingProvider] = useState<"anthropic" | "gemini" | null>(null);
+  const [savingProvider, setSavingProvider] = useState<"gemini" | null>(null);
 
   useEffect(() => {
     api.listJobs().then(setJobs);
@@ -43,15 +42,14 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
     onSettingsChanged?.();
   }
 
-  async function handleSaveKey(provider: "anthropic" | "gemini") {
-    const key = provider === "anthropic" ? anthropicKey : geminiKey;
+  async function handleSaveKey(provider: "gemini") {
+    const key = geminiKey;
     if (!key.trim()) return;
     setSavingProvider(provider);
     await api.setApiKey(provider, key.trim());
     setSettings(await api.getSettings());
     onSettingsChanged?.();
-    if (provider === "anthropic") setAnthropicKey("");
-    else setGeminiKey("");
+    setGeminiKey("");
     setSavingProvider(null);
   }
 
@@ -137,19 +135,11 @@ export function JobsSettingsScreen({ onSettingsChanged }: JobsSettingsScreenProp
 
           <section className="jobs-section">
             <div className="section-head">
-              <span className="label">API keys</span>
+              <span className="label">API key</span>
             </div>
 
             <ApiKeyField
-              label="Anthropic"
-              connected={settings?.anthropicKeySet ?? false}
-              value={anthropicKey}
-              onChange={setAnthropicKey}
-              onSave={() => handleSaveKey("anthropic")}
-              saving={savingProvider === "anthropic"}
-            />
-            <ApiKeyField
-              label="Gemini"
+              label="Gemini API key"
               connected={settings?.geminiKeySet ?? false}
               value={geminiKey}
               onChange={setGeminiKey}
@@ -342,7 +332,7 @@ function ApiKeyField({ label, connected, value, onChange, onSave, saving }: ApiK
         <input
           type="password"
           className="api-key-input mono"
-          placeholder={connected ? "•••••••••••••••••••• (replace)" : "sk-…"}
+          placeholder={connected ? "•••••••••••••••••••• (replace)" : "AIza…"}
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />

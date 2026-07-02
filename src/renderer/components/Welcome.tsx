@@ -13,19 +13,17 @@ interface WelcomeProps {
  * the two things Dailies cannot work without.
  */
 export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps) {
-  const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
-  const [saving, setSaving] = useState<"anthropic" | "gemini" | null>(null);
+  const [saving, setSaving] = useState<"gemini" | null>(null);
 
-  const configured = settings.anthropicKeySet || settings.watchedFolders.length > 0;
+  const configured = settings.geminiKeySet || settings.watchedFolders.length > 0;
 
-  async function saveKey(provider: "anthropic" | "gemini", key: string) {
+  async function saveKey(provider: "gemini", key: string) {
     if (!key.trim()) return;
     setSaving(provider);
     await api.setApiKey(provider, key.trim());
     setSaving(null);
-    if (provider === "anthropic") setAnthropicKey("");
-    else setGeminiKey("");
+    setGeminiKey("");
     onSettingsChanged();
   }
 
@@ -39,45 +37,19 @@ export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps
       <div className="welcome-panel">
         <p className="welcome-mark display">Dailies</p>
         <p className="welcome-sub">
-          Chat with your footage. Three things to set up — everything stays on this Mac.
+          Chat with your footage. Two things to set up — everything stays on this Mac.
         </p>
 
         <div className="welcome-step">
           <div className="welcome-step-head">
             <span className="welcome-step-num mono">01</span>
-            <span className="label">Anthropic API key</span>
-            {settings.anthropicKeySet && <span className="welcome-check">connected</span>}
-          </div>
-          <p className="welcome-step-why">Powers the chat — the agents that search your footage.</p>
-          {!settings.anthropicKeySet && (
-            <div className="welcome-row">
-              <input
-                type="password"
-                className="welcome-input mono"
-                placeholder="sk-ant-…"
-                value={anthropicKey}
-                onChange={(e) => setAnthropicKey(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && saveKey("anthropic", anthropicKey)}
-              />
-              <button
-                className="ghost-btn label"
-                onClick={() => saveKey("anthropic", anthropicKey)}
-                disabled={!anthropicKey.trim() || saving === "anthropic"}
-              >
-                {saving === "anthropic" ? "Saving…" : "Save"}
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="welcome-step">
-          <div className="welcome-step-head">
-            <span className="welcome-step-num mono">02</span>
             <span className="label">Gemini API key</span>
-            <span className="welcome-optional mono">optional</span>
             {settings.geminiKeySet && <span className="welcome-check">connected</span>}
           </div>
-          <p className="welcome-step-why">Reads what's on screen, so you can search for what was filmed — not just what was said.</p>
+          <p className="welcome-step-why">
+            Powers everything — the chat agents that search your footage, and the visual index
+            that reads what's on screen.
+          </p>
           {!settings.geminiKeySet && (
             <div className="welcome-row">
               <input
@@ -101,7 +73,7 @@ export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps
 
         <div className="welcome-step">
           <div className="welcome-step-head">
-            <span className="welcome-step-num mono">03</span>
+            <span className="welcome-step-num mono">02</span>
             <span className="label">Footage folder</span>
             {settings.watchedFolders.length > 0 && <span className="welcome-check">watching</span>}
           </div>
@@ -167,10 +139,6 @@ export function Welcome({ settings, onSettingsChanged, onDismiss }: WelcomeProps
         .welcome-step-num {
           font-size: 11px;
           color: var(--accent-dim);
-        }
-        .welcome-optional {
-          font-size: 10px;
-          color: var(--ink-faint);
         }
         .welcome-check {
           margin-left: auto;

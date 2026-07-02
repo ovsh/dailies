@@ -45,7 +45,7 @@ export function App() {
   const needsWelcome =
     settings !== null &&
     !welcomeDismissed &&
-    (forceWelcome || (!settings.anthropicKeySet && settings.watchedFolders.length === 0));
+    (forceWelcome || (!settings.geminiKeySet && settings.watchedFolders.length === 0));
 
   return (
     <div className="app-root">
@@ -54,7 +54,7 @@ export function App() {
         {screen === "chat" && (
           <ChatScreen
             onOpenClip={(fileId, seekS) => openClip(fileId, seekS, "chat")}
-            anthropicKeySet={settings?.anthropicKeySet ?? null}
+            geminiKeySet={settings?.geminiKeySet ?? null}
             onOpenSettings={() => setScreen("jobs")}
           />
         )}

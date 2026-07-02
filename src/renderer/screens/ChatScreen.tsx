@@ -8,7 +8,7 @@ import { Toast } from "../components/Toast";
 interface ChatScreenProps {
   onOpenClip: (fileId: number, seekS: number) => void;
   /** null while settings are loading; false shows the setup hint. */
-  anthropicKeySet?: boolean | null;
+  geminiKeySet?: boolean | null;
   onOpenSettings?: () => void;
 }
 
@@ -35,7 +35,7 @@ function confidenceRank(c: AnswerHit["confidence"]): number {
   return c === "high" ? 3 : c === "medium" ? 2 : 1;
 }
 
-export function ChatScreen({ onOpenClip, anthropicKeySet, onOpenSettings }: ChatScreenProps) {
+export function ChatScreen({ onOpenClip, geminiKeySet, onOpenSettings }: ChatScreenProps) {
   const [chatId, setChatId] = useState<number | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -122,9 +122,9 @@ export function ChatScreen({ onOpenClip, anthropicKeySet, onOpenSettings }: Chat
                 Search transcripts and visuals together — "bears fishing at the river bend," "where does Marsh mention the
                 salmon run."
               </p>
-              {anthropicKeySet === false && onOpenSettings && (
+              {geminiKeySet === false && onOpenSettings && (
                 <button className="chat-key-hint" onClick={onOpenSettings}>
-                  No API key yet — set one up in Settings →
+                  No Gemini key yet — set one up in Settings →
                 </button>
               )}
             </div>

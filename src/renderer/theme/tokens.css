@@ -1,0 +1,41 @@
+:root {
+  /* ground */
+  --ground: #131116;
+  --ground-raised: #17151a;
+  --ground-card: #19171c;
+
+  /* ivory text hierarchy */
+  --ink: #ede8df;
+  --ink-dim: #a49f97;
+  --ink-dimmer: #726d67;
+  --ink-faint: #4a4742;
+
+  /* hairlines */
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-strong: rgba(255, 255, 255, 0.14);
+
+  /* accent — brass/amber, interactive only */
+  --accent: #c9a557;
+  --accent-dim: #9c8148;
+  --accent-wash: rgba(201, 165, 87, 0.12);
+
+  /* status */
+  --status-error: #b8695a;
+  --status-ok: #8a9a7e;
+
+  /* type */
+  --font-display: "Cormorant Garamond", "Times New Roman", serif;
+  --font-body: "Schibsted Grotesk", -apple-system, sans-serif;
+  --font-mono: "Spline Sans Mono", ui-monospace, monospace;
+
+  /* motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 180ms;
+  --dur-med: 240ms;
+
+  /* elevation */
+  --shadow-card: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  /* rail */
+  --rail-w: 72px;
+}

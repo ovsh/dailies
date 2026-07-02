@@ -13,7 +13,42 @@
     "dev": "npm run build:main && concurrently -k \"vite\" \"VITE_DEV_SERVER_URL=http://localhost:5183 electron .\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --root .",
-    "rebuild": "electron-rebuild -f -w better-sqlite3"
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "dist": "npm run build:renderer && npm run build:main && electron-builder --mac dmg"
+  },
+  "build": {
+    "appId": "com.dailies.app",
+    "productName": "Dailies",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/ffmpeg-static/**",
+      "node_modules/ffprobe-static/**"
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "Dailies"
+    }
   },
   "dependencies": {
     "@google/genai": "^2.10.0",
@@ -35,6 +70,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^10.0.3",
     "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3",
     "vite": "^8.1.3",

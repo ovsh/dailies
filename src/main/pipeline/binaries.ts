@@ -13,10 +13,19 @@ import { spawnSync } from "node:child_process";
 import ffmpegStatic from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 
+/**
+ * In a packaged app the *-static packages resolve inside app.asar, but binaries
+ * can only be executed from the asar-unpacked mirror (see build.asarUnpack).
+ */
+function unAsar(p: string): string {
+  return p.includes("app.asar") ? p.replace("app.asar", "app.asar.unpacked") : p;
+}
+
 /** Absolute path to an ffmpeg binary, or the bare command name to rely on PATH. */
 export function findFfmpegBinary(): string {
   if (typeof ffmpegStatic === "string" && ffmpegStatic.length > 0) {
-    return ffmpegStatic;
+    const p = unAsar(ffmpegStatic);
+    if (existsSync(p)) return p;
   }
   return "ffmpeg";
 }
@@ -25,7 +34,8 @@ export function findFfmpegBinary(): string {
 export function findFfprobeBinary(): string {
   const path = (ffprobeStatic as { path?: string } | null)?.path;
   if (typeof path === "string" && path.length > 0) {
-    return path;
+    const p = unAsar(path);
+    if (existsSync(p)) return p;
   }
   return "ffprobe";
 }

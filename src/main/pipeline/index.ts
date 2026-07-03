@@ -267,7 +267,34 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     // identify the file and compare hashes. The heavier per-stage work
     // (audio/proxy/scenes/transcribe/visual_index) is still fully deferred
     // to the worker loop via enqueueJob — this call never dispatches those.
-    const probed = await probeFile(path);
+    let probed: FileInput;
+    try {
+      probed = await probeFile(path);
+    } catch (err) {
+      // Unreadable media (corrupt file, unsupported MXF variant) must remain
+      // VISIBLE as an error rather than silently disappearing — otherwise the
+      // clip count doesn't match what the editor put in the folder and it
+      // looks like the app "lost" a file. Record a stub in error state.
+      if (!existing) {
+        const stub = db.upsertFile({
+          path,
+          filename: basenameOf(path),
+          durationS: 0,
+          fps: 0,
+          dropFrame: false,
+          startTc: "00:00:00:00",
+          codec: "unknown",
+          audioChannels: 0,
+          fileHash: `unreadable:${path}`,
+          role: roleForPath(path),
+          episodeId: episodeIdForPath(path),
+        });
+        db.setFileStatus(stub.id, "error");
+        scheduleUpdate();
+      }
+      console.warn(`onFileFound: unreadable media ${path}:`, err);
+      return;
+    }
     probed.role = roleForPath(path);
     probed.episodeId = episodeIdForPath(path);
 

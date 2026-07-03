@@ -4,7 +4,7 @@
  * final structured answer for the editor.
  */
 import type { Content, FunctionDeclaration, Part } from "@google/genai";
-import { GoogleGenAI, Type } from "@google/genai";
+import { FunctionCallingConfigMode, GoogleGenAI, Type } from "@google/genai";
 
 import type {
   AgentAnswer,
@@ -298,6 +298,36 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       config: { systemInstruction, tools: [{ functionDeclarations: SUPERVISOR_DECLARATIONS }] },
     });
 
+  /**
+   * Last-resort call after the tool-loop budget is spent: force the model to
+   * emit final_answer (and only that) so the user always gets a real answer
+   * from the evidence already gathered, never a blank response.
+   */
+  const generateForcedFinal = () => {
+    contents.push({
+      role: "user",
+      parts: [
+        {
+          text: "You have gathered enough evidence. Stop searching and call final_answer now with your best answer and the strongest timecoded hits you found.",
+        },
+      ],
+    });
+    return ai.models.generateContent({
+      model: supervisorModel,
+      contents,
+      config: {
+        systemInstruction,
+        tools: [{ functionDeclarations: SUPERVISOR_DECLARATIONS }],
+        toolConfig: {
+          functionCallingConfig: {
+            mode: FunctionCallingConfigMode.ANY,
+            allowedFunctionNames: ["final_answer"],
+          },
+        },
+      },
+    });
+  };
+
   try {
     let response;
     try {
@@ -348,7 +378,16 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       response = await generate();
     }
 
-    return { prose: response.text ?? "", hits: [] };
+    // Budget spent without the model volunteering final_answer — force it,
+    // so the editor gets an answer built from what was already found rather
+    // than a blank response after all that searching.
+    emit({ type: "activity", agent: "supervisor", status: "wrapping up the answer" });
+    const forced = await generateForcedFinal();
+    const forcedFinal = (forced.functionCalls ?? []).find((c) => c.name === "final_answer");
+    if (forcedFinal) {
+      return coerceFinalAnswer(forcedFinal.args);
+    }
+    return { prose: forced.text ?? response.text ?? "", hits: [] };
   } catch (err) {
     throw new Error(describeError(err));
   }

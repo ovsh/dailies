@@ -8,6 +8,30 @@ import { createAppSettings } from "./app-settings";
 import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
 
+/**
+ * When the app is launched from Finder/Dock (rather than a terminal), the
+ * standard stdio descriptors 0/1/2 can be closed. Node's child_process.spawn
+ * then fails with `spawn EBADF` for EVERY external tool we run — ffprobe,
+ * ffmpeg, whisper — so nothing in the pipeline can process a single file.
+ * Reopen any closed descriptor onto /dev/null before anything spawns. This
+ * relies on lowest-available-fd allocation (a closed fd 0 is reused by the
+ * next open), so run it first, before we open any other file.
+ */
+function ensureStandardStreams(): void {
+  for (const fd of [0, 1, 2]) {
+    try {
+      fs.fstatSync(fd);
+    } catch {
+      try {
+        fs.openSync("/dev/null", fd === 0 ? "r" : "w");
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+}
+ensureStandardStreams();
+
 let win: BrowserWindow | null = null;
 
 protocol.registerSchemesAsPrivileged([

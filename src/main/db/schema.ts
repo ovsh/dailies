@@ -41,8 +41,11 @@ CREATE TABLE IF NOT EXISTS files (
   episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_files_clip_key ON files(clip_key);
-CREATE INDEX IF NOT EXISTS idx_files_episode_id ON files(episode_id);
+-- NOTE: indexes on files(clip_key) and files(episode_id) are created in
+-- migrate() (database.ts), NOT here. On a legacy v1 database the files table
+-- already exists WITHOUT those columns, so CREATE INDEX on them here would
+-- throw "no such column" during db.exec(SCHEMA_SQL) — before migrate() gets a
+-- chance to ALTER TABLE and add the columns — making old projects unopenable.
 
 CREATE TABLE IF NOT EXISTS scenes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

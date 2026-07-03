@@ -45,13 +45,26 @@ export function App() {
     void refreshProjectState();
   }, [refreshSettings, refreshProjectState]);
 
+  // Subscribe to index updates EXACTLY ONCE. This effect must not depend on
+  // projectState: its callback calls refreshProjectState() which replaces
+  // projectState, so depending on it would tear down and re-subscribe on
+  // every update. During active indexing (jobs churning, updates firing
+  // continuously) that feedback loop allocates without bound — it was the
+  // cause of a runaway that consumed all system memory. refreshProjectState
+  // is stable (useCallback []); coalesce bursts so a storm of updates yields
+  // at most one refresh in flight.
   useEffect(() => {
-    if (!projectState) return;
+    let scheduled = false;
     const unsubscribe = api.onProjectUpdate(() => {
-      void refreshProjectState();
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        void refreshProjectState();
+      });
     });
     return unsubscribe;
-  }, [projectState, refreshProjectState]);
+  }, [refreshProjectState]);
 
   function openClip(fileId: number, seekS = 0, from: Screen = screen) {
     setClipTarget({ fileId, seekS });

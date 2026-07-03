@@ -92,16 +92,32 @@ export function App() {
     !welcomeDismissed &&
     (forceWelcome || (!settings.geminiKeySet && projectState.folders.length === 0));
 
+  // The window uses a hidden title bar, so an explicit drag region is the only
+  // way to move the window. It must be present on EVERY view — including the
+  // loading state and the Projects picker — not just the main app shell.
+  const titlebar = <div className="titlebar-drag" />;
+
   if (!projectLoaded) {
-    return <div className="app-root" />;
+    return (
+      <>
+        {titlebar}
+        <div className="app-root" />
+      </>
+    );
   }
 
   if (!projectState || showProjects) {
-    return <ProjectScreen onProjectOpened={handleProjectOpened} />;
+    return (
+      <>
+        {titlebar}
+        <ProjectScreen onProjectOpened={handleProjectOpened} />
+      </>
+    );
   }
 
   return (
     <div className="app-root">
+      {titlebar}
       <Rail
         screen={screen === "clip" ? returnScreen : screen}
         onNavigate={navigate}

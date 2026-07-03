@@ -169,3 +169,31 @@ button {
 input {
   font-family: var(--font-body);
 }
+
+/* ---------- window drag (hidden title bar) ---------- */
+
+/* The window uses titleBarStyle:hiddenInset, so nothing is draggable unless we
+   declare a drag region. A thin fixed strip across the top moves the window;
+   it sits above content but only spans the empty area below the traffic
+   lights, so it covers no interactive controls. Present on every view. */
+.titlebar-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 34px;
+  z-index: 40;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+/* Interactive controls must never be swallowed by a drag region. */
+button,
+input,
+textarea,
+select,
+a,
+[role="button"] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

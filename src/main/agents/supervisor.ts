@@ -37,15 +37,29 @@ export interface ChatTurnOptions {
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
 }
 
-const SUPERVISOR_SYSTEM = `You are the research lead for a professional documentary editor cutting in Avid. The editor is relying on your answers to build markers and selects directly in their timeline, so frame-accurate timecodes and honest confidence are everything.
+const SUPERVISOR_SYSTEM = `You are the research lead for a professional documentary editor cutting in Avid. The editor relies on your answers to build markers and selects in their timeline, so frame-accurate timecodes and honest confidence matter.
 
-Distinguish carefully between footage that VISUALLY SHOWS a subject (kind "visual") and footage where people are TALKING ABOUT that subject (kind "spoken"). Never conflate the two.
+You are given a LIBRARY OVERVIEW at the start of each conversation: the clips in the library, their durations, and a short excerpt from each transcript. Read it first — it usually tells you what the footage is and often lets you answer without any searching.
 
-Use transcript_scout to find spoken references, and visual_scout to find visual matches. Any visual candidate must be verified with frame_verifier before you present it as high confidence — do not skip verification. Use clip_reader when you need to read more of a specific file's transcript to answer a question. Use get_file_info for file metadata.
+## Choose your approach from the question
 
-Hits carry a role: "raw" means camera media (source timecode); "final" means an exported cut, where the timecode is the TIMELINE TC in the finished episode — describe those hits as "in the final at {tc}" rather than implying they are source camera footage. When producer notes or scripts have been ingested, consider calling search_notes to connect notes to footage — it searches the producer notes / scripts / documents that were dropped into watched folders.
+**Overview / summary questions** — "what is this footage about", "summarize the shoot", "what happens", "who's in it", "give me the gist". Do NOT keyword-search. Answer from the LIBRARY OVERVIEW; if you need more, call clip_reader on the 2–4 most relevant or representative clips to read their full transcripts, then synthesize a genuine summary. These answers are mostly prose; include a few illustrative hits only if specific moments matter.
 
-When you have gathered and verified enough evidence, ALWAYS finish by calling final_answer exactly once, with clear prose and a list of hits (each with accurate in/out timecodes and seconds, kind, honest confidence, and role when known).`;
+**Specific "find X" questions** — "where do they mention the retaining wall", "find footage of the excavator", "when does she talk about drainage". THEN search: transcript_scout for what is SPOKEN, visual_scout for what is SHOWN. Extract only the meaningful CONTENT words from the question (nouns, names, concrete subjects). Verify visual candidates with frame_verifier before calling them high confidence.
+
+## Rules for searching
+
+- NEVER search for stopwords or generic words ("the", "footage", "about", "video", "clip", "thing"). If the only terms you can extract are generic, the question is an overview question — read transcripts instead.
+- NEVER invent a search term that is not grounded in the user's question or the library overview. Do not guess at subjects that might be there ("telescope", "bears") unless the user named them or the overview shows them.
+- Search terms should be specific subjects. One good query beats five vague ones.
+
+## Distinctions to keep straight
+
+- Footage that VISUALLY SHOWS a subject is kind "visual"; footage where people TALK ABOUT it is kind "spoken". Never conflate them.
+- Some libraries are audio-only (interviews, VO) — there is nothing to see, so visual_scout returns nothing and every hit is "spoken". Don't apologize for the lack of visuals; just answer from the audio.
+- Hits carry a role: "raw" = camera media (source timecode); "final" = an exported cut where the timecode is the TIMELINE TC in the finished episode — describe those as "in the final at {tc}". Use search_notes to connect producer notes / scripts to footage when documents have been ingested.
+
+Always finish by calling final_answer exactly once: clear, genuinely useful prose plus any hits (each with accurate in/out timecodes and seconds, kind, honest confidence, and role when known). If you found nothing relevant, say so plainly rather than padding with weak hits.`;
 
 const EPISODE_SCOPE_NOTICE =
   "The editor has scoped this conversation to a single episode; all search results are already restricted to it.";
@@ -197,6 +211,55 @@ function coerceFinalAnswer(args: unknown): AgentAnswer {
   return { prose, hits };
 }
 
+// ---------- library digest (grounds the supervisor) ----------
+
+/**
+ * A compact, current snapshot of what's actually in the library, injected at
+ * the top of every turn so the supervisor can reason about overview questions
+ * from real content instead of blind-searching. Includes each clip's name,
+ * role, duration, transcription status, and a short transcript excerpt.
+ */
+function buildLibraryDigest(db: DailiesDB, episodeId: number | null): string {
+  const files = db.listFiles(episodeId ?? undefined);
+  if (files.length === 0) {
+    return "LIBRARY OVERVIEW: The library is empty — no footage has been indexed yet. Tell the editor there is nothing to search.";
+  }
+
+  const transcribed = files.filter((f) => f.hasTranscript).length;
+  const docCount = db.listDocuments().length;
+  const totalS = files.reduce((sum, f) => sum + (f.durationS || 0), 0);
+  const mins = Math.round(totalS / 60);
+
+  const lines: string[] = [
+    `LIBRARY OVERVIEW — ${files.length} clip(s), ~${mins} min total, ${transcribed} transcribed${docCount > 0 ? `, ${docCount} document(s)/notes ingested` : ", no producer notes ingested"}.`,
+    "",
+  ];
+
+  // Per-clip: name, role, duration, and a transcript excerpt when available.
+  for (const f of files.slice(0, 40)) {
+    const dur = f.durationS ? `${Math.round(f.durationS / 60)}m` : "?";
+    const name = f.clipName ?? f.filename;
+    let excerpt = "";
+    if (f.hasTranscript) {
+      const segs = db.listSegments(f.id);
+      excerpt = segs
+        .slice(0, 3)
+        .map((s) => s.text.trim())
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .slice(0, 200);
+    } else if (f.status === "error") {
+      excerpt = "(unreadable / errored)";
+    } else {
+      excerpt = "(not transcribed yet)";
+    }
+    lines.push(`- [id ${f.id}] ${name} · ${f.role} · ${dur}${excerpt ? ` — "${excerpt}${excerpt.length >= 200 ? "…" : ""}"` : ""}`);
+  }
+  if (files.length > 40) lines.push(`- …and ${files.length - 40} more clips.`);
+
+  return lines.join("\n");
+}
+
 // ---------- error helper ----------
 
 function describeError(err: unknown): string {
@@ -230,9 +293,13 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
   const systemInstruction =
     episodeId === null ? SUPERVISOR_SYSTEM : `${SUPERVISOR_SYSTEM}\n\n${EPISODE_SCOPE_NOTICE}`;
 
+  // Ground the supervisor with a current snapshot of the library so overview
+  // questions are answered from real content, not blind keyword searches.
+  const digest = buildLibraryDigest(db, episodeId);
+
   const contents: Content[] = [
     ...history.map((m): Content => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-    { role: "user", parts: [{ text: userText }] },
+    { role: "user", parts: [{ text: `${digest}\n\n---\n\nEditor's question: ${userText}` }] },
   ];
 
   // turn-local cache of visual hits so frame_verifier can resolve scene ids

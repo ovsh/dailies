@@ -95,7 +95,7 @@ export function ClipCard({ file, keyframe, onOpen }: ClipCardProps) {
           position: absolute;
           top: 8px;
           right: 8px;
-          background: rgba(19, 17, 22, 0.78);
+          background: rgba(20, 24, 31, 0.82);
           border: 1px solid var(--hairline-strong);
           color: var(--accent);
           padding: 3px 7px;
@@ -105,7 +105,7 @@ export function ClipCard({ file, keyframe, onOpen }: ClipCardProps) {
           position: absolute;
           top: 8px;
           left: 8px;
-          background: rgba(19, 17, 22, 0.78);
+          background: rgba(20, 24, 31, 0.82);
           border: 1px solid var(--hairline-strong);
           color: var(--ink-dimmer);
           padding: 3px 7px;

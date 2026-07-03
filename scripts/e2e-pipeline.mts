@@ -84,6 +84,11 @@ async function main() {
     console.log(`[e2e] capped to ${Math.min(maxClips, files.length)} clips`);
   }
 
+  // OP-Atom grouping is debounced (~4s) — atoms are collected and only flushed
+  // into clips after the scan settles. Wait past the debounce before the drain
+  // loop, or it declares "done" before any audio clip has been enqueued.
+  await new Promise((r) => setTimeout(r, 6000));
+
   pipeline.start();
 
   const startAll = Date.now();

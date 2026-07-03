@@ -105,7 +105,7 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
           gap: 6px;
         }
         .hit-kind {
-          background: rgba(19, 17, 22, 0.78);
+          background: rgba(20, 24, 31, 0.82);
           border: 1px solid var(--hairline-strong);
           color: var(--ink-dim);
           padding: 3px 7px;
@@ -113,7 +113,7 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
           font-size: 9.5px;
         }
         .hit-final-tag {
-          background: rgba(19, 17, 22, 0.78);
+          background: rgba(20, 24, 31, 0.82);
           border: 1px solid var(--hairline-strong);
           color: var(--ink-dimmer);
           padding: 3px 7px;

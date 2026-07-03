@@ -1,27 +1,27 @@
 :root {
-  /* ground */
-  --ground: #131116;
-  --ground-raised: #17151a;
-  --ground-card: #19171c;
+  /* ground — cool slate, not black */
+  --ground: #1b1f27;
+  --ground-raised: #232833;
+  --ground-card: #2a3039;
 
-  /* ivory text hierarchy */
-  --ink: #ede8df;
-  --ink-dim: #a49f97;
-  --ink-dimmer: #726d67;
-  --ink-faint: #4a4742;
+  /* near-white text hierarchy */
+  --ink: #f3f6fa;
+  --ink-dim: #c4ccd8;
+  --ink-dimmer: #949cab;
+  --ink-faint: #646c7a;
 
   /* hairlines */
-  --hairline: rgba(255, 255, 255, 0.08);
-  --hairline-strong: rgba(255, 255, 255, 0.14);
+  --hairline: rgba(255, 255, 255, 0.1);
+  --hairline-strong: rgba(255, 255, 255, 0.16);
 
   /* accent — brass/amber, interactive only */
-  --accent: #c9a557;
-  --accent-dim: #9c8148;
-  --accent-wash: rgba(201, 165, 87, 0.12);
+  --accent: #d0ad5f;
+  --accent-dim: #a3854a;
+  --accent-wash: rgba(208, 173, 95, 0.14);
 
   /* status */
-  --status-error: #b8695a;
-  --status-ok: #8a9a7e;
+  --status-error: #d17c6c;
+  --status-ok: #93a985;
 
   /* type */
   --font-display: "Cormorant Garamond", "Times New Roman", serif;
@@ -34,7 +34,7 @@
   --dur-med: 240ms;
 
   /* elevation */
-  --shadow-card: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-card: 0 12px 32px rgba(0, 0, 0, 0.35);
 
   /* rail */
   --rail-w: 72px;

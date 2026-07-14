@@ -1,5 +1,7 @@
 import type { MediaFile } from "../../shared/types";
 import { TimecodeText } from "./TimecodeText";
+import { AudioGlyph } from "./AudioGlyph";
+import { isAudioOnly } from "../lib/media";
 
 interface ClipCardProps {
   file: MediaFile;
@@ -35,10 +37,21 @@ function VisualGlyph({ active }: { active: boolean }) {
 }
 
 export function ClipCard({ file, keyframe, onOpen }: ClipCardProps) {
+  const audioOnly = isAudioOnly(file);
+
   return (
     <button className="clip-card" onClick={() => onOpen(file)}>
       <div className="clip-thumb">
-        {keyframe ? <img src={keyframe} alt="" loading="lazy" /> : <div className="clip-thumb-empty" />}
+        {audioOnly ? (
+          <div className="clip-thumb-audio">
+            <AudioGlyph size={36} />
+            <span className="label">Audio</span>
+          </div>
+        ) : keyframe ? (
+          <img src={keyframe} alt="" loading="lazy" />
+        ) : (
+          <div className="clip-thumb-empty" />
+        )}
         {file.status !== "ready" && <span className="clip-status label">{file.status}</span>}
         {file.role === "final" && <span className="clip-final-tag label">FINAL</span>}
       </div>
@@ -90,6 +103,27 @@ export function ClipCard({ file, keyframe, onOpen }: ClipCardProps) {
           width: 100%;
           height: 100%;
           background: var(--ground-raised);
+        }
+        .clip-thumb-audio {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 9px;
+          color: var(--ink-dimmer);
+          background:
+            radial-gradient(circle at center, var(--accent-wash), transparent 52%),
+            var(--ground-raised);
+          transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+        }
+        .clip-thumb-audio .label {
+          color: var(--ink-faint);
+          font-size: 9px;
+        }
+        .clip-card:hover .clip-thumb-audio {
+          color: var(--accent);
         }
         .clip-status {
           position: absolute;

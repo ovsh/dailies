@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC, type DailiesAPI } from "../shared/ipc";
 import type {
-  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, MediaRole, QualityMode } from "../shared/types";
+  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, IndexUpdate, MediaRole, QualityMode } from "../shared/types";
 
 const api: DailiesAPI = {
   // projects
@@ -12,8 +12,8 @@ const api: DailiesAPI = {
 
   // episodes & folders
   createEpisode: (code: string) => ipcRenderer.invoke(IPC.createEpisode, code),
-  addProjectFolder: (role: MediaRole, episodeId: number | null) =>
-    ipcRenderer.invoke(IPC.addProjectFolder, role, episodeId),
+  addProjectFolder: (role: MediaRole, episodeId: number | null, e2eFolderPath?: string) =>
+    ipcRenderer.invoke(IPC.addProjectFolder, role, episodeId, e2eFolderPath),
   removeProjectFolder: (folderId: number) =>
     ipcRenderer.invoke(IPC.removeProjectFolder, folderId),
   rescanFolders: (episodeId: number | null) => ipcRenderer.invoke(IPC.rescanFolders, episodeId),
@@ -40,8 +40,8 @@ const api: DailiesAPI = {
   // chat
   listChats: () => ipcRenderer.invoke(IPC.listChats),
   getChat: (chatId: number) => ipcRenderer.invoke(IPC.getChat, chatId),
-  sendChatMessage: (chatId: number | null, text: string, episodeId: number | null) =>
-    ipcRenderer.invoke(IPC.sendChatMessage, chatId, text, episodeId),
+  sendChatMessage: (chatId: number | null, text: string, episodeId: number | null, turnId: string) =>
+    ipcRenderer.invoke(IPC.sendChatMessage, chatId, text, episodeId, turnId),
   onChatEvent: (cb: (ev: ChatEvent) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, ev: ChatEvent) => cb(ev);
     ipcRenderer.on(IPC.chatEvent, listener);
@@ -58,6 +58,11 @@ const api: DailiesAPI = {
     const listener = () => cb();
     ipcRenderer.on(IPC.projectUpdate, listener);
     return () => ipcRenderer.removeListener(IPC.projectUpdate, listener);
+  },
+  onIndexUpdate: (cb: (update: IndexUpdate) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, update: IndexUpdate) => cb(update);
+    ipcRenderer.on(IPC.indexUpdate, listener);
+    return () => ipcRenderer.removeListener(IPC.indexUpdate, listener);
   },
 
   fileUrl: (path: string) => `media://local/${encodeURIComponent(path)}`,

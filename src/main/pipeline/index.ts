@@ -17,6 +17,7 @@ import type {
   ProjectFolder,
   TextEmbedder,
 } from "../../shared/types";
+import { formatElapsedOffset, tcAddSeconds } from "../../shared/timecode";
 import { findFfprobeBinary, findWhisperBinary, findWhisperModel } from "./binaries";
 import { DOC_EXTENSIONS, extractDocument } from "./docs";
 import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo, type OpAtomClip } from "./opatom";
@@ -51,6 +52,8 @@ export interface Pipeline {
    * allowed — upsertDocument replaces the prior record.
    */
   ingestDocument(path: string, episodeId: number | null): Promise<boolean>;
+  /** Requeue prerequisite-blocked and otherwise missing derived stages. */
+  refreshPrerequisites(kind: "whisper" | "gemini" | "all"): Promise<void>;
   start(): void;
   stop(): Promise<void>;
 }
@@ -63,6 +66,8 @@ const MAX_KEYFRAMES_PER_FILE = 40;
 const IDLE_POLL_MS = 1500;
 const UPDATE_DEBOUNCE_MS = 300;
 const EMBED_BATCH_SIZE = 64;
+const MAX_TRANSIENT_RETRIES = 3;
+const RETRY_BASE_MS = 250;
 
 function mediaDirFor(dataDir: string, fileId: number): string {
   return join(dataDir, "media", String(fileId));
@@ -187,8 +192,18 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
   });
 
   async function onOpAtomClip(clip: OpAtomClip): Promise<void> {
-    const videoAtoms = clip.atoms.filter((a) => a.essence === "video");
-    const audioAtoms = clip.atoms.filter((a) => a.essence === "audio");
+    const existing = db.getFileByClipKey(clip.clipKey);
+    const atomByPath = new Map(clip.atoms.map((atom) => [atom.path, atom]));
+    for (const path of existing?.memberPaths ?? []) {
+      if (atomByPath.has(path)) continue;
+      const restored = await analyzeMxf(findFfprobeBinary(), path);
+      if (restored?.clipKey === clip.clipKey) atomByPath.set(path, restored);
+    }
+
+    const atoms = [...atomByPath.values()];
+    const byPath = (a: MxfAtomInfo, b: MxfAtomInfo) => a.path.localeCompare(b.path);
+    const videoAtoms = atoms.filter((a) => a.essence === "video").sort(byPath);
+    const audioAtoms = atoms.filter((a) => a.essence === "audio").sort(byPath);
     const primaryAtom = videoAtoms[0] ?? audioAtoms[0];
     if (!primaryAtom) return;
 
@@ -197,30 +212,34 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     // proxy/scenes stages can tell a video atom exists via memberPaths[0].
     const memberPaths = [...videoAtoms, ...audioAtoms].map((a) => a.path);
 
-    const existing = db.getFileByClipKey(clip.clipKey);
-    const fileHash = await computePartialHashSafe(primaryAtom.path);
+    const memberHashes = await Promise.all(
+      memberPaths.map(async (path) => `${path}:${await computePartialHashSafe(path)}`),
+    );
+    const fileHash = memberHashes.join("|");
     if (
       existing &&
       existing.memberPaths &&
       existing.memberPaths.length === memberPaths.length &&
+      existing.memberPaths.every((path, index) => path === memberPaths[index]) &&
       existing.fileHash === fileHash
     ) {
+      await repairFile(existing);
       return;
     }
 
     const input: FileInput = {
       path: primaryAtom.path,
       filename: clip.clipName ?? basenameOf(primaryAtom.path),
-      durationS: Math.max(...clip.atoms.map((a) => a.durationS)),
-      fps: primaryAtom.fps,
-      dropFrame: primaryAtom.dropFrame,
-      startTc: primaryAtom.startTc,
+      durationS: Math.max(...atoms.map((a) => a.durationS)),
+      fps: videoAtoms[0]?.fps ?? audioAtoms.find((atom) => atom.fps > 0)?.fps ?? 0,
+      dropFrame: (videoAtoms[0] ?? audioAtoms[0])?.dropFrame ?? false,
+      startTc: (videoAtoms[0] ?? audioAtoms[0])?.startTc ?? "00:00:00:00",
       codec: primaryAtom.codec,
       audioChannels: audioAtoms.length > 0 ? 1 : 0,
       fileHash,
       role: roleForPath(primaryAtom.path),
       episodeId: episodeIdForPath(primaryAtom.path),
-      clipName: clip.clipName,
+      clipName: atoms.find((atom) => atom.clipName)?.clipName ?? clip.clipName,
       mediaKind: "opatom",
       memberPaths,
       clipKey: clip.clipKey,
@@ -299,7 +318,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     probed.episodeId = episodeIdForPath(path);
 
     if (existing && existing.fileHash === probed.fileHash) {
-      // Unchanged since we last saw it; nothing to do.
+      // File identity is unchanged, but derived processing may be incomplete.
+      await repairFile(existing);
       return;
     }
 
@@ -362,11 +382,21 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     // discovery time) — never re-probe them into standard shape.
     db.setFileStatus(file.id, "processing");
 
-    db.enqueueJob(file.id, "audio");
-    db.enqueueJob(file.id, "proxy");
-    db.enqueueJob(file.id, "scenes");
+    if (file.audioChannels > 0) {
+      db.enqueueJob(file.id, "audio");
+    } else {
+      // A silent clip has a complete, explicitly empty transcript stage.
+      db.replaceTranscript(file.id, []);
+      db.markTranscribed(file.id);
+    }
+
+    if (await hasVideoAtom(file)) {
+      db.enqueueJob(file.id, "proxy");
+      db.enqueueJob(file.id, "scenes");
+    }
 
     db.completeJob(job.id);
+    await maybeMarkReady(file.id);
   }
 
   async function handleAudio(job: Job): Promise<void> {
@@ -407,8 +437,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
    * memberPaths[0], since memberPaths is ordered [videoAtoms..., audioAtoms...])
    * is itself a video atom.
    */
-  async function hasVideoAtom(file: { mediaKind: string; path: string }): Promise<boolean> {
-    if (file.mediaKind !== "opatom") return true;
+  async function hasVideoAtom(file: { mediaKind: string; path: string; fps: number }): Promise<boolean> {
+    if (file.mediaKind !== "opatom") return file.fps > 0;
     const ffprobeBin = findFfprobeBinary();
     const info = await analyzeMxf(ffprobeBin, file.path);
     return info?.essence === "video";
@@ -431,6 +461,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     db.setFileProxy(file.id, proxyPath);
 
     db.completeJob(job.id);
+    await maybeMarkReady(file.id);
   }
 
   async function handleScenes(job: Job): Promise<void> {
@@ -474,10 +505,12 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       scenesWithKeyframes.push({
         startS: scene.startS,
         endS: scene.endS,
-        // Relative-to-file-start timecode at the source fps; does not account
-        // for a non-zero source start_tc offset.
-        startTc: secondsToTc(scene.startS, file.fps),
-        endTc: secondsToTc(scene.endS, file.fps),
+        startTc: file.fps > 0
+          ? tcAddSeconds(file.startTc, scene.startS, file.fps, file.dropFrame)
+          : formatElapsedOffset(scene.startS),
+        endTc: file.fps > 0
+          ? tcAddSeconds(file.startTc, scene.endS, file.fps, file.dropFrame)
+          : formatElapsedOffset(scene.endS),
         keyframePath,
       });
     }
@@ -494,13 +527,13 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
 
     const whisperBin = findWhisperBinary();
     if (!whisperBin) {
-      db.failJob(job.id, "Speech model not downloaded — Settings → Transcription");
+      db.waitJob(job.id, "Speech model not downloaded — Settings → Transcription");
       return;
     }
 
     const modelPath = findWhisperModel(whisperModel, dataDir);
     if (!modelPath) {
-      db.failJob(job.id, "Speech model not downloaded — Settings → Transcription");
+      db.waitJob(job.id, "Speech model not downloaded — Settings → Transcription");
       return;
     }
 
@@ -510,17 +543,19 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     const segments = await transcribeAudio(audioPath, whisperBin, modelPath);
     db.replaceTranscript(file.id, segments);
     db.markTranscribed(file.id);
-    maybeMarkReady(file.id);
+    await maybeMarkReady(file.id);
 
     db.enqueueJob(file.id, "embed");
 
     db.completeJob(job.id);
   }
 
-  function maybeMarkReady(fileId: number): void {
+  async function maybeMarkReady(fileId: number): Promise<void> {
     const file = db.getFile(fileId);
     if (!file) return;
-    if (file.hasTranscript) {
+    const videoComplete = !(await hasVideoAtom(file)) ||
+      (file.proxyPath !== null && file.hasVisualIndex);
+    if (file.hasTranscript && videoComplete) {
       db.setFileStatus(fileId, "ready");
     }
   }
@@ -531,28 +566,24 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
 
     const indexer = gemini();
     if (!indexer) {
-      db.failJob(job.id, "Gemini API key not set");
+      db.waitJob(job.id, "Gemini API key not set");
       return;
     }
 
     const scenes = db.listScenes(file.id);
     for (const scene of scenes) {
-      try {
-        const annotation = await indexer.annotateScene({
-          proxyPath: file.proxyPath,
-          keyframePaths: scene.keyframePath ? [scene.keyframePath] : [],
-          startS: scene.startS,
-          endS: scene.endS,
-        });
-        db.upsertAnnotation(scene.id, annotation);
-        scheduleUpdate();
-      } catch {
-        // Continue indexing remaining scenes even if one fails.
-        continue;
-      }
+      const annotation = await indexer.annotateScene({
+        proxyPath: file.proxyPath,
+        keyframePaths: scene.keyframePath ? [scene.keyframePath] : [],
+        startS: scene.startS,
+        endS: scene.endS,
+      });
+      db.upsertAnnotation(scene.id, annotation);
+      scheduleUpdate();
     }
 
     db.markVisuallyIndexed(file.id);
+    await maybeMarkReady(file.id);
 
     db.enqueueJob(file.id, "embed");
 
@@ -562,7 +593,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
   async function handleEmbed(job: Job): Promise<void> {
     const e = embedder();
     if (!e) {
-      db.failJob(job.id, "Gemini API key not set");
+      db.waitJob(job.id, "Gemini API key not set");
       return;
     }
 
@@ -587,6 +618,68 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     }
 
     db.completeJob(job.id);
+  }
+
+  async function repairFile(file: NonNullable<ReturnType<DailiesDB["getFile"]>>): Promise<void> {
+    const hasVideo = await hasVideoAtom(file);
+    let incomplete = false;
+
+    if (!file.hasTranscript) {
+      incomplete = true;
+      if (file.audioChannels > 0) {
+        if (!db.hasActiveJob(file.id, "transcribe")) db.enqueueJob(file.id, "audio");
+      } else {
+        db.replaceTranscript(file.id, []);
+        db.markTranscribed(file.id);
+      }
+    }
+
+    if (hasVideo) {
+      if (!file.proxyPath) {
+        incomplete = true;
+        db.enqueueJob(file.id, "proxy");
+      }
+      if (!file.hasVisualIndex) {
+        incomplete = true;
+        if (!db.hasActiveJob(file.id, "visual_index")) db.enqueueJob(file.id, "scenes");
+      }
+    }
+
+    if (
+      db.listUnembeddedSegments(file.id).length > 0 ||
+      db.listUnembeddedAnnotations(file.id).length > 0
+    ) {
+      db.enqueueJob(file.id, "embed");
+    }
+
+    if (incomplete) db.setFileStatus(file.id, "processing");
+    await maybeMarkReady(file.id);
+  }
+
+  async function refreshPrerequisites(kind: "whisper" | "gemini" | "all"): Promise<void> {
+    if (kind === "whisper" || kind === "all") {
+      db.requeueWaitingJobs(["transcribe"]);
+    }
+    if (kind === "gemini" || kind === "all") {
+      db.requeueWaitingJobs(["visual_index", "embed"]);
+    }
+    for (const file of db.listFiles()) {
+      if (file.status === "error" && file.durationS === 0) continue;
+      await repairFile(file);
+    }
+    scheduleUpdate();
+    kick();
+  }
+
+  function isTransientError(err: unknown): boolean {
+    const message = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+    return /\b429\b|\b5\d\d\b|rate.?limit|temporar|timeout|timed out|network|fetch failed|econnreset|econnrefused|enotfound|eai_again|socket/i.test(
+      message,
+    );
+  }
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   async function runJob(job: Job): Promise<void> {
@@ -615,7 +708,14 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
           break;
       }
     } catch (err) {
-      db.failJob(job.id, err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (isTransientError(err) && job.attempts < MAX_TRANSIENT_RETRIES) {
+        await delay(RETRY_BASE_MS * 2 ** job.attempts);
+        db.retryJob(job.id, message);
+      } else {
+        db.failJob(job.id, message);
+        db.setFileStatus(job.fileId, "error");
+      }
     } finally {
       inFlightCount -= 1;
       if (job.stage === "transcribe") {
@@ -682,6 +782,10 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     if (running) return;
     running = true;
     db.resetRunningJobs();
+    // Prerequisites may have arrived while this project was closed (model
+    // downloaded with another/no project open, key added, app restarted) —
+    // requeue waiting jobs now; handlers re-park them if still unmet.
+    void refreshPrerequisites("all");
     kick();
   }
 
@@ -695,6 +799,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       clearTimeout(updateDebounceTimer);
       updateDebounceTimer = null;
     }
+    grouper.close();
     await watcher.close();
   }
 
@@ -703,24 +808,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     unwatchFolder,
     scanFolder,
     ingestDocument,
+    refreshPrerequisites,
     start,
     stop,
   };
-}
-
-/** Formats seconds since file start as an HH:MM:SS:FF timecode string. */
-function secondsToTc(totalSeconds: number, fps: number): string {
-  const safeFps = fps > 0 ? fps : 30;
-  const totalFrames = Math.max(Math.round(totalSeconds * safeFps), 0);
-  const framesPerSecond = Math.max(Math.round(safeFps), 1);
-
-  const frames = totalFrames % framesPerSecond;
-  const totalWholeSeconds = Math.floor(totalFrames / framesPerSecond);
-  const seconds = totalWholeSeconds % 60;
-  const totalMinutes = Math.floor(totalWholeSeconds / 60);
-  const minutes = totalMinutes % 60;
-  const hours = Math.floor(totalMinutes / 60);
-
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}:${pad(frames)}`;
 }

@@ -87,6 +87,82 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
 
+function firstBalancedJsonObject(raw: string): string | null {
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i];
+    if (start < 0) {
+      if (char === "{") {
+        start = i;
+        depth = 1;
+      }
+      continue;
+    }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === "\"") inString = false;
+      continue;
+    }
+    if (char === "\"") inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return raw.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function parseScoutJson(raw: string): unknown {
+  const stripped = stripFences(raw);
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    const objectText = firstBalancedJsonObject(stripped);
+    if (objectText === null) throw new Error("no JSON object found");
+    return JSON.parse(objectText);
+  }
+}
+
+function coercePositiveInteger(value: unknown): number | null {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value.trim())
+        ? Number(value.trim())
+        : Number.NaN;
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function parseScoutSelection(raw: string): { keep: number[]; notes: string } | null {
+  try {
+    const parsed = parseScoutJson(raw);
+    const rawKeep = Array.isArray(parsed) ? parsed : isRecord(parsed) ? parsed.keep : null;
+    if (!Array.isArray(rawKeep)) return null;
+    const keep = rawKeep
+      .map(coercePositiveInteger)
+      .filter((id): id is number => id !== null);
+    const notes = isRecord(parsed) && typeof parsed.notes === "string" ? parsed.notes : "";
+    return { keep, notes };
+  } catch {
+    return null;
+  }
+}
+
+function rawTextExcerpt(raw: string): string {
+  return raw
+    .slice(0, 400)
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 // ---------- transcript scout ----------
 
 export interface TranscriptScoutOptions {
@@ -171,18 +247,19 @@ export async function runTranscriptScout(
     maxIters: 8,
   });
 
-  try {
-    const parsed: unknown = JSON.parse(stripFences(finalText));
-    if (!isRecord(parsed)) throw new Error("not an object");
-    const keep = Array.isArray(parsed.keep)
-      ? parsed.keep.filter((x): x is number => typeof x === "number")
-      : [];
-    const notes = typeof parsed.notes === "string" ? parsed.notes : "";
-    const hits = keep.map((id) => cache.get(id)).filter((h): h is TranscriptHit => h !== undefined);
-    return { hits, notes };
-  } catch {
-    return { hits: [...cache.values()].slice(0, 8), notes: finalText };
+  const selection = parseScoutSelection(finalText);
+  if (!selection) {
+    console.warn(
+      `[chat-grounding] transcript scout returned malformed output; accepting no candidates; raw=${rawTextExcerpt(finalText)}`,
+    );
+    return { hits: [], notes: "Transcript scout response was malformed; no candidates accepted." };
   }
+  const unknownIds = selection.keep.filter((id) => !cache.has(id));
+  if (unknownIds.length > 0) {
+    console.warn(`[chat-grounding] transcript scout referenced ${unknownIds.length} unknown candidate ID(s)`);
+  }
+  const hits = selection.keep.map((id) => cache.get(id)).filter((h): h is TranscriptHit => h !== undefined);
+  return { hits, notes: selection.notes };
 }
 
 // ---------- visual scout ----------
@@ -293,18 +370,19 @@ export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: 
     maxIters: 8,
   });
 
-  try {
-    const parsed: unknown = JSON.parse(stripFences(finalText));
-    if (!isRecord(parsed)) throw new Error("not an object");
-    const keep = Array.isArray(parsed.keep)
-      ? parsed.keep.filter((x): x is number => typeof x === "number")
-      : [];
-    const notes = typeof parsed.notes === "string" ? parsed.notes : "";
-    const hits = keep.map((id) => cache.get(id)).filter((h): h is VisualHit => h !== undefined);
-    return { hits, notes };
-  } catch {
-    return { hits: [...cache.values()].slice(0, 8), notes: finalText };
+  const selection = parseScoutSelection(finalText);
+  if (!selection) {
+    console.warn(
+      `[chat-grounding] visual scout returned malformed output; accepting no candidates; raw=${rawTextExcerpt(finalText)}`,
+    );
+    return { hits: [], notes: "Visual scout response was malformed; no candidates accepted." };
   }
+  const unknownIds = selection.keep.filter((id) => !cache.has(id));
+  if (unknownIds.length > 0) {
+    console.warn(`[chat-grounding] visual scout referenced ${unknownIds.length} unknown candidate ID(s)`);
+  }
+  const hits = selection.keep.map((id) => cache.get(id)).filter((h): h is VisualHit => h !== undefined);
+  return { hits, notes: selection.notes };
 }
 
 // ---------- frame verifier ----------

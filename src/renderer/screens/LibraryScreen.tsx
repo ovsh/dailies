@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, mediaUrl } from "../api";
 import type { Episode, MediaFile, MediaRole, ProjectFolder } from "../../shared/types";
 import { ClipCard } from "../components/ClipCard";
 import { EpisodeBar } from "../components/EpisodeBar";
 import { Toast } from "../components/Toast";
+import { InlineError } from "../components/InlineError";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
+import { runIpc } from "../lib/async";
 
 interface LibraryScreenProps {
   onOpenClip: (fileId: number) => void;
@@ -40,49 +43,96 @@ export function LibraryScreen({
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
   const [importing, setImporting] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [addingFolder, setAddingFolder] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const keyframesRef = useRef<Record<number, string | null>>({});
+  const detailSignaturesRef = useRef<Record<number, string>>({});
 
   const load = useCallback(async () => {
-    const f = await api.listFiles(episodeId ?? undefined);
-    setFiles(f);
-    // First scene keyframe per clip, fetched off the detail call.
-    const entries = await Promise.all(
-      f.map(async (file) => {
-        try {
-          const detail = await api.getFileDetail(file.id);
-          return [file.id, detail.scenes[0]?.keyframePath ?? null] as const;
-        } catch {
-          return [file.id, null] as const;
+    await runIpc(
+      async () => {
+        const f = await api.listFiles(episodeId ?? undefined);
+        setFiles(f);
+
+        // Detail calls are limited to clips whose indexing signature changed.
+        // This keeps frequent job revisions cheap even in large libraries.
+        const changed = f.filter((file) => {
+          const signature = `${file.status}:${file.hasVisualIndex}:${file.proxyPath ?? ""}`;
+          return detailSignaturesRef.current[file.id] !== signature;
+        });
+        const entries = await Promise.all(
+          changed.map(async (file) => {
+            const signature = `${file.status}:${file.hasVisualIndex}:${file.proxyPath ?? ""}`;
+            detailSignaturesRef.current[file.id] = signature;
+            try {
+              const detail = await api.getFileDetail(file.id);
+              return [file.id, detail.scenes[0]?.keyframePath ?? null] as const;
+            } catch {
+              return [file.id, keyframesRef.current[file.id] ?? null] as const;
+            }
+          }),
+        );
+        if (entries.length > 0) {
+          const next = { ...keyframesRef.current, ...Object.fromEntries(entries) };
+          keyframesRef.current = next;
+          setKeyframes(next);
         }
-      }),
+      },
+      { setPending: setLoading, setError: setLoadError, fallback: "Could not refresh the library." },
     );
-    setKeyframes(Object.fromEntries(entries));
   }, [episodeId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  useLiveRefresh(load);
+
   async function addFolder(role: MediaRole) {
-    const folder = await api.addProjectFolder(role, episodeId);
-    if (folder) {
-      await onRefresh();
-      void load();
+    setRetryAction(() => () => void addFolder(role));
+    const result = await runIpc(
+      async () => {
+        const folder = await api.addProjectFolder(role, episodeId);
+        if (folder) {
+          await onRefresh();
+          await load();
+        }
+        return folder;
+      },
+      { setPending: setAddingFolder, setError: setActionError, fallback: "Could not add that folder." },
+    );
+    if (result.ok) {
+      setRetryAction(null);
     }
   }
 
   async function handleImport() {
-    setImporting(true);
-    const count = await api.importDocuments(episodeId);
-    setImporting(false);
-    setToast(`${count} ${count === 1 ? "document" : "documents"} imported`);
+    setRetryAction(() => () => void handleImport());
+    const result = await runIpc(
+      () => api.importDocuments(episodeId),
+      { setPending: setImporting, setError: setActionError, fallback: "Could not import documents." },
+    );
+    if (result.ok) {
+      setRetryAction(null);
+      setToast(`${result.value} ${result.value === 1 ? "document" : "documents"} imported`);
+    }
   }
 
   async function handleRescan() {
-    setScanning(true);
-    await api.rescanFolders(episodeId);
-    await onRefresh();
-    setScanning(false);
+    setRetryAction(() => () => void handleRescan());
+    const result = await runIpc(
+      async () => {
+        await api.rescanFolders(episodeId);
+        await onRefresh();
+        await load();
+      },
+      { setPending: setScanning, setError: setActionError, fallback: "Could not rescan watched folders." },
+    );
+    if (result.ok) setRetryAction(null);
   }
 
   const isEmpty = files !== null && files.length === 0;
@@ -105,10 +155,10 @@ export function LibraryScreen({
             <button className="ghost-btn label" onClick={handleImport} disabled={importing}>
               {importing ? "Importing…" : "Import"}
             </button>
-            <button className="ghost-btn label" onClick={() => addFolder("raw")}>
+            <button className="ghost-btn label" onClick={() => addFolder("raw")} disabled={addingFolder}>
               Add raw folder…
             </button>
-            <button className="ghost-btn label" onClick={() => addFolder("final")}>
+            <button className="ghost-btn label" onClick={() => addFolder("final")} disabled={addingFolder}>
               Add finals…
             </button>
           </div>
@@ -146,10 +196,14 @@ export function LibraryScreen({
             {scanning ? "Scanning…" : latestScan ? "Scan again" : "Scan now"}
           </button>
         </p>
+        {actionError && (
+          <InlineError message={actionError} onRetry={retryAction ?? undefined} retrying={importing || scanning || addingFolder} />
+        )}
       </header>
 
       <div className="library-scroll">
-        {!files && <p className="library-loading mono">Loading…</p>}
+        {!files && loading && <p className="library-loading mono">Loading…</p>}
+        {loadError && <InlineError message={loadError} onRetry={() => void load()} retrying={loading} />}
 
         {isEmpty && (
           <div className="library-empty">
@@ -159,10 +213,10 @@ export function LibraryScreen({
               visually catalogued — and new files are picked up automatically.
             </p>
             <div className="library-header-btns">
-              <button className="ghost-btn label" onClick={() => addFolder("raw")}>
+              <button className="ghost-btn label" onClick={() => addFolder("raw")} disabled={addingFolder}>
                 Add raw folder…
               </button>
-              <button className="ghost-btn label" onClick={() => addFolder("final")}>
+              <button className="ghost-btn label" onClick={() => addFolder("final")} disabled={addingFolder}>
                 Add finals…
               </button>
             </div>

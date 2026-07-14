@@ -88,13 +88,20 @@ export interface DailiesDB {
   listUnembeddedSegments(fileId: number): Array<{ refId: number; text: string }>;
   listUnembeddedAnnotations(fileId: number): Array<{ refId: number; text: string }>;
   listUnembeddedDocChunks(limit?: number): Array<{ refId: number; text: string }>;
-  /** Brute-force cosine over stored vectors; best first, score 0..1. */
+  /** Brute-force cosine over stored vectors; relevant hits only, with absolute cosine scores. */
   semanticSearch(kind: EmbeddingKind, query: Float32Array, limit?: number): Array<{ refId: number; score: number }>;
 
   // job queue
   enqueueJob(fileId: number, stage: JobStage): void;
+  hasActiveJob(fileId: number, stage: JobStage): boolean;
   claimNextJob(): Job | null;
   completeJob(jobId: number): void;
+  /** Non-terminal pause while an external prerequisite is unavailable. */
+  waitJob(jobId: number, reason: string): void;
+  /** Requeue waiting jobs for the supplied stages. */
+  requeueWaitingJobs(stages: JobStage[]): number;
+  /** Bounded transient retry; increments attempts and returns the job to the queue. */
+  retryJob(jobId: number, error: string): void;
   failJob(jobId: number, error: string): void;
   /** Called on boot: any 'running' job becomes 'queued' again. */
   resetRunningJobs(): void;

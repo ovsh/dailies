@@ -3,8 +3,74 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { openDatabase } from "../src/main/db/database";
+import { parseTc } from "../src/shared/timecode";
 
 describe("db end-to-end smoke", () => {
+  it("uses shared drop-frame math for search hits at minute boundaries", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-df-"));
+    const db = openDatabase(path.join(dir, "drop-frame.db"));
+    const fps = 29.97;
+    const file = db.upsertFile({
+      path: "/footage/df.mov",
+      filename: "df.mov",
+      durationS: 700,
+      fps,
+      dropFrame: true,
+      startTc: "00:00:00;00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "df-boundaries",
+    });
+    const atFrame = (frame: number): number => frame / fps;
+    const beforeMinute = parseTc("00:00:59;29", fps, true);
+    const minuteOne = beforeMinute + 1;
+    const beforeMinuteTen = parseTc("00:09:59;29", fps, true);
+    const minuteTen = beforeMinuteTen + 1;
+
+    db.replaceTranscript(file.id, [
+      { startS: atFrame(beforeMinute - 1), endS: atFrame(beforeMinute), text: "twopreboundary", avgConf: 1, words: [] },
+      { startS: atFrame(beforeMinute), endS: atFrame(minuteOne), text: "preboundary", avgConf: 1, words: [] },
+      { startS: atFrame(minuteOne), endS: atFrame(minuteOne + 1), text: "postboundary", avgConf: 1, words: [] },
+      { startS: atFrame(beforeMinuteTen), endS: atFrame(minuteTen), text: "preexempt", avgConf: 1, words: [] },
+      { startS: atFrame(minuteTen), endS: atFrame(minuteTen + 1), text: "postexempt", avgConf: 1, words: [] },
+    ]);
+    db.replaceScenes(file.id, [
+      {
+        startS: atFrame(beforeMinute),
+        endS: atFrame(minuteOne),
+        startTc: "ignored",
+        endTc: "ignored",
+      },
+      {
+        startS: atFrame(minuteOne),
+        endS: atFrame(minuteOne + 1),
+        startTc: "ignored",
+        endTc: "ignored",
+      },
+    ]);
+    const scenes = db.listScenes(file.id);
+    db.upsertAnnotation(scenes[0]!.id, {
+      description: "visualpreboundary",
+      objects: [],
+      model: "test",
+    });
+    db.upsertAnnotation(scenes[1]!.id, {
+      description: "visualpostboundary",
+      objects: [],
+      model: "test",
+    });
+
+    expect(db.searchTranscripts(["twopreboundary"])[0]?.startTc).toBe("00:00:59;28");
+    expect(db.searchTranscripts(["preboundary"])[0]?.startTc).toBe("00:00:59;29");
+    expect(db.searchTranscripts(["postboundary"])[0]?.startTc).toBe("00:01:00;02");
+    expect(db.searchTranscripts(["preexempt"])[0]?.startTc).toBe("00:09:59;29");
+    expect(db.searchTranscripts(["postexempt"])[0]?.startTc).toBe("00:10:00;00");
+    expect(db.searchVisuals(["visualpreboundary"])[0]?.startTc).toBe("00:00:59;29");
+    expect(db.searchVisuals(["visualpostboundary"])[0]?.startTc).toBe("00:01:00;02");
+
+    db.close();
+  });
+
   it("indexes, searches, and queues against a real SQLite file", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-"));
     const db = openDatabase(path.join(dir, "smoke.db"));
@@ -162,7 +228,7 @@ describe("db end-to-end smoke", () => {
     expect(noteHits).toHaveLength(1);
     expect(noteHits[0].filename).toBe("producer-notes.txt");
 
-    // embeddings: store two orthogonal-ish vectors, nearest neighbour wins
+    // Embeddings retain absolute cosine and reject off-topic neighbours.
     const unembedded = db.listUnembeddedSegments(file.id);
     expect(unembedded).toHaveLength(2);
     const vecA = new Float32Array(768).fill(0);
@@ -172,9 +238,16 @@ describe("db end-to-end smoke", () => {
     db.upsertEmbedding("segment", unembedded[0].refId, vecA);
     db.upsertEmbedding("segment", unembedded[1].refId, vecB);
     expect(db.listUnembeddedSegments(file.id)).toHaveLength(0);
-    const nearest = db.semanticSearch("segment", vecA, 2);
+    const query = new Float32Array(768).fill(0);
+    query[0] = 0.8;
+    query[1] = 0.6;
+    const nearest = db.semanticSearch("segment", query, 2);
     expect(nearest[0].refId).toBe(unembedded[0].refId);
-    expect(nearest[0].score).toBeGreaterThan(nearest[1].score);
+    expect(nearest[0].score).toBeCloseTo(0.8, 5);
+    expect(nearest[1].score).toBeCloseTo(0.6, 5);
+    const junk = new Float32Array(768).fill(0);
+    junk[2] = 1;
+    expect(db.semanticSearch("segment", junk, 2)).toEqual([]);
 
     db.close();
   });

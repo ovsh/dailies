@@ -88,4 +88,35 @@ describe("legacy database migration", () => {
 
     db.close();
   });
+
+  it("opens the pre-episodes documents schema before creating its episode index", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-mig-docs-"));
+    const dbPath = path.join(dir, "pre-episodes.db");
+    const raw = new Database(dbPath);
+    raw.exec(`${V1_SCHEMA}
+      CREATE TABLE documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL UNIQUE,
+        filename TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        added_at TEXT NOT NULL
+      );
+    `);
+    raw.prepare(
+      "INSERT INTO documents (path, filename, kind, content, added_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("/notes/old.txt", "old.txt", "txt", "legacy notes", new Date(0).toISOString());
+    raw.close();
+
+    const db = openDatabase(dbPath);
+    expect(db.listDocuments()).toHaveLength(1);
+
+    const verify = new Database(dbPath);
+    const columns = verify.pragma("table_info(documents)") as Array<{ name: string }>;
+    const indexes = verify.pragma("index_list(documents)") as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("episode_id");
+    expect(indexes.map((index) => index.name)).toContain("idx_documents_episode_id");
+    verify.close();
+    db.close();
+  });
 });

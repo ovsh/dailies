@@ -56,6 +56,7 @@ async function main() {
     qualityMode: "standard",
     gemini: createGeminiIndexer(() => key),
     embedder,
+    episodeId: null,
     emit: (ev) => console.log(`   · ${ev.agent}: ${ev.status}`),
   });
 

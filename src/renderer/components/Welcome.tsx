@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AppSettings, MediaRole, ProjectFolder } from "../../shared/types";
+import type { AppSettings, MediaRole, ModelDownloadProgress, ProjectFolder } from "../../shared/types";
+import { InlineError } from "./InlineError";
+import { runIpc } from "../lib/async";
 
 interface WelcomeProps {
   settings: AppSettings;
@@ -10,27 +12,75 @@ interface WelcomeProps {
 }
 
 /**
- * First-run setup. Shown when no API key is set and no folder is watched —
- * the two things Dailies cannot work without.
+ * First-run setup. Each requirement is independent and reports its real state.
  */
 export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: WelcomeProps) {
   const [geminiKey, setGeminiKey] = useState("");
   const [saving, setSaving] = useState<"gemini" | null>(null);
+  const [addingFolder, setAddingFolder] = useState(false);
+  const [modelProgress, setModelProgress] = useState<ModelDownloadProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
+  const onSettingsChangedRef = useRef(onSettingsChanged);
+  onSettingsChangedRef.current = onSettingsChanged;
 
-  const configured = settings.geminiKeySet || folders.length > 0;
+  const keyConnected = settings.geminiKeyStatus === "connected";
+  const allReady = keyConnected && folders.length > 0 && settings.whisperModelReady;
+
+  useEffect(() => api.onModelProgress((progress) => {
+    setModelProgress(progress);
+    if (progress.error) setError(`Speech model download failed. ${progress.error}`);
+    if (progress.done && !progress.error) {
+      setRetryAction(null);
+      onSettingsChangedRef.current();
+    }
+  }), []);
 
   async function saveKey(provider: "gemini", key: string) {
     if (!key.trim()) return;
-    setSaving(provider);
-    await api.setApiKey(provider, key.trim());
-    setSaving(null);
+    setRetryAction(() => () => void saveKey(provider, key));
+    const result = await runIpc(
+      () => api.setApiKey(provider, key.trim()),
+      {
+        setPending: (pending) => setSaving(pending ? provider : null),
+        setError,
+        fallback: "Could not validate that Gemini key.",
+      },
+    );
+    if (!result.ok) return;
+    if (result.value === "invalid") {
+      setError("Gemini rejected that API key. Check it and try again.");
+      return;
+    }
+    if (result.value === "unavailable") {
+      setError("Gemini could not be reached to validate the key. Check your connection and retry.");
+      return;
+    }
     setGeminiKey("");
+    setRetryAction(null);
     onSettingsChanged();
   }
 
   async function chooseFolder(role: MediaRole) {
-    const folder = await api.addProjectFolder(role, null);
-    if (folder) onSettingsChanged();
+    setRetryAction(() => () => void chooseFolder(role));
+    const result = await runIpc(
+      () => api.addProjectFolder(role, null),
+      { setPending: setAddingFolder, setError, fallback: "Could not add that footage folder." },
+    );
+    if (result.ok && result.value) {
+      setRetryAction(null);
+      onSettingsChanged();
+    }
+  }
+
+  async function downloadModel() {
+    setRetryAction(() => () => void downloadModel());
+    setModelProgress({ downloadedMb: 0, totalMb: null, pct: 0, done: false, error: null });
+    const result = await runIpc(api.downloadWhisperModel, {
+      setError,
+      fallback: "Could not start the speech model download.",
+    });
+    if (result.ok) setRetryAction(null);
   }
 
   return (
@@ -38,20 +88,30 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
       <div className="welcome-panel">
         <p className="welcome-mark display">Dailies</p>
         <p className="welcome-sub">
-          Chat with your footage. Two things to set up — everything stays on this Mac.
+          Chat with your footage. Three independent setup checks — continue now, or finish them later in Settings.
         </p>
+
+        {error && (
+          <InlineError
+            message={error}
+            onRetry={retryAction ?? undefined}
+            retrying={saving !== null || addingFolder}
+          />
+        )}
 
         <div className="welcome-step">
           <div className="welcome-step-head">
             <span className="welcome-step-num mono">01</span>
             <span className="label">Gemini API key</span>
-            {settings.geminiKeySet && <span className="welcome-check">connected</span>}
+            <span className={`welcome-check${keyConnected ? "" : " missing"}`}>
+              {keyConnected ? "connected" : settings.geminiKeyStatus === "invalid" ? "invalid" : settings.geminiKeyStatus === "unavailable" ? "not verified" : "not connected"}
+            </span>
           </div>
           <p className="welcome-step-why">
             Powers everything — the chat agents that search your footage, and the visual index
             that reads what's on screen.
           </p>
-          {!settings.geminiKeySet && (
+          {!keyConnected && (
             <div className="welcome-row">
               <input
                 type="password"
@@ -66,7 +126,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
                 onClick={() => saveKey("gemini", geminiKey)}
                 disabled={!geminiKey.trim() || saving === "gemini"}
               >
-                {saving === "gemini" ? "Saving…" : "Save"}
+                {saving === "gemini" ? "Validating…" : "Validate & save"}
               </button>
             </div>
           )}
@@ -76,7 +136,9 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           <div className="welcome-step-head">
             <span className="welcome-step-num mono">02</span>
             <span className="label">Footage folder</span>
-            {folders.length > 0 && <span className="welcome-check">watching</span>}
+            <span className={`welcome-check${folders.length > 0 ? "" : " missing"}`}>
+              {folders.length > 0 ? "watching" : "not selected"}
+            </span>
           </div>
           <p className="welcome-step-why">
             Point Dailies at a folder. Files are indexed in place — nothing is moved or copied — and
@@ -89,18 +151,59 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
             </p>
           ))}
           <div className="welcome-folder-btns">
-            <button className="ghost-btn label" onClick={() => chooseFolder("raw")}>
+            <button className="ghost-btn label" onClick={() => chooseFolder("raw")} disabled={addingFolder}>
               Choose raw footage folder…
             </button>
-            <button className="ghost-btn label" onClick={() => chooseFolder("final")}>
+            <button className="ghost-btn label" onClick={() => chooseFolder("final")} disabled={addingFolder}>
               Choose finals folder…
             </button>
           </div>
         </div>
 
+        <div className="welcome-step">
+          <div className="welcome-step-head">
+            <span className="welcome-step-num mono">03</span>
+            <span className="label">Speech model</span>
+            <span className={`welcome-check${settings.whisperModelReady ? "" : " missing"}`}>
+              {settings.whisperModelReady ? "downloaded" : "not downloaded"}
+            </span>
+          </div>
+          <p className="welcome-step-why">
+            Transcribes dialogue locally. The {settings.whisperModel} model is a one-time download of about 1.6 GB.
+          </p>
+          {!settings.whisperAvailable && (
+            <p className="welcome-prereq-note mono">The local Whisper engine is missing; transcription will remain unavailable.</p>
+          )}
+          {!settings.whisperModelReady && (
+            <div className="welcome-model-row">
+              {modelProgress && !modelProgress.done ? (
+                <span className="welcome-model-progress mono">
+                  {modelProgress.pct !== null ? `${modelProgress.pct}% downloaded` : `${Math.round(modelProgress.downloadedMb)} MB downloaded`}
+                </span>
+              ) : (
+                <button className="ghost-btn label" onClick={() => void downloadModel()}>
+                  Download speech model
+                </button>
+              )}
+            </div>
+          )}
+          {modelProgress && !modelProgress.done && modelProgress.pct !== null && (
+            <div className="welcome-progress-bar">
+              <div className="welcome-progress-fill" style={{ width: `${modelProgress.pct}%` }} />
+            </div>
+          )}
+        </div>
+
         <div className="welcome-footer">
+          {!allReady && (
+            <p className="welcome-limitations mono">
+              {!keyConnected && "Without a validated Gemini key, chat and visual indexing will wait. "}
+              {folders.length === 0 && "Without a footage folder, there is nothing to index. "}
+              {!settings.whisperModelReady && "Without the speech model, transcription will wait."}
+            </p>
+          )}
           <button className="welcome-enter" onClick={onDismiss}>
-            {configured ? "Enter Dailies →" : "Skip for now →"}
+            {allReady ? "Enter Dailies →" : "Continue with missing setup →"}
           </button>
         </div>
       </div>
@@ -112,13 +215,13 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           z-index: 100;
           background: var(--ground);
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: center;
           overflow-y: auto;
           animation: fade-in var(--dur-med) var(--ease-out) both;
         }
         .welcome-panel {
-          width: 480px;
+          width: 560px;
           max-width: calc(100vw - 96px);
           padding: 48px 0;
           animation: fade-up var(--dur-med) var(--ease-out) both;
@@ -155,6 +258,9 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           letter-spacing: 0.08em;
           text-transform: uppercase;
           color: var(--status-ok);
+        }
+        .welcome-check.missing {
+          color: var(--status-warn);
         }
         .welcome-step-why {
           font-size: 12.5px;
@@ -204,9 +310,44 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           border-top: 1px solid var(--hairline);
           padding-top: 28px;
           display: flex;
-          justify-content: flex-end;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 24px;
+        }
+        .welcome-limitations {
+          color: var(--ink-dimmer);
+          font-size: 10.5px;
+          line-height: 1.55;
+          margin: 0;
+          max-width: 350px;
+        }
+        .welcome-model-row {
+          display: flex;
+          align-items: center;
+          min-height: 34px;
+        }
+        .welcome-prereq-note {
+          color: var(--status-error);
+          font-size: 10.5px;
+          margin: -4px 0 12px;
+        }
+        .welcome-model-progress {
+          color: var(--accent);
+          font-size: 11px;
+        }
+        .welcome-progress-bar {
+          height: 2px;
+          background: var(--hairline);
+          margin-top: 8px;
+          overflow: hidden;
+        }
+        .welcome-progress-fill {
+          height: 100%;
+          background: var(--accent);
+          transition: width 400ms var(--ease-out);
         }
         .welcome-enter {
+          flex: 0 0 auto;
           background: transparent;
           border: none;
           font-family: var(--font-display);

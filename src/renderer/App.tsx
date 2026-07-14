@@ -45,14 +45,9 @@ export function App() {
     void refreshProjectState();
   }, [refreshSettings, refreshProjectState]);
 
-  // Subscribe to index updates EXACTLY ONCE. This effect must not depend on
-  // projectState: its callback calls refreshProjectState() which replaces
-  // projectState, so depending on it would tear down and re-subscribe on
-  // every update. During active indexing (jobs churning, updates firing
-  // continuously) that feedback loop allocates without bound — it was the
-  // cause of a runaway that consumed all system memory. refreshProjectState
-  // is stable (useCallback []); coalesce bursts so a storm of updates yields
-  // at most one refresh in flight.
+  // Subscribe to project metadata updates exactly once. File/job revisions
+  // use a separate lightweight event consumed only by the visible data screen.
+  // Keep this callback stable so replacing ProjectState never re-subscribes.
   useEffect(() => {
     let scheduled = false;
     const unsubscribe = api.onProjectUpdate(() => {
@@ -90,7 +85,10 @@ export function App() {
     settings !== null &&
     projectState !== null &&
     !welcomeDismissed &&
-    (forceWelcome || (!settings.geminiKeySet && projectState.folders.length === 0));
+    (forceWelcome ||
+      settings.geminiKeyStatus !== "connected" ||
+      projectState.folders.length === 0 ||
+      !settings.whisperModelReady);
 
   // The window uses a hidden title bar, so an explicit drag region is the only
   // way to move the window. It must be present on EVERY view — including the
@@ -128,7 +126,7 @@ export function App() {
         {screen === "chat" && (
           <ChatScreen
             onOpenClip={(fileId, seekS) => openClip(fileId, seekS, "chat")}
-            geminiKeySet={settings?.geminiKeySet ?? null}
+            geminiKeySet={settings ? settings.geminiKeyStatus === "connected" : null}
             onOpenSettings={() => setScreen("jobs")}
             episodeId={episodeId}
             episodes={projectState.episodes}

@@ -19,6 +19,7 @@ const folder = process.argv[2] ?? "";
 const model = process.argv[3] ?? "tiny";
 const modelsDir = process.argv[4] ?? "/tmp/dailies-e2e-models";
 const maxClips = process.argv[5] ? Number(process.argv[5]) : Infinity;
+const fixtureMode = path.basename(path.resolve(folder)) === "landscaping test" && maxClips === Infinity;
 
 if (!folder || !fs.existsSync(folder)) {
   console.error("folder not found:", folder);
@@ -94,6 +95,7 @@ async function main() {
   const startAll = Date.now();
   let lastLine = "";
   let stableTicks = 0;
+  let drainFailure: string | null = null;
   const deadlineMs = model === "tiny" ? 8 * 60_000 : 45 * 60_000;
 
   for (;;) {
@@ -116,10 +118,12 @@ async function main() {
       for (const j of db.listJobs(50)) {
         console.log(`   #${j.id} file=${j.fileId} ${j.stage} ${j.status} ${j.error ?? ""}`);
       }
+      drainFailure = "pipeline stuck with no state change for 2 minutes";
       break;
     }
     if (Date.now() - startAll > deadlineMs) {
       console.log(`[e2e] TIMEOUT after ${(deadlineMs / 60000).toFixed(0)}min`);
+      drainFailure = `pipeline timeout after ${(deadlineMs / 60000).toFixed(0)} minutes`;
       break;
     }
   }
@@ -146,7 +150,8 @@ async function main() {
   }
 
   console.log("\n===== FTS SEARCH =====");
-  const anySeg = db.listFiles().flatMap((f) => db.listSegments(f.id));
+  const allFiles = db.listFiles();
+  const anySeg = allFiles.flatMap((f) => db.listSegments(f.id));
   const words = [...new Set(anySeg.flatMap((s) => s.text.toLowerCase().split(/\W+/)).filter((w) => w.length > 4))];
   const probe = words.slice(0, 3);
   for (const term of probe) {
@@ -154,9 +159,83 @@ async function main() {
     console.log(`  "${term}" → ${hits.length} hits${hits[0] ? ` (first @ ${hits[0].startTc})` : ""}`);
   }
 
+  const failures: string[] = [];
+  if (drainFailure) failures.push(drainFailure);
+  const expectedCorrupt = fixtureMode
+    ? allFiles.find((file) => file.filename.startsWith("06262025T0A02")) ?? null
+    : null;
+  const unexpectedFileErrors = allFiles.filter(
+    (file) => file.status === "error" && file.id !== expectedCorrupt?.id,
+  );
+  const unexpectedJobErrors = jobErrors.filter((job) => job.fileId !== expectedCorrupt?.id);
+  const validClips = allFiles.filter((file) => file.status !== "error");
+  const audioFiles = allFiles.filter((file) => file.audioChannels > 0 && file.status !== "error");
+  const transcribedAudio = audioFiles.filter((file) => file.hasTranscript);
+
+  if (unexpectedFileErrors.length > 0) {
+    failures.push(`${unexpectedFileErrors.length} unexpected file error(s)`);
+  }
+  if (unexpectedJobErrors.length > 0) {
+    failures.push(`${unexpectedJobErrors.length} unexpected job error(s)`);
+  }
+  if (transcribedAudio.length !== audioFiles.length) {
+    failures.push(`transcription coverage ${transcribedAudio.length}/${audioFiles.length}`);
+  }
+
+  if (fixtureMode) {
+    const expectedNames = new Set([
+      "06252025/01",
+      "06252025/02",
+      "06252025/03",
+      "06252025/05",
+      "06252025/06",
+      "06252025/09",
+    ]);
+    const actualNames = new Set(
+      allFiles
+        .filter((file) => file.mediaKind === "opatom")
+        .map((file) => file.clipName ?? file.filename),
+    );
+    const missingNames = [...expectedNames].filter((name) => !actualNames.has(name));
+    const extraNames = [...actualNames].filter((name) => !expectedNames.has(name));
+    if (missingNames.length > 0 || extraNames.length > 0) {
+      failures.push(`fixture clip names mismatch missing=${missingNames.join(",")} extra=${extraNames.join(",")}`);
+    }
+    if (!expectedCorrupt || expectedCorrupt.status !== "error") {
+      failures.push("fixture corrupt 06262025T0A02* is not visible as a file error");
+    }
+
+    // FTS rows are per-segment, so the probe phrase must come from ONE segment —
+    // words joined across segment boundaries can never match as a phrase.
+    const longestSegment = allFiles
+      .flatMap((file) => db.listSegments(file.id))
+      .map((segment) => segment.text.trim())
+      .sort((a, b) => b.length - a.length)[0];
+    const phraseWords = longestSegment?.match(/[\p{L}\p{N}']+/gu) ?? [];
+    const phraseStart = phraseWords.findIndex((word) => word.length > 3);
+    const phrase =
+      phraseStart >= 0 && phraseWords.length >= phraseStart + 3
+        ? phraseWords.slice(phraseStart, phraseStart + 3).join(" ")
+        : "";
+    if (!phrase || db.searchTranscripts([phrase], 5).length === 0) {
+      failures.push(`fixture dynamic FTS phrase did not match: ${JSON.stringify(phrase)}`);
+    } else {
+      console.log(`[e2e] fixture FTS phrase ${JSON.stringify(phrase)} matched`);
+    }
+  }
+
   await pipeline.stop();
   db.close();
   console.log("\n[e2e] done. workDir:", workDir);
+  for (const failure of failures) console.error(`[e2e] ASSERTION FAILED: ${failure}`);
+  const wallclockS = Math.round((Date.now() - scanStart) / 1000);
+  const audioS = Math.round(audioFiles.reduce((sum, file) => sum + file.durationS, 0));
+  const errors = unexpectedFileErrors.length + unexpectedJobErrors.length +
+    failures.filter((failure) => !failure.includes("unexpected ")).length;
+  console.log(
+    `E2E_RESULT clips=${validClips.length} transcribed=${transcribedAudio.length} errors=${errors} wallclock_s=${wallclockS} audio_s=${audioS}`,
+  );
+  if (failures.length > 0) process.exitCode = 1;
 }
 
 main().catch((e) => {

@@ -455,6 +455,7 @@ export function getFileDetail(fileId: number): FileDetail | null {
   if (!file) return null;
   return {
     file,
+    playbackPath: file.proxyPath ?? file.path,
     scenes: getScenes(fileId),
     segments: getSegments(fileId),
     annotations: getAnnotations(fileId),
@@ -477,6 +478,7 @@ export const MOCK_JOBS: Job[] = [
 
 export const MOCK_SETTINGS: AppSettings = {
   geminiKeySet: true,
+  geminiKeyStatus: "connected",
   qualityMode: "high",
   whisperModel: "large-v3",
   whisperAvailable: true,

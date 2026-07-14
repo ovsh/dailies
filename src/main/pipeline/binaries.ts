@@ -49,10 +49,11 @@ const WHISPER_CANDIDATES = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whi
  */
 function bundledWhisperBinary(): string | null {
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const moduleDir = typeof __dirname !== "undefined" ? __dirname : null;
   const candidates = [
     resourcesPath ? join(resourcesPath, "whisper", "whisper-cli") : null,
     // dev: dist-electron/main/index.cjs -> repo root -> vendor
-    join(__dirname, "..", "..", "vendor", "whisper", "whisper-cli"),
+    moduleDir ? join(moduleDir, "..", "..", "vendor", "whisper", "whisper-cli") : null,
     join(process.cwd(), "vendor", "whisper", "whisper-cli"),
   ];
   for (const c of candidates) {

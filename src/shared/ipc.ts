@@ -15,6 +15,7 @@ import type {
   ExportKind,
   ExportResult,
   FileDetail,
+  IndexUpdate,
   Job,
   MediaFile,
   ModelDownloadProgress,
@@ -23,6 +24,7 @@ import type {
   ProjectFolder,
   ProjectState,
   QualityMode,
+  ApiKeyValidationStatus,
   WordTiming,
 } from "./types";
 
@@ -37,7 +39,12 @@ export interface DailiesAPI {
   // episodes & folders (current project)
   createEpisode(code: string): Promise<Episode>;
   /** Opens a native folder picker; returns the new folder or null if cancelled. */
-  addProjectFolder(role: MediaRole, episodeId: number | null): Promise<ProjectFolder | null>;
+  addProjectFolder(
+    role: MediaRole,
+    episodeId: number | null,
+    /** Accepted only when it exactly matches DAILIES_E2E_FOLDER. */
+    e2eFolderPath?: string,
+  ): Promise<ProjectFolder | null>;
   removeProjectFolder(folderId: number): Promise<void>;
   /** Re-scans watched folders (all, or one episode's) and stamps lastScannedAt. */
   rescanFolders(episodeId: number | null): Promise<void>;
@@ -55,7 +62,7 @@ export interface DailiesAPI {
   /** Starts (or joins) the speech-model download; progress arrives via onModelProgress. */
   downloadWhisperModel(): Promise<void>;
   onModelProgress(cb: (p: ModelDownloadProgress) => void): () => void;
-  setApiKey(provider: "gemini", key: string): Promise<boolean>;
+  setApiKey(provider: "gemini", key: string): Promise<ApiKeyValidationStatus>;
   setQualityMode(mode: QualityMode): Promise<void>;
 
   // chat (current project; episodeId scopes the search, null = whole project)
@@ -66,6 +73,7 @@ export interface DailiesAPI {
     chatId: number | null,
     text: string,
     episodeId: number | null,
+    turnId: string,
   ): Promise<{ chatId: number }>;
   onChatEvent(cb: (ev: ChatEvent) => void): () => void;
 
@@ -75,6 +83,9 @@ export interface DailiesAPI {
 
   /** Fired when project state changes in the main process (indexing, scans). */
   onProjectUpdate(cb: () => void): () => void;
+
+  /** Fired after coalesced file/job state changes. */
+  onIndexUpdate(cb: (update: IndexUpdate) => void): () => void;
 
   /** Converts an absolute local path into a URL the renderer may load (media:// protocol). */
   fileUrl(path: string): string;
@@ -106,4 +117,5 @@ export const IPC = {
   exportHits: "dailies:exportHits",
   revealInFinder: "dailies:revealInFinder",
   projectUpdate: "dailies:projectUpdate",
+  indexUpdate: "dailies:indexUpdate",
 } as const;

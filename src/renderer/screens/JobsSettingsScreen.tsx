@@ -1,11 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
   ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder, QualityMode } from "../../shared/types";
+import { InlineError } from "../components/InlineError";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
+import { runIpc } from "../lib/async";
 
 const STATUS_COLOR: Record<Job["status"], string> = {
   queued: "var(--ink-faint)",
   running: "var(--accent)",
+  waiting: "var(--status-warn, var(--ink-faint))",
   done: "var(--status-ok)",
   error: "var(--status-error)",
 };
@@ -27,6 +31,14 @@ function formatScanTime(iso: string): string {
   return `${day} ${month}, ${hh}:${mm}`;
 }
 
+function waitingMessage(job: Job): string {
+  if (job.stage === "transcribe") return "Waiting for speech model — download it below.";
+  if (job.stage === "visual_index" || job.stage === "embed") {
+    return "Waiting for a connected Gemini API key — check it below.";
+  }
+  return job.error ?? "Waiting for a required setup step.";
+}
+
 interface JobsSettingsScreenProps {
   onSettingsChanged?: () => void;
   folders: ProjectFolder[];
@@ -42,66 +54,159 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
   const [modelProgress, setModelProgress] = useState<ModelDownloadProgress | null>(null);
   const [newEpisodeCode, setNewEpisodeCode] = useState("");
   const [addingEpisode, setAddingEpisode] = useState(false);
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [actionPending, setActionPending] = useState(false);
+  const [jobsError, setJobsError] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
+
+  const refreshJobs = useCallback(async () => {
+    const result = await runIpc(api.listJobs, {
+      setPending: setJobsLoading,
+      setError: setJobsError,
+      fallback: "Could not refresh indexing jobs.",
+    });
+    if (result.ok) setJobs(result.value);
+  }, []);
+
+  const refreshSettings = useCallback(async () => {
+    const result = await runIpc(api.getSettings, {
+      setPending: setSettingsLoading,
+      setError: setSettingsError,
+      fallback: "Could not refresh settings.",
+    });
+    if (result.ok) setSettings(result.value);
+  }, []);
 
   useEffect(() => {
-    api.listJobs().then(setJobs);
-    api.getSettings().then(setSettings);
-  }, []);
+    void refreshJobs();
+    void refreshSettings();
+  }, [refreshJobs, refreshSettings]);
+
+  useLiveRefresh(refreshJobs);
 
   useEffect(() => {
     const unsub = api.onModelProgress((p) => {
       setModelProgress(p);
       if (p.done && !p.error) {
-        void api.getSettings().then(setSettings);
+        void refreshSettings();
       }
     });
     return unsub;
-  }, []);
-
-  async function refreshJobs() {
-    setJobs(await api.listJobs());
-  }
+  }, [refreshSettings]);
 
   async function handleRemoveFolder(folderId: number) {
-    await api.removeProjectFolder(folderId);
-    await onRefresh();
+    setRetryAction(() => () => void handleRemoveFolder(folderId));
+    const result = await runIpc(
+      async () => {
+        await api.removeProjectFolder(folderId);
+        await onRefresh();
+      },
+      { setPending: setActionPending, setError: setActionError, fallback: "Could not remove that folder." },
+    );
+    if (result.ok) setRetryAction(null);
   }
 
   async function handleCreateEpisode() {
     const code = newEpisodeCode.trim();
     if (!code) return;
-    setAddingEpisode(true);
-    await api.createEpisode(code);
-    setNewEpisodeCode("");
-    setAddingEpisode(false);
-    await onRefresh();
+    setRetryAction(() => () => void handleCreateEpisode());
+    const result = await runIpc(
+      async () => {
+        await api.createEpisode(code);
+        await onRefresh();
+      },
+      { setPending: setAddingEpisode, setError: setActionError, fallback: "Could not create that episode." },
+    );
+    if (result.ok) {
+      setNewEpisodeCode("");
+      setRetryAction(null);
+    }
   }
 
   async function handleSaveKey(provider: "gemini") {
     const key = geminiKey;
     if (!key.trim()) return;
-    setSavingProvider(provider);
-    await api.setApiKey(provider, key.trim());
-    setSettings(await api.getSettings());
+    setRetryAction(() => () => void handleSaveKey(provider));
+    const result = await runIpc(
+      async () => {
+        const status = await api.setApiKey(provider, key.trim());
+        if (status === "connected") {
+          setSettings(await api.getSettings());
+        }
+        return status;
+      },
+      { setPending: (pending) => setSavingProvider(pending ? provider : null), setError: setActionError, fallback: "Could not validate that key." },
+    );
+    if (!result.ok) return;
+    if (result.value === "invalid") {
+      setActionError("Gemini rejected that API key. Check it and try again.");
+      return;
+    }
+    if (result.value === "unavailable") {
+      setActionError("Gemini could not be reached to validate the key. Check your connection and retry.");
+      return;
+    }
     onSettingsChanged?.();
     setGeminiKey("");
-    setSavingProvider(null);
+    setRetryAction(null);
   }
 
   async function handleQualityChange(mode: QualityMode) {
-    await api.setQualityMode(mode);
-    setSettings(await api.getSettings());
+    setRetryAction(() => () => void handleQualityChange(mode));
+    const result = await runIpc(
+      async () => {
+        await api.setQualityMode(mode);
+        setSettings(await api.getSettings());
+      },
+      { setPending: setActionPending, setError: setActionError, fallback: "Could not change quality mode." },
+    );
+    if (result.ok) setRetryAction(null);
   }
+
+  async function handleDownloadModel() {
+    setRetryAction(() => () => void handleDownloadModel());
+    setModelProgress({ downloadedMb: 0, totalMb: null, pct: 0, done: false, error: null });
+    const result = await runIpc(api.downloadWhisperModel, {
+      setPending: setActionPending,
+      setError: setActionError,
+      fallback: "Could not start the speech model download.",
+    });
+    if (result.ok) setRetryAction(null);
+  }
+
+  const waitingCount = jobs?.filter((job) => job.status === "waiting").length ?? 0;
 
   return (
     <div className="jobs-screen">
       <div className="jobs-scroll">
         <div className="jobs-column">
+          {settingsError && (
+            <InlineError message={settingsError} onRetry={() => void refreshSettings()} retrying={settingsLoading} />
+          )}
+          {actionError && (
+            <InlineError
+              message={actionError}
+              onRetry={retryAction ?? undefined}
+              retrying={actionPending || addingEpisode || savingProvider !== null}
+            />
+          )}
           <section className="jobs-section">
             <div className="section-head">
               <span className="label">Jobs</span>
               <h2 className="display">Indexing queue</h2>
             </div>
+
+            {waitingCount > 0 && (
+              <p className="jobs-waiting-summary mono" role="status">
+                {waitingCount} {waitingCount === 1 ? "job is" : "jobs are"} paused until setup is complete. No retry is needed.
+              </p>
+            )}
+            {jobsError && (
+              <InlineError message={jobsError} onRetry={() => void refreshJobs()} retrying={jobsLoading} />
+            )}
 
             <table className="jobs-table mono">
               <thead>
@@ -110,7 +215,7 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                   <th>Stage</th>
                   <th>Status</th>
                   <th>Attempts</th>
-                  <th>Error</th>
+                  <th>Details</th>
                 </tr>
               </thead>
               <tbody>
@@ -127,7 +232,9 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                       </span>
                     </td>
                     <td>{job.attempts}</td>
-                    <td className="jobs-error">{job.error ?? "—"}</td>
+                    <td className={`job-detail${job.status === "waiting" ? " waiting" : job.status === "error" ? " error" : ""}`}>
+                      {job.status === "waiting" ? waitingMessage(job) : job.error ?? "—"}
+                    </td>
                   </tr>
                 ))}
                 {jobs?.length === 0 && (
@@ -139,8 +246,8 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                 )}
               </tbody>
             </table>
-            <button className="ghost-btn label" onClick={refreshJobs} style={{ marginTop: 14 }}>
-              Refresh
+            <button className="ghost-btn label" onClick={() => void refreshJobs()} disabled={jobsLoading} style={{ marginTop: 14 }}>
+              {jobsLoading ? "Refreshing…" : "Refresh"}
             </button>
           </section>
 
@@ -216,7 +323,7 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
 
             <ApiKeyField
               label="Gemini API key"
-              connected={settings?.geminiKeySet ?? false}
+              connected={settings?.geminiKeyStatus === "connected"}
               value={geminiKey}
               onChange={setGeminiKey}
               onSave={() => handleSaveKey("gemini")}
@@ -248,10 +355,8 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
               ) : (
                 <button
                   className="ghost-btn label"
-                  onClick={() => {
-                    setModelProgress({ downloadedMb: 0, totalMb: null, pct: 0, done: false, error: null });
-                    void api.downloadWhisperModel();
-                  }}
+                  onClick={() => void handleDownloadModel()}
+                  disabled={actionPending}
                 >
                   Download
                 </button>
@@ -277,7 +382,8 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                 <button
                   key={mode}
                   className={`quality-btn label${settings?.qualityMode === mode ? " active" : ""}`}
-                  onClick={() => handleQualityChange(mode)}
+                  onClick={() => void handleQualityChange(mode)}
+                  disabled={actionPending}
                 >
                   {mode}
                 </button>
@@ -361,6 +467,24 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         .jobs-error {
           color: var(--status-error);
           max-width: 280px;
+        }
+        .jobs-waiting-summary {
+          color: var(--status-warn);
+          background: rgba(208, 173, 95, 0.08);
+          border: 1px solid rgba(208, 173, 95, 0.2);
+          border-radius: 6px;
+          font-size: 11px;
+          padding: 9px 11px;
+          margin: 0 0 16px;
+        }
+        .job-detail {
+          max-width: 290px;
+        }
+        .job-detail.error {
+          color: var(--status-error);
+        }
+        .job-detail.waiting {
+          color: var(--status-warn);
         }
         .jobs-empty {
           color: var(--ink-faint);

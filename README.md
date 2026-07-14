@@ -124,20 +124,26 @@ your media; everything can be re-indexed.
 
 ```sh
 npm install
-npm run rebuild        # native better-sqlite3 for Electron
 npm run dev            # vite + electron
 npm run dev:renderer   # renderer only in a browser, with mock data
 npm run typecheck
 npm test
 npm run dist           # signed macOS DMG into release/
+npm run rebuild        # force a fresh Electron native rebuild (normally unnecessary)
 ```
 
 ### Releasing
 
-`npm run dist` forces the Electron-ABI native rebuild first (never package after running
-tests without it — a Node-ABI better-sqlite3 makes every database call fail in the
-packaged app). To **notarize** (required for friction-free installs on modern macOS),
-export before `npm run dist`:
+`npm run dev`, `npm test`, and `npm run dist` automatically select the correct
+better-sqlite3 binary. The first use of each ABI caches its compiled artifact under
+`.native-cache`; switching between tests/Node harnesses and Electron
+then copies or directly loads the matching cached file instead of rebuilding it. Direct
+`npx tsx scripts/e2e-*.mts` runs use the same cache and repair a missing Node artifact
+once if necessary. `npm run rebuild` remains available when a deliberately fresh
+Electron rebuild is needed.
+
+To **notarize** (required for friction-free installs on modern macOS), export before
+`npm run dist`:
 
 ```sh
 export APPLE_ID="you@example.com"
@@ -147,10 +153,6 @@ export APPLE_TEAM_ID="7Z82LSPAPP"
 
 Un-notarized builds are blocked by Gatekeeper on current macOS ("damaged / move to
 Trash"). Workaround for a machine you control: `xattr -d com.apple.quarantine /Applications/Dailies.app`.
-
-Note: better-sqlite3 is native and single-ABI. `npm run rebuild` compiles it for
-Electron (required for `npm run dev` / `npm run dist`); `npm rebuild better-sqlite3`
-compiles it for plain Node (required for the DB test in `npm test`). Switch as needed.
 
 ## Architecture
 

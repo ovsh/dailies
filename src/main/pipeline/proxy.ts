@@ -57,7 +57,11 @@ export async function extractKeyframe(path: string, atS: number, outPath: string
   ]);
 }
 
-/** Extracts mono 16kHz PCM16 WAV audio, suitable for whisper.cpp. */
+/**
+ * Extracts mono 16kHz PCM16 WAV audio, suitable for whisper.cpp.
+ * There is intentionally no seek/trim: the WAV starts at source t=0, so
+ * transcript startS offsets map 1:1 to playback time.
+ */
 export async function extractAudio(path: string, outWav: string): Promise<void> {
   await runFfmpeg([
     "-y",

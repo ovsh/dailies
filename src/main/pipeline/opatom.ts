@@ -21,6 +21,7 @@ interface FfprobeStream {
   codec_type?: string;
   codec_name?: string;
   avg_frame_rate?: string;
+  r_frame_rate?: string;
   tags?: Record<string, string>;
 }
 
@@ -45,6 +46,30 @@ function parseFrameRate(rate: string | undefined): number {
 
 function isNearDropFrameRate(fps: number): boolean {
   return Math.abs(fps - 29.97) < 0.05 || Math.abs(fps - 59.94) < 0.05;
+}
+
+/**
+ * Audio OP-Atom streams have no video avg_frame_rate, but some MXF writers
+ * expose the package/track edit rate as a tag. Preserve 0 when no edit rate is
+ * exposed: 0 means unknown and is preferable to inventing a source rate.
+ */
+function findAudioEditRate(format: FfprobeFormat | undefined, streams: FfprobeStream[]): number {
+  const tagSets = [format?.tags ?? {}, ...streams.map((stream) => stream.tags ?? {})];
+  for (const tags of tagSets) {
+    for (const [key, value] of Object.entries(tags)) {
+      const normalized = key.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+      const isEditRate = normalized.includes("edit_rate") ||
+        (normalized.includes("timecode") && normalized.includes("rate"));
+      if (!isEditRate) continue;
+      const rate = parseFrameRate(value);
+      if (rate > 0) return rate;
+    }
+  }
+  for (const stream of streams) {
+    const rate = parseFrameRate(stream.avg_frame_rate) || parseFrameRate(stream.r_frame_rate);
+    if (rate > 0) return rate;
+  }
+  return 0;
 }
 
 function findPackageUmid(format: FfprobeFormat | undefined, streams: FfprobeStream[]): string | null {
@@ -106,10 +131,9 @@ export async function analyzeMxf(ffprobePath: string, path: string): Promise<Mxf
 
   const primaryStream = essence === "video" ? videoStreams[0] : audioStreams[0];
 
-  // fps: video stream avg_frame_rate; audio atoms don't carry a meaningful
-  // frame rate of their own — the video atom wins later during merge, so
-  // default to 25 here and keep it simple.
-  const fps = essence === "video" ? parseFrameRate(primaryStream?.avg_frame_rate) : 25;
+  const fps = essence === "video"
+    ? parseFrameRate(primaryStream?.avg_frame_rate)
+    : findAudioEditRate(parsed.format, streams);
 
   const startTc =
     primaryStream?.tags?.["timecode"] ?? parsed.format?.tags?.["timecode"] ?? "00:00:00:00";
@@ -150,9 +174,8 @@ const DEFAULT_DEBOUNCE_MS = 4000;
 /**
  * Collects OP-Atom essence atoms and emits complete clips after quiescence:
  * groups by clipKey, (re)starting a per-group timer on every new atom for
- * that clip; when the timer fires, the group is emitted and cleared. If a
- * clip's atoms arrive later (e.g. a re-scan), emitting again is fine —
- * ingest is idempotent via clipKey.
+ * that clip. The timer is only a batching boundary: atoms remain associated
+ * with their durable clipKey, so a late atom emits an updated complete group.
  */
 export class OpAtomGrouper {
   private readonly debounceMs: number;
@@ -167,7 +190,9 @@ export class OpAtomGrouper {
 
   addAtom(info: MxfAtomInfo): void {
     const existing = this.groups.get(info.clipKey) ?? [];
-    existing.push(info);
+    const samePath = existing.findIndex((atom) => atom.path === info.path);
+    if (samePath >= 0) existing[samePath] = info;
+    else existing.push(info);
     this.groups.set(info.clipKey, existing);
 
     const existingTimer = this.timers.get(info.clipKey);
@@ -178,7 +203,6 @@ export class OpAtomGrouper {
     const timer = setTimeout(() => {
       this.timers.delete(info.clipKey);
       const atoms = this.groups.get(info.clipKey);
-      this.groups.delete(info.clipKey);
       if (!atoms || atoms.length === 0) return;
 
       const clipName = atoms.find((a) => a.clipName)?.clipName ?? null;
@@ -186,5 +210,11 @@ export class OpAtomGrouper {
     }, this.debounceMs);
 
     this.timers.set(info.clipKey, timer);
+  }
+
+  close(): void {
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    this.groups.clear();
   }
 }

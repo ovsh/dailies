@@ -8,14 +8,13 @@ import { FunctionCallingConfigMode, GoogleGenAI, Type } from "@google/genai";
 
 import type {
   AgentAnswer,
-  AnswerHit,
   ChatMessageRecord,
   Confidence,
+  DocumentHit,
   GeminiIndexer,
-  HitKind,
-  MediaRole,
   QualityMode,
   TextEmbedder,
+  TranscriptHit,
   VisualHit,
 } from "../../shared/types";
 import { GEMINI_MODELS } from "../../shared/types";
@@ -35,6 +34,8 @@ export interface ChatTurnOptions {
   embedder: TextEmbedder | null;
   episodeId: number | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
+  /** Test seam; production creates a client from geminiKey. */
+  ai?: GoogleGenAI;
 }
 
 const SUPERVISOR_SYSTEM = `You are a conversational assistant for a professional documentary editor cutting in Avid. You help them find and understand footage in their library. You are a chat partner first and a researcher second — you talk with the editor, and you go dig through the footage ONLY when they actually ask you to find or analyze something.
@@ -66,13 +67,64 @@ You are given a LIBRARY OVERVIEW at the start of every turn: the clips in the li
 
 ## Every turn ends the same way
 
-Always finish by calling final_answer exactly once. For a conversation or a clarifying question, that's a short friendly line with empty hits. For research, it's clear prose plus accurate timecoded hits. If you searched and found nothing, say so plainly — never pad with weak or invented hits.`;
+Always finish by calling final_answer exactly once. For a conversation or a clarifying question, that's a short friendly line with empty hits. For research, it's clear prose plus references to the strongest candidates returned by the scouts. A hit reference is only a source type ("segment" for SAID or "scene" for SEEN), its candidate ID, and confidence. Never write filenames, timecodes, quotes, or descriptions into a hit: the application loads those facts from its database. Only reference IDs that appeared in tool results during this turn. If you searched and found nothing, say so plainly — never pad with weak or invented hits.
+Write the prose as plain text: the app renders it verbatim, so markdown syntax (#, **, backticks, bullet asterisks) shows up as literal characters. Use short paragraphs and simple dashes for lists.`;
 
 const EPISODE_SCOPE_NOTICE =
   "The editor has scoped this conversation to a single episode; all search results are already restricted to it.";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
+}
+
+function parseFinalAnswerText(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const text = fenced ? fenced[1].trim() : trimmed;
+
+  const parseRecord = (json: string): Record<string, unknown> | null => {
+    try {
+      const parsed: unknown = JSON.parse(json);
+      return isRecord(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const whole = parseRecord(text);
+  if (whole) return whole;
+
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (start < 0) {
+      if (char === "{") {
+        start = i;
+        depth = 1;
+      }
+      continue;
+    }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === "\"") inString = false;
+      continue;
+    }
+    if (char === "\"") inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return parseRecord(text.slice(start, i + 1));
+    }
+  }
+  return null;
+}
+
+function normalizeFinalAnswerArgs(args: unknown): unknown {
+  return typeof args === "string" ? parseFinalAnswerText(args) : args;
 }
 
 // ---------- supervisor tool schemas ----------
@@ -149,20 +201,11 @@ const SUPERVISOR_DECLARATIONS: FunctionDeclaration[] = [
           items: {
             type: Type.OBJECT,
             properties: {
-              fileId: { type: Type.NUMBER },
-              filename: { type: Type.STRING },
-              role: { type: Type.STRING, enum: ["raw", "final"] },
-              kind: { type: Type.STRING, enum: ["visual", "spoken"] },
-              inTc: { type: Type.STRING },
-              outTc: { type: Type.STRING },
-              inS: { type: Type.NUMBER },
-              outS: { type: Type.NUMBER },
-              quote: { type: Type.STRING },
-              description: { type: Type.STRING },
+              source: { type: Type.STRING, enum: ["segment", "scene"] },
+              id: { type: Type.NUMBER },
               confidence: { type: Type.STRING, enum: ["high", "medium", "low"] },
-              keyframePath: { type: Type.STRING, nullable: true },
             },
-            required: ["fileId", "filename", "kind", "inTc", "outTc", "inS", "outS", "confidence"],
+            required: ["source", "id", "confidence"],
           },
         },
       },
@@ -171,50 +214,177 @@ const SUPERVISOR_DECLARATIONS: FunctionDeclaration[] = [
   },
 ];
 
-// ---------- final_answer coercion ----------
+// ---------- final_answer hydration ----------
 
-function coerceHit(raw: unknown): AnswerHit | null {
-  if (!isRecord(raw)) return null;
-  const fileId = typeof raw.fileId === "number" ? raw.fileId : 0;
-  const filename = typeof raw.filename === "string" ? raw.filename : null;
-  const roleRaw = raw.role;
-  const role: MediaRole | undefined = roleRaw === "raw" || roleRaw === "final" ? roleRaw : undefined;
-  const kindRaw = raw.kind;
-  const kind: HitKind | null = kindRaw === "visual" || kindRaw === "spoken" ? kindRaw : null;
-  const inTc = typeof raw.inTc === "string" ? raw.inTc : null;
-  const outTc = typeof raw.outTc === "string" ? raw.outTc : null;
-  const inS = typeof raw.inS === "number" ? raw.inS : 0;
-  const outS = typeof raw.outS === "number" ? raw.outS : 0;
-  const confidenceRaw = raw.confidence;
-  const confidence: Confidence | null =
-    confidenceRaw === "high" || confidenceRaw === "medium" || confidenceRaw === "low" ? confidenceRaw : null;
-
-  if (filename === null || kind === null || inTc === null || outTc === null || confidence === null) {
-    return null;
-  }
-
-  const hit: AnswerHit = {
-    fileId,
-    filename,
-    kind,
-    inTc,
-    outTc,
-    inS,
-    outS,
-    confidence,
-  };
-  if (role !== undefined) hit.role = role;
-  if (typeof raw.quote === "string") hit.quote = raw.quote;
-  if (typeof raw.description === "string") hit.description = raw.description;
-  if (typeof raw.keyframePath === "string" || raw.keyframePath === null) hit.keyframePath = raw.keyframePath;
-  return hit;
+export interface CandidateRegistry {
+  segments: Map<number, TranscriptHit>;
+  scenes: Map<number, VisualHit>;
+  documents: Map<number, DocumentHit>;
+  rejectedSceneIds: Set<number>;
 }
 
-function coerceFinalAnswer(args: unknown): AgentAnswer {
+export function createCandidateRegistry(): CandidateRegistry {
+  return {
+    segments: new Map(),
+    scenes: new Map(),
+    documents: new Map(),
+    rejectedSceneIds: new Set(),
+  };
+}
+
+interface CandidateReference {
+  source: "segment" | "scene";
+  id: number;
+  confidence: Confidence;
+}
+
+function coerceCandidateReference(raw: unknown): CandidateReference | null {
+  if (!isRecord(raw)) return null;
+  const source = raw.source === "segment" || raw.source === "scene" ? raw.source : null;
+  const numericId =
+    typeof raw.id === "number"
+      ? raw.id
+      : typeof raw.id === "string" && /^\d+$/.test(raw.id.trim())
+        ? Number(raw.id.trim())
+        : Number.NaN;
+  const id = Number.isSafeInteger(numericId) && numericId > 0 ? numericId : null;
+  const confidence =
+    raw.confidence === "high" || raw.confidence === "medium" || raw.confidence === "low"
+      ? raw.confidence
+      : null;
+  return source !== null && id !== null && confidence !== null ? { source, id, confidence } : null;
+}
+
+function isValidStoredRange(startS: number, endS: number, durationS: number): boolean {
+  return (
+    Number.isFinite(startS) &&
+    Number.isFinite(endS) &&
+    Number.isFinite(durationS) &&
+    startS >= 0 &&
+    endS > startS &&
+    endS <= durationS + 0.001
+  );
+}
+
+/**
+ * Converts model-selected candidate IDs into cards using only current DB rows.
+ * The model never supplies any exportable fact (file, role, range, quote, or
+ * visual description).
+ */
+export function hydrateFinalAnswer(
+  args: unknown,
+  db: DailiesDB,
+  registry: CandidateRegistry,
+  episodeId: number | null,
+  warn: (message: string) => void = (message) => console.warn(message),
+): AgentAnswer {
   const rec = isRecord(args) ? args : {};
   const prose = typeof rec.prose === "string" ? rec.prose : "";
-  const hitsRaw = Array.isArray(rec.hits) ? rec.hits : [];
-  const hits = hitsRaw.map(coerceHit).filter((h): h is AnswerHit => h !== null);
+  const rawRefs = Array.isArray(rec.hits) ? rec.hits : [];
+  const hits: AgentAnswer["hits"] = [];
+  const emitted = new Set<string>();
+
+  const drop = (ref: CandidateReference, reason: string): void => {
+    warn(`[chat-grounding] dropped ${ref.source} candidate ${ref.id}: ${reason}`);
+  };
+
+  for (const rawRef of rawRefs) {
+    const ref = coerceCandidateReference(rawRef);
+    if (!ref) {
+      const candidateId = isRecord(rawRef) && typeof rawRef.id === "number" ? ` ${rawRef.id}` : "";
+      warn(`[chat-grounding] dropped malformed candidate reference${candidateId}`);
+      continue;
+    }
+    const key = `${ref.source}:${ref.id}`;
+    if (emitted.has(key)) continue;
+
+    if (ref.source === "segment") {
+      const registered = registry.segments.get(ref.id);
+      if (!registered) {
+        drop(ref, "not returned by a scout this turn");
+        continue;
+      }
+      const row = db.getTranscriptHit(ref.id);
+      if (!row || row.fileId !== registered.fileId) {
+        drop(ref, "database row is missing or changed");
+        continue;
+      }
+      const file = db.getFile(row.fileId);
+      if (!file) {
+        drop(ref, "file is missing");
+        continue;
+      }
+      if (episodeId !== null && file.episodeId !== episodeId) {
+        drop(ref, "outside the selected episode");
+        continue;
+      }
+      if (!isValidStoredRange(row.startS, row.endS, file.durationS)) {
+        drop(ref, "stored range is outside the file duration");
+        continue;
+      }
+      hits.push({
+        fileId: file.id,
+        filename: file.clipName ?? file.filename,
+        role: file.role,
+        kind: "spoken",
+        inTc: row.startTc,
+        outTc: row.endTc,
+        inS: row.startS,
+        outS: row.endS,
+        quote: row.text,
+        confidence: ref.confidence,
+      });
+      emitted.add(key);
+      continue;
+    }
+
+    const registered = registry.scenes.get(ref.id);
+    if (!registered) {
+      drop(ref, "not returned by a scout this turn");
+      continue;
+    }
+    if (registry.rejectedSceneIds.has(ref.id)) {
+      drop(ref, "rejected by frame verification");
+      continue;
+    }
+    const row = db.getVisualHitByScene(ref.id);
+    if (!row || row.fileId !== registered.fileId) {
+      drop(ref, "database row is missing or changed");
+      continue;
+    }
+    const file = db.getFile(row.fileId);
+    if (!file) {
+      drop(ref, "file is missing");
+      continue;
+    }
+    if (episodeId !== null && file.episodeId !== episodeId) {
+      drop(ref, "outside the selected episode");
+      continue;
+    }
+    if (!file.hasVisualIndex) {
+      drop(ref, "file has no completed visual index");
+      continue;
+    }
+    if (!isValidStoredRange(row.startS, row.endS, file.durationS)) {
+      drop(ref, "stored range is outside the file duration");
+      continue;
+    }
+    hits.push({
+      fileId: file.id,
+      filename: file.clipName ?? file.filename,
+      role: file.role,
+      kind: "visual",
+      inTc: row.startTc,
+      outTc: row.endTc,
+      inS: row.startS,
+      outS: row.endS,
+      description: row.description,
+      confidence: ref.confidence,
+      keyframePath: row.keyframePath,
+    });
+    emitted.add(key);
+  }
+
   return { prose, hits };
 }
 
@@ -295,7 +465,7 @@ function isModelUnavailableError(err: unknown): boolean {
 
 export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
   const { db, history, userText, geminiKey, qualityMode, gemini, embedder, episodeId, emit } = opts;
-  const ai = new GoogleGenAI({ apiKey: geminiKey });
+  const ai = opts.ai ?? new GoogleGenAI({ apiKey: geminiKey });
   const subagentModel = GEMINI_MODELS.subagent;
 
   let supervisorModel: string = qualityMode === "high" ? GEMINI_MODELS.supervisorHigh : GEMINI_MODELS.supervisor;
@@ -311,8 +481,8 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     { role: "user", parts: [{ text: `${digest}\n\n---\n\nEditor's question: ${userText}` }] },
   ];
 
-  // turn-local cache of visual hits so frame_verifier can resolve scene ids
-  const visualHitCache = new Map<number, VisualHit>();
+  // Turn-local proof that a final reference came from a scout in this turn.
+  const registry = createCandidateRegistry();
 
   const executeTool = async (name: string, args: unknown): Promise<string> => {
     const rec = isRecord(args) ? args : {};
@@ -321,6 +491,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "transcript scout", status: `transcript scout — searching spoken references for "${query}"` });
       const result = await runTranscriptScout({ ai, model: subagentModel, db, query, embedder, episodeId });
+      for (const hit of result.hits) registry.segments.set(hit.segmentId, hit);
       return JSON.stringify(result);
     }
 
@@ -328,7 +499,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "visual scout", status: `visual scout — searching visual matches for "${query}"` });
       const result = await runVisualScout({ ai, model: subagentModel, db, query, gemini, embedder, episodeId });
-      for (const hit of result.hits) visualHitCache.set(hit.sceneId, hit);
+      for (const hit of result.hits) registry.scenes.set(hit.sceneId, hit);
       return JSON.stringify(result);
     }
 
@@ -336,6 +507,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "search notes", status: `search notes — searching producer notes for "${query}"` });
       const hits = await searchNotesTool(db, query, [], embedder, episodeId);
+      for (const hit of hits) registry.documents.set(hit.chunkId, hit);
       return JSON.stringify(hits);
     }
 
@@ -345,9 +517,12 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
         : [];
       emit({ type: "activity", agent: "frame verifier", status: `frame verifier — checking ${sceneIds.length} candidate scene(s)` });
       const candidates = sceneIds
-        .map((id) => visualHitCache.get(id))
+        .map((id) => registry.scenes.get(id))
         .filter((h): h is VisualHit => h !== undefined);
       const verdicts = await runFrameVerifier({ ai, model: subagentModel, db, candidates });
+      for (const verdict of verdicts) {
+        if (verdict.verdict === "reject") registry.rejectedSceneIds.add(verdict.sceneId);
+      }
       return JSON.stringify(verdicts);
     }
 
@@ -384,7 +559,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       role: "user",
       parts: [
         {
-          text: "You have gathered enough evidence. Stop searching and call final_answer now with your best answer and the strongest timecoded hits you found.",
+          text: "You have gathered enough evidence. Stop searching and call final_answer now with your best prose and references to the strongest candidate segment or scene IDs you found.",
         },
       ],
     });
@@ -427,10 +602,14 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       const calls = response.functionCalls ?? [];
       const finalCall = calls.find((c) => c.name === "final_answer");
       if (finalCall) {
-        return coerceFinalAnswer(finalCall.args);
+        return hydrateFinalAnswer(normalizeFinalAnswerArgs(finalCall.args), db, registry, episodeId);
       }
 
       if (calls.length === 0) {
+        const parsedFinal = parseFinalAnswerText(response.text ?? "");
+        if (parsedFinal && (typeof parsedFinal.prose === "string" || Array.isArray(parsedFinal.hits))) {
+          return hydrateFinalAnswer(parsedFinal, db, registry, episodeId);
+        }
         return { prose: response.text ?? "", hits: [] };
       }
 
@@ -461,7 +640,11 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     const forced = await generateForcedFinal();
     const forcedFinal = (forced.functionCalls ?? []).find((c) => c.name === "final_answer");
     if (forcedFinal) {
-      return coerceFinalAnswer(forcedFinal.args);
+      return hydrateFinalAnswer(normalizeFinalAnswerArgs(forcedFinal.args), db, registry, episodeId);
+    }
+    const parsedFinal = parseFinalAnswerText(forced.text ?? "");
+    if (parsedFinal && (typeof parsedFinal.prose === "string" || Array.isArray(parsedFinal.hits))) {
+      return hydrateFinalAnswer(parsedFinal, db, registry, episodeId);
     }
     return { prose: forced.text ?? response.text ?? "", hits: [] };
   } catch (err) {

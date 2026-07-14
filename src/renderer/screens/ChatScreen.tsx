@@ -1,6 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AgentAnswer, AnswerHit, Episode, ExportItem, ExportKind } from "../../shared/types";
+import type {
+  AgentAnswer,
+  AnswerHit,
+  ChatMessageRecord,
+  ChatSummary,
+  Episode,
+  ExportItem,
+  ExportKind,
+} from "../../shared/types";
 import { ActivityLine } from "../components/ActivityLine";
 import { EpisodeBar } from "../components/EpisodeBar";
 import { HitCard } from "../components/HitCard";
@@ -41,6 +49,35 @@ function confidenceRank(c: AnswerHit["confidence"]): number {
   return c === "high" ? 3 : c === "medium" ? 2 : 1;
 }
 
+function formatChatDate(iso: string): string {
+  const date = new Date(iso);
+  const year = date.getFullYear() === new Date().getFullYear() ? "" : ` ${date.getFullYear()}`;
+  return `${date.toLocaleString("en-US", { day: "2-digit", month: "short" })}${year}`.toUpperCase();
+}
+
+function messagesToTurns(messages: ChatMessageRecord[]): Turn[] {
+  const historicalTurns: Turn[] = [];
+  let current: Turn | null = null;
+
+  for (const message of messages) {
+    if (message.role === "user") {
+      current = {
+        id: `history-${message.id}`,
+        question: message.content,
+        activity: [],
+        answer: null,
+        error: null,
+        pending: false,
+      };
+      historicalTurns.push(current);
+    } else if (current && current.answer === null) {
+      current.answer = { prose: message.content, hits: message.hits ?? [] };
+    }
+  }
+
+  return historicalTurns;
+}
+
 export function ChatScreen({
   onOpenClip,
   geminiKeySet,
@@ -51,16 +88,37 @@ export function ChatScreen({
   onCreateEpisode,
 }: ChatScreenProps) {
   const [chatId, setChatId] = useState<number | null>(null);
+  const [chats, setChats] = useState<ChatSummary[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [chatsLoading, setChatsLoading] = useState(true);
+  const [conversationLoading, setConversationLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const activeTurnIdRef = useRef<string | null>(null);
+  const turnCounterRef = useRef(0);
+  const runningTurnIdRef = useRef<string | null>(null);
+  const historyGenerationRef = useRef(0);
+
+  const refreshChats = useCallback(async () => {
+    setChatsLoading(true);
+    try {
+      setChats(await api.listChats());
+      setHistoryError(null);
+    } catch {
+      setHistoryError("Could not load conversations.");
+    } finally {
+      setChatsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshChats();
+  }, [refreshChats]);
 
   useEffect(() => {
     const unsubscribe = api.onChatEvent((ev) => {
-      const turnId = activeTurnIdRef.current;
-      if (!turnId) return;
+      const turnId = ev.turnId;
       if (ev.type === "activity") {
         setTurns((prev) =>
           prev.map((t) => (t.id === turnId ? { ...t, activity: [...t.activity, { agent: ev.agent, status: ev.status }] } : t)),
@@ -69,13 +127,15 @@ export function ChatScreen({
         setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, answer: ev.answer } : t)));
       } else if (ev.type === "error") {
         setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, error: ev.message, pending: false } : t)));
+        if (runningTurnIdRef.current === turnId) runningTurnIdRef.current = null;
       } else if (ev.type === "done") {
         setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, pending: false } : t)));
-        activeTurnIdRef.current = null;
+        if (runningTurnIdRef.current === turnId) runningTurnIdRef.current = null;
+        void refreshChats();
       }
     });
     return unsubscribe;
-  }, []);
+  }, [refreshChats]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -83,22 +143,50 @@ export function ChatScreen({
 
   async function handleSend() {
     const text = input.trim();
-    if (!text) return;
+    if (!text || runningTurnIdRef.current !== null) return;
     setInput("");
 
-    const turnId = `${Date.now()}`;
-    activeTurnIdRef.current = turnId;
+    const turnId = `${Date.now()}-${++turnCounterRef.current}`;
+    runningTurnIdRef.current = turnId;
     setTurns((prev) => [...prev, { id: turnId, question: text, activity: [], answer: null, error: null, pending: true }]);
 
     try {
-      const res = await api.sendChatMessage(chatId, text, episodeId);
+      const res = await api.sendChatMessage(chatId, text, episodeId, turnId);
       setChatId(res.chatId);
+      void refreshChats();
     } catch (err) {
       setTurns((prev) =>
         prev.map((t) => (t.id === turnId ? { ...t, pending: false, error: err instanceof Error ? err.message : "Something went wrong." } : t)),
       );
-      activeTurnIdRef.current = null;
+      if (runningTurnIdRef.current === turnId) runningTurnIdRef.current = null;
     }
+  }
+
+  async function handleSelectChat(selectedChatId: number) {
+    if (runningTurnIdRef.current !== null || selectedChatId === chatId) return;
+    const generation = ++historyGenerationRef.current;
+    setChatId(selectedChatId);
+    setTurns([]);
+    setConversationLoading(true);
+    setHistoryError(null);
+    try {
+      const messages = await api.getChat(selectedChatId);
+      if (generation === historyGenerationRef.current) setTurns(messagesToTurns(messages));
+    } catch {
+      if (generation === historyGenerationRef.current) setHistoryError("Could not open that conversation.");
+    } finally {
+      if (generation === historyGenerationRef.current) setConversationLoading(false);
+    }
+  }
+
+  function handleNewChat() {
+    if (runningTurnIdRef.current !== null) return;
+    historyGenerationRef.current += 1;
+    setChatId(null);
+    setTurns([]);
+    setInput("");
+    setHistoryError(null);
+    setConversationLoading(false);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -113,6 +201,8 @@ export function ChatScreen({
       fileId: h.fileId,
       inTc: h.inTc,
       outTc: h.outTc,
+      inS: h.inS,
+      outS: h.outS,
       comment: h.quote ?? h.description ?? "",
       color: h.confidence === "high" ? "green" : h.confidence === "medium" ? "yellow" : undefined,
     }));
@@ -124,80 +214,113 @@ export function ChatScreen({
   }
 
   const isEmpty = turns.length === 0;
+  const isAnswering = turns.some((turn) => turn.pending);
   const activeEpisode = episodeId === null ? null : episodes.find((e) => e.id === episodeId) ?? null;
 
   return (
     <div className="chat-screen">
-      <div className="chat-scroll" ref={scrollRef}>
-        <div className="chat-column">
-          <div className="chat-episode-bar">
-            <EpisodeBar
-              episodes={episodes}
-              activeEpisodeId={episodeId}
-              onSelect={onEpisodeChange}
-              onCreate={onCreateEpisode}
-              size="centered"
-            />
-          </div>
-
-          {isEmpty && (
-            <div className="chat-empty">
-              <p className="display chat-empty-line">Ask your footage anything.</p>
-              <p className="chat-empty-sub">
-                Search transcripts and visuals together — "bears fishing at the river bend," "where does Marsh mention the
-                salmon run."
-              </p>
-              {activeEpisode && <p className="chat-empty-scope mono">Searching episode {activeEpisode.code}</p>}
-              {geminiKeySet === false && onOpenSettings && (
-                <button className="chat-key-hint" onClick={onOpenSettings}>
-                  No Gemini key yet — set one up in Settings →
-                </button>
-              )}
-            </div>
-          )}
-
-          {turns.map((turn) => (
-            <div key={turn.id} className="turn">
-              <div className="turn-question">
-                <span className="label turn-question-label">You</span>
-                <p>{turn.question}</p>
-              </div>
-
-              {(turn.pending || turn.activity.length > 0) && !turn.answer && (
-                <div className="turn-activity">
-                  {turn.activity.map((a, i) => (
-                    <ActivityLine key={i} agent={a.agent} status={a.status} index={i} />
-                  ))}
-                  {turn.pending && <span className="turn-cursor mono">▌</span>}
-                </div>
-              )}
-
-              {turn.error && <p className="turn-error mono">{turn.error}</p>}
-
-              {turn.answer && (
-                <TurnAnswer answer={turn.answer} onOpenClip={onOpenClip} onExport={(kind, hits) => handleExport(kind, hits)} />
-              )}
-            </div>
-          ))}
+      <aside className="chat-history" aria-label="Past conversations">
+        <div className="chat-history-head">
+          <span className="label">Conversations</span>
+          <button className="chat-new label" onClick={handleNewChat} disabled={isAnswering}>
+            + New
+          </button>
         </div>
-      </div>
-
-      <div className="chat-input-bar">
-        <div className="chat-column">
-          <div className="chat-input-wrap">
-            <textarea
-              className="chat-input"
-              placeholder="Ask about your footage…"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              rows={1}
-            />
-            <button className="chat-send label" onClick={handleSend} disabled={!input.trim()}>
-              Send
+        <div className="chat-history-list">
+          {chats.map((chat) => (
+            <button
+              key={chat.id}
+              className={`chat-history-item${chat.id === chatId ? " active" : ""}`}
+              onClick={() => void handleSelectChat(chat.id)}
+              disabled={isAnswering}
+              aria-current={chat.id === chatId ? "page" : undefined}
+            >
+              <span className="chat-history-title">{chat.title}</span>
+              <span className="chat-history-date mono">{formatChatDate(chat.createdAt)}</span>
             </button>
+          ))}
+          {chatsLoading && chats.length === 0 && <span className="chat-history-note mono">Loading…</span>}
+          {!chatsLoading && chats.length === 0 && !historyError && (
+            <span className="chat-history-note mono">No past chats.</span>
+          )}
+          {historyError && <span className="chat-history-note error mono">{historyError}</span>}
+        </div>
+      </aside>
+
+      <div className="chat-main">
+        <div className="chat-scroll" ref={scrollRef}>
+          <div className="chat-column">
+            <div className="chat-episode-bar">
+              <EpisodeBar
+                episodes={episodes}
+                activeEpisodeId={episodeId}
+                onSelect={onEpisodeChange}
+                onCreate={onCreateEpisode}
+                size="centered"
+              />
+            </div>
+
+            {conversationLoading && <p className="chat-conversation-loading mono">Loading conversation…</p>}
+
+            {isEmpty && !conversationLoading && (
+              <div className="chat-empty">
+                <p className="display chat-empty-line">Ask your footage anything.</p>
+                <p className="chat-empty-sub">
+                  Search transcripts and visuals together — "bears fishing at the river bend," "where does Marsh mention the
+                  salmon run."
+                </p>
+                {activeEpisode && <p className="chat-empty-scope mono">Searching episode {activeEpisode.code}</p>}
+                {geminiKeySet === false && onOpenSettings && (
+                  <button className="chat-key-hint" onClick={onOpenSettings}>
+                    No Gemini key yet — set one up in Settings →
+                  </button>
+                )}
+              </div>
+            )}
+
+            {turns.map((turn) => (
+              <div key={turn.id} className="turn">
+                <div className="turn-question">
+                  <span className="label turn-question-label">You</span>
+                  <p>{turn.question}</p>
+                </div>
+
+                {(turn.pending || turn.activity.length > 0) && !turn.answer && (
+                  <div className="turn-activity">
+                    {turn.activity.map((a, i) => (
+                      <ActivityLine key={i} agent={a.agent} status={a.status} index={i} />
+                    ))}
+                    {turn.pending && <span className="turn-cursor mono">▌</span>}
+                  </div>
+                )}
+
+                {turn.error && <p className="turn-error mono">{turn.error}</p>}
+
+                {turn.answer && (
+                  <TurnAnswer answer={turn.answer} onOpenClip={onOpenClip} onExport={(kind, hits) => handleExport(kind, hits)} />
+                )}
+              </div>
+            ))}
           </div>
-          <p className="chat-input-hint mono">⌘⏎ to send</p>
+        </div>
+
+        <div className="chat-input-bar">
+          <div className="chat-column">
+            <div className="chat-input-wrap">
+              <textarea
+                className="chat-input"
+                placeholder="Ask about your footage…"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                rows={1}
+              />
+              <button className="chat-send label" onClick={handleSend} disabled={!input.trim() || isAnswering}>
+                {isAnswering ? "Answering…" : "Send"}
+              </button>
+            </div>
+            <p className="chat-input-hint mono">⌘⏎ to send</p>
+          </div>
         </div>
       </div>
 
@@ -213,6 +336,98 @@ export function ChatScreen({
       <style>{`
         .chat-screen {
           height: 100%;
+          display: flex;
+          min-width: 0;
+        }
+        .chat-history {
+          flex: 0 0 216px;
+          min-width: 0;
+          padding: 50px 14px 22px;
+          border-right: 1px solid var(--hairline);
+          background: rgba(35, 40, 51, 0.45);
+          overflow: hidden;
+        }
+        .chat-history-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 0 7px 13px;
+          border-bottom: 1px solid var(--hairline);
+        }
+        .chat-new {
+          border: 0;
+          background: transparent;
+          color: var(--ink-dimmer);
+          padding: 3px 0;
+          font-size: 9.5px;
+          transition: color var(--dur-fast) var(--ease-out);
+        }
+        .chat-new:hover:not(:disabled) {
+          color: var(--accent);
+        }
+        .chat-new:disabled {
+          color: var(--ink-faint);
+          cursor: default;
+        }
+        .chat-history-list {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          padding-top: 10px;
+          overflow-y: auto;
+          max-height: calc(100% - 36px);
+        }
+        .chat-history-item {
+          width: 100%;
+          text-align: left;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          border: 1px solid transparent;
+          border-radius: 5px;
+          background: transparent;
+          padding: 9px 8px 8px;
+          transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+        }
+        .chat-history-item:hover:not(:disabled) {
+          background: rgba(255, 255, 255, 0.025);
+          border-color: var(--hairline);
+        }
+        .chat-history-item.active {
+          background: var(--accent-wash);
+          border-color: var(--hairline-strong);
+        }
+        .chat-history-item:disabled {
+          cursor: default;
+        }
+        .chat-history-title {
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          color: var(--ink-dim);
+          font-size: 11.5px;
+        }
+        .chat-history-item.active .chat-history-title {
+          color: var(--ink);
+        }
+        .chat-history-date {
+          color: var(--ink-faint);
+          font-size: 9px;
+        }
+        .chat-history-note {
+          padding: 8px;
+          color: var(--ink-faint);
+          font-size: 9.5px;
+          line-height: 1.5;
+        }
+        .chat-history-note.error {
+          color: var(--status-error);
+        }
+        .chat-main {
+          flex: 1;
+          min-width: 0;
           display: flex;
           flex-direction: column;
         }
@@ -233,6 +448,12 @@ export function ChatScreen({
         .chat-empty {
           padding-top: 14vh;
           text-align: center;
+        }
+        .chat-conversation-loading {
+          padding-top: 14vh;
+          text-align: center;
+          color: var(--ink-faint);
+          font-size: 10.5px;
         }
         .chat-empty-line {
           font-size: 34px;

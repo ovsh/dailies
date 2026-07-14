@@ -160,6 +160,29 @@ export function tcAddSeconds(tc: string, s: number, fps: number, dropFrame: bool
   return framesToTc(startFrames + deltaFrames, fps, dropFrame);
 }
 
+/** Format elapsed time when no source edit rate exists (for example, audio-only media). */
+export function formatElapsedOffset(s: number): string {
+  const totalMs = Math.max(Math.round(s * 1000), 0);
+  const ms = totalMs % 1000;
+  const totalSeconds = Math.floor(totalMs / 1000);
+  const ss = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const mm = totalMinutes % 60;
+  const hh = Math.floor(totalMinutes / 60);
+  const pad = (n: number, width = 2): string => String(n).padStart(width, "0");
+  return `+${pad(hh)}:${pad(mm)}:${pad(ss)}.${pad(ms, 3)}`;
+}
+
+/** Resolve an offset to source TC, or to an explicit elapsed offset when fps is unknown. */
+export function sourceTcAtOffset(
+  startTc: string,
+  offsetS: number,
+  fps: number,
+  dropFrame: boolean,
+): string {
+  return fps > 0 ? tcAddSeconds(startTc, offsetS, fps, dropFrame) : formatElapsedOffset(offsetS);
+}
+
 /**
  * Compare two timecodes at the given fps/dropFrame.
  * Returns negative if a < b, positive if a > b, 0 if equal.

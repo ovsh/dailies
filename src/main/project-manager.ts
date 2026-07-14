@@ -30,6 +30,7 @@ export interface ProjectContext {
   project: Project;
   db: DailiesDB;
   pipeline: Pipeline;
+  mediaDir: string;
 }
 
 export interface ProjectManager {
@@ -144,7 +145,12 @@ export function createProjectManager(opts: {
     reg.lastOpenedId = record.id;
     writeRegistry(reg);
 
-    ctx = { project: { ...toProject(record), lastOpenedAt: now }, db, pipeline };
+    ctx = {
+      project: { ...toProject(record), lastOpenedAt: now },
+      db,
+      pipeline,
+      mediaDir: record.mediaDir,
+    };
     return stateFor(ctx);
   }
 

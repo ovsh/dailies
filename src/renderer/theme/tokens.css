@@ -22,6 +22,7 @@
   /* status */
   --status-error: #d17c6c;
   --status-ok: #93a985;
+  --status-warn: #d0ad5f;
 
   /* type */
   --font-display: "Cormorant Garamond", "Times New Roman", serif;

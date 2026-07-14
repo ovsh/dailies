@@ -155,7 +155,8 @@ CREATE TABLE IF NOT EXISTS documents (
   episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id);
+-- idx_documents_episode_id is created by migrate() after legacy documents
+-- tables have received the episode_id column.
 
 CREATE TABLE IF NOT EXISTS doc_chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

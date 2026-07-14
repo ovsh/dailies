@@ -176,7 +176,7 @@ export type JobStage =
   | "transcribe"
   | "visual_index"
   | "embed";
-export type JobStatus = "queued" | "running" | "done" | "error";
+export type JobStatus = "queued" | "running" | "waiting" | "done" | "error";
 
 export interface Job {
   id: number;
@@ -187,6 +187,11 @@ export interface Job {
   attempts: number;
   error: string | null;
   updatedAt: string;
+}
+
+/** Lightweight signal that file/job-backed renderer data has changed. */
+export interface IndexUpdate {
+  revision: number;
 }
 
 // ---------- search ----------
@@ -256,10 +261,10 @@ export interface AgentAnswer {
 
 /** Events emitted while a chat turn runs (main -> renderer). */
 export type ChatEvent =
-  | { type: "activity"; chatId: number; agent: string; status: string }
-  | { type: "answer"; chatId: number; answer: AgentAnswer }
-  | { type: "error"; chatId: number; message: string }
-  | { type: "done"; chatId: number };
+  | { type: "activity"; chatId: number; turnId: string; agent: string; status: string }
+  | { type: "answer"; chatId: number; turnId: string; answer: AgentAnswer }
+  | { type: "error"; chatId: number; turnId: string; message: string }
+  | { type: "done"; chatId: number; turnId: string };
 
 // ---------- chat persistence ----------
 
@@ -286,6 +291,10 @@ export interface ExportItem {
   fileId: number;
   inTc: string;
   outTc: string;
+  /** Seconds from clip start; used when source edit rate is unknown. */
+  inS?: number;
+  /** Seconds from clip start; used when source edit rate is unknown. */
+  outS?: number;
   comment: string;
   /** Avid locator color. */
   color?: "red" | "green" | "blue" | "cyan" | "magenta" | "yellow" | "black" | "white";
@@ -300,6 +309,8 @@ export interface ExportResult {
 // ---------- settings ----------
 
 export type QualityMode = "standard" | "high";
+export type GeminiKeyStatus = "missing" | "connected" | "invalid" | "unavailable";
+export type ApiKeyValidationStatus = Exclude<GeminiKeyStatus, "missing">;
 
 /** Gemini model routing. Flash is GA; Pro falls back to Flash when unavailable. */
 export const GEMINI_MODELS = {
@@ -316,6 +327,8 @@ export const EMBEDDING_DIM = 768;
 /** Global (cross-project) settings. Folders/episodes live on ProjectState. */
 export interface AppSettings {
   geminiKeySet: boolean;
+  /** Only "connected" means the stored key passed a Gemini API request. */
+  geminiKeyStatus: GeminiKeyStatus;
   qualityMode: QualityMode;
   whisperModel: string;
   whisperAvailable: boolean;
@@ -398,6 +411,8 @@ export interface GeminiIndexer {
 
 export interface FileDetail {
   file: MediaFile;
+  /** Chromium-playable proxy, extracted audio, or supported original media. */
+  playbackPath: string | null;
   scenes: Scene[];
   segments: TranscriptSegment[];
   annotations: VisualAnnotation[];

@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, mediaUrl } from "../api";
 import type { FileDetail, Scene, TranscriptSegment } from "../../shared/types";
 import { TimecodeText } from "../components/TimecodeText";
+import { InlineError } from "../components/InlineError";
+import { AudioGlyph } from "../components/AudioGlyph";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
+import { runIpc } from "../lib/async";
+import { isAudioOnly } from "../lib/media";
 
 interface ClipScreenProps {
   fileId: number;
@@ -20,51 +25,70 @@ function formatDuration(durationS: number): string {
 
 export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
   const [detail, setDetail] = useState<FileDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activeSegmentId, setActiveSegmentId] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const loadGeneration = useRef(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    setDetail(null);
-    api.getFileDetail(fileId).then((d) => {
-      if (!cancelled) setDetail(d);
-    });
-    return () => {
-      cancelled = true;
-    };
+  const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    const result = await runIpc(
+      () => api.getFileDetail(fileId),
+      { setPending: setLoading, setError: setLoadError, fallback: "Could not load this clip." },
+    );
+    if (result.ok && generation === loadGeneration.current) setDetail(result.value);
   }, [fileId]);
 
   useEffect(() => {
-    if (detail && videoRef.current) {
-      videoRef.current.currentTime = seekS;
+    setDetail(null);
+    void load();
+  }, [fileId, load]);
+
+  useLiveRefresh(load);
+
+  useEffect(() => {
+    const media = audioRef.current ?? videoRef.current;
+    if (detail && media) {
+      media.currentTime = seekS;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail, fileId, seekS]);
 
   function handleTimeUpdate() {
-    if (!videoRef.current || !detail) return;
-    const t = videoRef.current.currentTime;
+    const media = audioRef.current ?? videoRef.current;
+    if (!media || !detail) return;
+    const t = media.currentTime;
     const seg = detail.segments.find((s) => t >= s.startS && t < s.endS);
     setActiveSegmentId(seg?.id ?? null);
   }
 
   function seekTo(s: number) {
-    if (videoRef.current) {
-      videoRef.current.currentTime = s;
-      videoRef.current.play().catch(() => {});
+    const media = audioRef.current ?? videoRef.current;
+    if (media) {
+      media.currentTime = s;
+      media.play().catch(() => {});
     }
   }
 
   if (!detail) {
     return (
       <div className="clip-screen">
-        <p className="clip-loading mono">Loading…</p>
+        {loading && <p className="clip-loading mono">Loading…</p>}
+        {loadError && (
+          <div className="clip-loading-error">
+            <InlineError message={loadError} onRetry={() => void load()} retrying={loading} />
+            <button className="clip-back label" onClick={onBack}>← Back</button>
+          </div>
+        )}
       </div>
     );
   }
 
-  const { file, scenes, segments } = detail;
-  const videoSrc = api.fileUrl(file.proxyPath ?? file.path);
+  const { file, playbackPath, scenes, segments } = detail;
+  const audioOnly = isAudioOnly(file);
+  const mediaSrc = mediaUrl(playbackPath);
 
   return (
     <div className="clip-screen">
@@ -74,24 +98,54 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
         </button>
         <h1 className="display clip-title">{file.filename}</h1>
         <p className="clip-meta-line mono">
-          {file.fps.toFixed(3)} FPS · <TimecodeText tc={file.startTc} dim /> · {formatDuration(file.durationS)} · {file.codec} ·{" "}
+          {audioOnly ? (
+            <><span className="clip-audio-chip label">Audio</span><span className="clip-meta-separator">·</span></>
+          ) : file.fps > 0 ? (
+            <>{file.fps.toFixed(3)} FPS <span className="clip-meta-separator">·</span></>
+          ) : null}
+          <TimecodeText tc={file.startTc} dim /> · {formatDuration(file.durationS)} · {file.codec} ·{" "}
           {file.role === "raw" ? "RAW" : "FINAL"}
         </p>
+        {loadError && <InlineError message={loadError} onRetry={() => void load()} retrying={loading} />}
       </header>
 
       <div className="clip-body">
         <div className="clip-player-col">
-          <div className="clip-player-wrap">
-            <video
-              ref={videoRef}
-              className="clip-video"
-              src={videoSrc}
-              controls
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={() => {
-                if (videoRef.current) videoRef.current.currentTime = seekS;
-              }}
-            />
+          <div className={`clip-player-wrap${audioOnly ? " audio" : ""}${!playbackPath ? " unavailable" : ""}`}>
+            {!playbackPath ? (
+              <div className="clip-preview-unavailable mono">
+                Original media can't be previewed in-app (MXF). Transcript timecodes still work.
+              </div>
+            ) : audioOnly ? (
+              <div className="clip-audio-player">
+                <div className="clip-audio-mark">
+                  <AudioGlyph size={54} />
+                  <span className="label">Audio source</span>
+                </div>
+                <audio
+                  ref={audioRef}
+                  className="clip-audio"
+                  src={mediaSrc}
+                  controls
+                  aria-label={`Play ${file.filename}`}
+                  onTimeUpdate={handleTimeUpdate}
+                  onLoadedMetadata={() => {
+                    if (audioRef.current) audioRef.current.currentTime = seekS;
+                  }}
+                />
+              </div>
+            ) : (
+              <video
+                ref={videoRef}
+                className="clip-video"
+                src={mediaSrc}
+                controls
+                onTimeUpdate={handleTimeUpdate}
+                onLoadedMetadata={() => {
+                  if (videoRef.current) videoRef.current.currentTime = seekS;
+                }}
+              />
+            )}
           </div>
 
           <div className="scene-strip">
@@ -103,7 +157,11 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
                   <span className="scene-chip-tc mono">{scene.startTc}</span>
                 </button>
               ))}
-              {scenes.length === 0 && <span className="scene-strip-empty mono">No scenes indexed yet.</span>}
+              {scenes.length === 0 && (
+                <span className="scene-strip-empty mono">
+                  {audioOnly ? "Audio-only clip — no visual scenes." : "No scenes indexed yet."}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -140,6 +198,9 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           color: var(--ink-dimmer);
           font-size: 12px;
         }
+        .clip-loading-error {
+          margin: 48px;
+        }
         .clip-header {
           padding: 32px 48px 20px;
           border-bottom: 1px solid var(--hairline);
@@ -165,6 +226,20 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
         .clip-meta-line {
           font-size: 11.5px;
           color: var(--ink-dimmer);
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 0;
+        }
+        .clip-audio-chip {
+          color: var(--accent);
+          border: 1px solid var(--accent-dim);
+          border-radius: 4px;
+          padding: 2px 6px;
+          line-height: 1.2;
+        }
+        .clip-meta-separator {
+          margin: 0 7px;
         }
         .clip-body {
           flex: 1;
@@ -186,11 +261,53 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           overflow: hidden;
           box-shadow: var(--shadow-card);
         }
+        .clip-player-wrap.audio {
+          background: var(--ground-raised);
+          border: 1px solid var(--hairline);
+        }
+        .clip-player-wrap.unavailable {
+          background: var(--ground-raised);
+          border: 1px solid var(--hairline);
+        }
+        .clip-preview-unavailable {
+          min-height: 230px;
+          padding: 42px;
+          display: grid;
+          place-items: center;
+          text-align: center;
+          color: var(--ink-dimmer);
+          font-size: 12px;
+          line-height: 1.6;
+        }
         .clip-video {
           width: 100%;
           display: block;
           aspect-ratio: 16 / 9;
           background: #000;
+        }
+        .clip-audio-player {
+          min-height: 230px;
+          padding: 38px 42px 30px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          background: radial-gradient(circle at 50% 38%, var(--accent-wash), transparent 40%);
+        }
+        .clip-audio-mark {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 10px;
+          color: var(--ink-dimmer);
+        }
+        .clip-audio-mark .label {
+          color: var(--ink-faint);
+        }
+        .clip-audio {
+          width: 100%;
+          height: 36px;
+          color-scheme: dark;
+          accent-color: var(--accent);
         }
         .scene-strip-label {
           display: block;

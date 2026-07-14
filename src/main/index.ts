@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { IPC } from "../shared/ipc";
+import type { IndexUpdate } from "../shared/types";
 import { setGlobalModelsDir } from "./pipeline/binaries";
 import { createAppSettings } from "./app-settings";
 import { createProjectManager } from "./project-manager";
@@ -31,6 +32,13 @@ function ensureStandardStreams(): void {
   }
 }
 ensureStandardStreams();
+
+// Test/e2e harnesses point the app at an isolated profile so runs never touch
+// the user's real projects. Must be set before anything reads userData.
+const userDataOverride = process.env["DAILIES_USER_DATA"];
+if (userDataOverride) {
+  app.setPath("userData", userDataOverride);
+}
 
 let win: BrowserWindow | null = null;
 
@@ -98,11 +106,13 @@ void app.whenReady().then(() => {
   process.on("unhandledRejection", (reason) => logLine("unhandledRejection", [reason]));
 
   const settings = createAppSettings(dataDir);
+  let indexRevision = 0;
   const manager = createProjectManager({
     dataDir,
     settings,
     onUpdate: () => {
-      win?.webContents.send(IPC.projectUpdate);
+      const update: IndexUpdate = { revision: ++indexRevision };
+      win?.webContents.send(IPC.indexUpdate, update);
     },
   });
 

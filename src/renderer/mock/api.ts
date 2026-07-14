@@ -9,6 +9,7 @@ import type { ModelDownloadProgress,
   ExportKind,
   ExportResult,
   FileDetail,
+  IndexUpdate,
   MediaRole,
   Project,
   ProjectFolder,
@@ -36,6 +37,8 @@ const modelProgressListeners = new Set<(p: ModelDownloadProgress) => void>();
 export function createMockApi(): DailiesAPI {
   const listeners = new Set<Listener>();
   const projectUpdateListeners = new Set<() => void>();
+  const indexUpdateListeners = new Set<(update: IndexUpdate) => void>();
+  let indexRevision = 0;
   let nextChatId = MOCK_CHATS.length + 1;
   let settings = { ...MOCK_SETTINGS };
 
@@ -59,6 +62,11 @@ export function createMockApi(): DailiesAPI {
 
   function notifyProjectUpdate(): void {
     projectUpdateListeners.forEach((cb) => cb());
+  }
+
+  function notifyIndexUpdate(): void {
+    const update = { revision: ++indexRevision };
+    indexUpdateListeners.forEach((cb) => cb(update));
   }
 
   function buildProjectState(): ProjectState | null {
@@ -218,8 +226,9 @@ export function createMockApi(): DailiesAPI {
     },
 
     async setApiKey(_provider: "gemini") {
-      settings = { ...settings, geminiKeySet: true };
-      return true;
+      settings = { ...settings, geminiKeySet: true, geminiKeyStatus: "connected" };
+      notifyIndexUpdate();
+      return "connected" as const;
     },
 
     async setQualityMode(mode) {
@@ -236,8 +245,12 @@ export function createMockApi(): DailiesAPI {
       return MOCK_CHAT_MESSAGES[chatId] ?? [];
     },
 
-    async sendChatMessage(chatId: number | null, text: string, _episodeId: number | null) {
-      const id = chatId ?? nextChatId++;
+    async sendChatMessage(chatId: number | null, text: string, _episodeId: number | null, turnId: string) {
+      const existingChat = chatId !== null && MOCK_CHATS.some((chat) => chat.id === chatId);
+      const id = existingChat ? chatId : nextChatId++;
+      if (!existingChat) {
+        MOCK_CHATS.unshift({ id, title: text.slice(0, 48), createdAt: new Date().toISOString() });
+      }
       const existing = MOCK_CHAT_MESSAGES[id] ?? [];
       const userMsg = {
         id: existing.length + 1,
@@ -253,7 +266,7 @@ export function createMockApi(): DailiesAPI {
       let delay = 300;
       AGENT_STAGES.forEach((stage) => {
         delay += 550 + Math.random() * 250;
-        setTimeout(() => emit({ type: "activity", chatId: id, agent: stage.agent, status: stage.status }), delay);
+        setTimeout(() => emit({ type: "activity", chatId: id, turnId, agent: stage.agent, status: stage.status }), delay);
       });
 
       const answerDelay = delay + 500;
@@ -268,8 +281,8 @@ export function createMockApi(): DailiesAPI {
           createdAt: new Date().toISOString(),
         };
         MOCK_CHAT_MESSAGES[id] = [...(MOCK_CHAT_MESSAGES[id] ?? []), assistantMsg];
-        emit({ type: "answer", chatId: id, answer });
-        setTimeout(() => emit({ type: "done", chatId: id }), 120);
+        emit({ type: "answer", chatId: id, turnId, answer });
+        setTimeout(() => emit({ type: "done", chatId: id, turnId }), 120);
       }, answerDelay);
 
       return { chatId: id };
@@ -299,6 +312,11 @@ export function createMockApi(): DailiesAPI {
     onProjectUpdate(cb: () => void) {
       projectUpdateListeners.add(cb);
       return () => projectUpdateListeners.delete(cb);
+    },
+
+    onIndexUpdate(cb: (update: IndexUpdate) => void) {
+      indexUpdateListeners.add(cb);
+      return () => indexUpdateListeners.delete(cb);
     },
 
     fileUrl(path: string) {

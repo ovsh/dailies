@@ -4,6 +4,7 @@
 import Database from "better-sqlite3";
 import type { Database as BetterSqlite3Database } from "better-sqlite3";
 import { SCHEMA_SQL } from "./schema";
+import { cachedBetterSqlite3Binding, repairBetterSqlite3Binding } from "./native-binding";
 import type {
   AnswerHit,
   ChatMessageRecord,
@@ -33,6 +34,7 @@ import type {
   VisualSearchFilters,
   WordTiming,
 } from "../../shared/types";
+import { sourceTcAtOffset } from "../../shared/timecode";
 import type { DailiesDB } from "./types";
 
 // ---------- raw row shapes (snake_case, as returned by better-sqlite3) ----------
@@ -347,114 +349,6 @@ function mapDocument(row: DocumentRow, chunkCount: number): DocumentRecord {
   };
 }
 
-// ---------- timecode helpers ----------
-
-/**
- * Parses "HH:MM:SS:FF" into a total frame count using plain (non-drop) arithmetic.
- */
-function tcToFrames(tc: string, nominalFps: number): number {
-  const cleaned = tc.trim().replace(";", ":");
-  const parts = cleaned.split(":").map((p) => parseInt(p, 10) || 0);
-  const [hh, mm, ss, ff] = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0, parts[3] ?? 0];
-  return (hh * 3600 + mm * 60 + ss) * nominalFps + ff;
-}
-
-/**
- * Standard SMPTE drop-frame timecode -> absolute (drop-frame) frame count.
- * Drops 2 frame labels/minute (29.97) or 4 (59.94), except every 10th minute.
- */
-function standardDropFrameToFrames(
-  hh: number,
-  mm: number,
-  ss: number,
-  ff: number,
-  nominalFps: number,
-): number {
-  const dropFramesPerMinute = nominalFps === 60 ? 4 : 2;
-  const totalMinutes = hh * 60 + mm;
-  const droppedMinutes = totalMinutes - Math.floor(totalMinutes / 10);
-  return (
-    nominalFps * 3600 * hh + nominalFps * 60 * mm + nominalFps * ss + ff - dropFramesPerMinute * droppedMinutes
-  );
-}
-
-/** Standard SMPTE drop-frame frame count -> HH:MM:SS;FF (inverse of standardDropFrameToFrames). */
-function framesToDropFrameTc(totalFrames: number, nominalFps: number): string {
-  const dropFramesPerMinute = nominalFps === 60 ? 4 : 2;
-  const minutesPerDay = 24 * 60;
-  const framesPer24Hours =
-    nominalFps * 3600 * 24 - dropFramesPerMinute * (minutesPerDay - Math.floor(minutesPerDay / 10));
-  const frameNumber = ((totalFrames % framesPer24Hours) + framesPer24Hours) % framesPer24Hours;
-
-  // standardDropFrameToFrames(hh, mm, 0, 0, fps) is monotonically increasing in
-  // totalMinutes, so binary search for the containing minute.
-  let lo = 0;
-  let hi = minutesPerDay;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    const framesAtStartOfMinute = standardDropFrameToFrames(
-      Math.floor(mid / 60),
-      mid % 60,
-      0,
-      0,
-      nominalFps,
-    );
-    if (framesAtStartOfMinute <= frameNumber) lo = mid + 1;
-    else hi = mid;
-  }
-  const totalMinutes = lo - 1;
-  const hh = Math.floor(totalMinutes / 60);
-  const mm = totalMinutes % 60;
-  const framesAtStartOfMinute = standardDropFrameToFrames(hh, mm, 0, 0, nominalFps);
-  const remainder = frameNumber - framesAtStartOfMinute;
-  const ss = Math.floor(remainder / nominalFps);
-  const ff = remainder % nominalFps;
-
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  return `${pad(hh)}:${pad(mm)}:${pad(ss)};${pad(ff)}`;
-}
-
-function framesToNonDropTc(totalFrames: number, nominalFps: number): string {
-  const safeFrames = ((totalFrames % (nominalFps * 3600 * 24)) + nominalFps * 3600 * 24) % (nominalFps * 3600 * 24);
-  const ff = safeFrames % nominalFps;
-  const totalSeconds = Math.floor(safeFrames / nominalFps);
-  const ss = totalSeconds % 60;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const mm = totalMinutes % 60;
-  const hh = Math.floor(totalMinutes / 60) % 24;
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  return `${pad(hh)}:${pad(mm)}:${pad(ss)}:${pad(ff)}`;
-}
-
-/**
- * Computes a timecode string `offsetS` seconds after `fileStartTc`, at the
- * given fps/dropFrame. Self-contained SMPTE drop-frame handling for
- * 29.97 and 59.94 fps (drop 2 / 4 frames per minute, except every 10th minute).
- */
-function secondsToTc(
-  fileStartTc: string,
-  fps: number,
-  dropFrame: boolean,
-  offsetS: number,
-): string {
-  const nominalFps = Math.round(fps);
-  const offsetFrames = Math.round(offsetS * fps);
-
-  if (dropFrame && (nominalFps === 30 || nominalFps === 60)) {
-    const cleaned = fileStartTc.trim();
-    const lastSepIndex = Math.max(cleaned.lastIndexOf(":"), cleaned.lastIndexOf(";"));
-    const head = cleaned.slice(0, lastSepIndex);
-    const ff = parseInt(cleaned.slice(lastSepIndex + 1), 10) || 0;
-    const headParts = head.split(":").map((p) => parseInt(p, 10) || 0);
-    const [hh, mm, ss] = [headParts[0] ?? 0, headParts[1] ?? 0, headParts[2] ?? 0];
-    const startFrames = standardDropFrameToFrames(hh, mm, ss, ff, nominalFps);
-    return framesToDropFrameTc(startFrames + offsetFrames, nominalFps);
-  }
-
-  const startFrames = tcToFrames(fileStartTc, nominalFps);
-  return framesToNonDropTc(startFrames + offsetFrames, nominalFps);
-}
-
 // ---------- embedding helpers ----------
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -472,6 +366,9 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (normA === 0 || normB === 0) return 0;
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
+
+/** Reject weak nearest-neighbour guesses instead of always returning a top hit. */
+const SEMANTIC_RELEVANCE_FLOOR = 0.35;
 
 // ---------- FTS helpers ----------
 
@@ -586,7 +483,17 @@ function migrate(db: BetterSqlite3Database): void {
 // ---------- database implementation ----------
 
 export function openDatabase(dbPath: string): DailiesDB {
-  const db: BetterSqlite3Database = new Database(dbPath);
+  let db: BetterSqlite3Database;
+  const cachedBinding = cachedBetterSqlite3Binding();
+  try {
+    db = new Database(dbPath, cachedBinding ? { nativeBinding: cachedBinding } : undefined);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("NODE_MODULE_VERSION")) throw error;
+
+    const repairedBinding = repairBetterSqlite3Binding();
+    db = new Database(dbPath, repairedBinding ? { nativeBinding: repairedBinding } : undefined);
+  }
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA_SQL);
@@ -630,6 +537,7 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtUpdateFile = db.prepare<
     [
       string,
+      string,
       number,
       number,
       number,
@@ -647,7 +555,7 @@ export function openDatabase(dbPath: string): DailiesDB {
     ],
     FileRow
   >(
-    `UPDATE files SET filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?,
+    `UPDATE files SET path = ?, filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?,
        role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?, episode_id = ?
      WHERE id = ?
      RETURNING *`,
@@ -658,6 +566,10 @@ export function openDatabase(dbPath: string): DailiesDB {
   );
   const stmtSetFileStatus = db.prepare<[string, number]>("UPDATE files SET status = ? WHERE id = ?");
   const stmtSetFileProxy = db.prepare<[string, number]>("UPDATE files SET proxy_path = ? WHERE id = ?");
+  const stmtClearDerivedFileState = db.prepare<[number]>(
+    `UPDATE files SET status = 'pending', has_transcript = 0,
+       has_visual_index = 0, proxy_path = NULL WHERE id = ?`,
+  );
   const stmtMarkTranscribed = db.prepare<[number]>("UPDATE files SET has_transcript = 1 WHERE id = ?");
   const stmtMarkVisuallyIndexed = db.prepare<[number]>("UPDATE files SET has_visual_index = 1 WHERE id = ?");
 
@@ -729,6 +641,7 @@ export function openDatabase(dbPath: string): DailiesDB {
     "DELETE FROM visual_annotations WHERE scene_id = ?",
   );
   const stmtDeleteVisualFtsForScene = db.prepare<[number]>("DELETE FROM visual_fts WHERE scene_id = ?");
+  const stmtDeleteVisualFtsForFile = db.prepare<[number]>("DELETE FROM visual_fts WHERE file_id = ?");
   const stmtInsertAnnotation = db.prepare<
     [number, number, string, string, string | null, string | null, number | null, string, string, string],
     AnnotationRow
@@ -820,6 +733,14 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtDeleteEmbedding = db.prepare<[string, number]>(
     "DELETE FROM embeddings WHERE kind = ? AND ref_id = ?",
   );
+  const stmtDeleteSegmentEmbeddingsForFile = db.prepare<[number]>(
+    `DELETE FROM embeddings WHERE kind = 'segment'
+     AND ref_id IN (SELECT id FROM transcript_segments WHERE file_id = ?)`,
+  );
+  const stmtDeleteSceneEmbeddingsForFile = db.prepare<[number]>(
+    `DELETE FROM embeddings WHERE kind = 'scene'
+     AND ref_id IN (SELECT id FROM scenes WHERE file_id = ?)`,
+  );
   const stmtListUnembeddedSegments = db.prepare<[number], { ref_id: number; text: string }>(
     `SELECT transcript_segments.id AS ref_id, transcript_segments.text AS text
      FROM transcript_segments
@@ -857,11 +778,20 @@ export function openDatabase(dbPath: string): DailiesDB {
     "SELECT kind, ref_id, vector FROM embeddings WHERE kind = ?",
   );
 
-  const stmtEnqueueJob = db.prepare<[number, string, string]>(
-    "INSERT INTO jobs (file_id, stage, status, attempts, updated_at) VALUES (?, ?, 'queued', 0, ?)",
+  const stmtEnqueueJob = db.prepare<[{ fileId: number; stage: string; now: string }]>(
+    `INSERT INTO jobs (file_id, stage, status, attempts, updated_at)
+     SELECT @fileId, @stage, 'queued', 0, @now
+     WHERE NOT EXISTS (
+       SELECT 1 FROM jobs
+       WHERE file_id = @fileId AND stage = @stage AND status IN ('queued', 'running', 'waiting')
+     )`,
   );
   const stmtClaimNextJobId = db.prepare<[], { id: number }>(
     "SELECT id FROM jobs WHERE status = 'queued' ORDER BY id ASC LIMIT 1",
+  );
+  const stmtHasActiveJob = db.prepare<[number, string], { count: number }>(
+    `SELECT COUNT(*) AS count FROM jobs
+     WHERE file_id = ? AND stage = ? AND status IN ('queued', 'running', 'waiting')`,
   );
   const stmtClaimJob = db.prepare<[string, number], JobRow>(
     `UPDATE jobs SET status = 'running', updated_at = ?
@@ -874,7 +804,18 @@ export function openDatabase(dbPath: string): DailiesDB {
      WHERE jobs.id = ?`,
   );
   const stmtCompleteJob = db.prepare<[string, number]>(
-    "UPDATE jobs SET status = 'done', updated_at = ? WHERE id = ?",
+    "UPDATE jobs SET status = 'done', error = NULL, updated_at = ? WHERE id = ?",
+  );
+  const stmtWaitJob = db.prepare<[string, string, number]>(
+    "UPDATE jobs SET status = 'waiting', error = ?, updated_at = ? WHERE id = ?",
+  );
+  const stmtRequeueWaitingStage = db.prepare<[string, string]>(
+    `UPDATE jobs SET status = 'queued', error = NULL, updated_at = ?
+     WHERE status = 'waiting' AND stage = ?`,
+  );
+  const stmtRetryJob = db.prepare<[string, string, number]>(
+    `UPDATE jobs SET status = 'queued', error = ?, attempts = attempts + 1,
+       updated_at = ? WHERE id = ?`,
   );
   const stmtFailJob = db.prepare<[string, string, number]>(
     "UPDATE jobs SET status = 'error', error = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?",
@@ -882,6 +823,7 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtResetRunningJobs = db.prepare<[string]>(
     "UPDATE jobs SET status = 'queued', updated_at = ? WHERE status = 'running'",
   );
+  const stmtDeleteJobsForFile = db.prepare<[number]>("DELETE FROM jobs WHERE file_id = ?");
   const stmtListJobs = db.prepare<[number], JobRow>(
     `SELECT jobs.id, jobs.file_id, files.filename, jobs.stage, jobs.status, jobs.attempts, jobs.error, jobs.updated_at
      FROM jobs JOIN files ON files.id = jobs.file_id
@@ -1098,6 +1040,73 @@ export function openDatabase(dbPath: string): DailiesDB {
     return withFilename ? mapJob(withFilename) : null;
   });
 
+  const upsertFileTx = db.transaction((input: FileInput): MediaFile => {
+    const role = input.role ?? "raw";
+    const mediaKind = input.mediaKind ?? "standard";
+    const clipName = input.clipName ?? null;
+    const memberPaths = input.memberPaths ? JSON.stringify(input.memberPaths) : null;
+    const clipKey = input.clipKey ?? null;
+    const episodeId = input.episodeId ?? null;
+    const existing = (clipKey ? stmtGetFileByClipKey.get(clipKey) : undefined) ??
+      stmtGetFileByPath.get(input.path);
+
+    if (existing) {
+      if (existing.file_hash !== input.fileHash) {
+        // Clear every searchable/derived representation before exposing the
+        // new hash. This transaction prevents stale transcript, visual, proxy,
+        // and embedding state from masquerading as current content.
+        stmtDeleteSegmentEmbeddingsForFile.run(existing.id);
+        stmtDeleteSceneEmbeddingsForFile.run(existing.id);
+        stmtDeleteTranscriptFts.run(existing.id);
+        stmtDeleteVisualFtsForFile.run(existing.id);
+        stmtDeleteSegments.run(existing.id);
+        stmtDeleteScenes.run(existing.id);
+        stmtDeleteJobsForFile.run(existing.id);
+        stmtClearDerivedFileState.run(existing.id);
+      }
+      const updated = stmtUpdateFile.get(
+        input.path,
+        input.filename,
+        input.durationS,
+        input.fps,
+        input.dropFrame ? 1 : 0,
+        input.startTc,
+        input.codec,
+        input.audioChannels,
+        input.fileHash,
+        role,
+        clipName,
+        mediaKind,
+        memberPaths,
+        clipKey,
+        episodeId,
+        existing.id,
+      );
+      return mapFile(updated ?? existing);
+    }
+
+    const row = stmtInsertFile.get(
+      input.path,
+      input.filename,
+      input.durationS,
+      input.fps,
+      input.dropFrame ? 1 : 0,
+      input.startTc,
+      input.codec,
+      input.audioChannels,
+      input.fileHash,
+      new Date().toISOString(),
+      role,
+      clipName,
+      mediaKind,
+      memberPaths,
+      clipKey,
+      episodeId,
+    );
+    if (!row) throw new Error("upsertFile: insert failed");
+    return mapFile(row);
+  });
+
   const upsertDocumentTx = db.transaction((input: DocumentInput): DocumentRecord => {
     const episodeId = input.episodeId ?? null;
     const existing = stmtGetDocumentByPath.get(input.path);
@@ -1143,53 +1152,7 @@ export function openDatabase(dbPath: string): DailiesDB {
   return {
     // files
     upsertFile(input: FileInput): MediaFile {
-      const role = input.role ?? "raw";
-      const mediaKind = input.mediaKind ?? "standard";
-      const clipName = input.clipName ?? null;
-      const memberPaths = input.memberPaths ? JSON.stringify(input.memberPaths) : null;
-      const clipKey = input.clipKey ?? null;
-      const episodeId = input.episodeId ?? null;
-      const existing = stmtGetFileByPath.get(input.path);
-      if (existing) {
-        const updated = stmtUpdateFile.get(
-          input.filename,
-          input.durationS,
-          input.fps,
-          input.dropFrame ? 1 : 0,
-          input.startTc,
-          input.codec,
-          input.audioChannels,
-          input.fileHash,
-          role,
-          clipName,
-          mediaKind,
-          memberPaths,
-          clipKey,
-          episodeId,
-          existing.id,
-        );
-        return mapFile(updated ?? existing);
-      }
-      const row = stmtInsertFile.get(
-        input.path,
-        input.filename,
-        input.durationS,
-        input.fps,
-        input.dropFrame ? 1 : 0,
-        input.startTc,
-        input.codec,
-        input.audioChannels,
-        input.fileHash,
-        new Date().toISOString(),
-        role,
-        clipName,
-        mediaKind,
-        memberPaths,
-        clipKey,
-        episodeId,
-      );
-      if (!row) throw new Error("upsertFile: insert failed");
-      return mapFile(row);
+      return upsertFileTx(input);
     },
 
     getFile(id: number): MediaFile | null {
@@ -1330,8 +1293,8 @@ export function openDatabase(dbPath: string): DailiesDB {
         segmentId: row.segment_id,
         startS: row.start_s,
         endS: row.end_s,
-        startTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.start_s),
-        endTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.end_s),
+        startTc: sourceTcAtOffset(row.start_tc, row.start_s, row.fps, row.drop_frame === 1),
+        endTc: sourceTcAtOffset(row.start_tc, row.end_s, row.fps, row.drop_frame === 1),
         text: row.text,
         score: scores[i] ?? 0,
       }));
@@ -1356,8 +1319,8 @@ export function openDatabase(dbPath: string): DailiesDB {
         sceneId: row.scene_id,
         startS: row.scene_start_s,
         endS: row.scene_end_s,
-        startTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.scene_start_s),
-        endTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.scene_end_s),
+        startTc: sourceTcAtOffset(row.start_tc, row.scene_start_s, row.fps, row.drop_frame === 1),
+        endTc: sourceTcAtOffset(row.start_tc, row.scene_end_s, row.fps, row.drop_frame === 1),
         description: row.description,
         objects: JSON.parse(row.objects) as string[],
         shotType: row.shot_type,
@@ -1377,8 +1340,8 @@ export function openDatabase(dbPath: string): DailiesDB {
         segmentId: row.segment_id,
         startS: row.start_s,
         endS: row.end_s,
-        startTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.start_s),
-        endTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.end_s),
+        startTc: sourceTcAtOffset(row.start_tc, row.start_s, row.fps, row.drop_frame === 1),
+        endTc: sourceTcAtOffset(row.start_tc, row.end_s, row.fps, row.drop_frame === 1),
         text: row.text,
         score: 0,
       };
@@ -1395,8 +1358,8 @@ export function openDatabase(dbPath: string): DailiesDB {
         sceneId: row.scene_id,
         startS: row.scene_start_s,
         endS: row.scene_end_s,
-        startTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.scene_start_s),
-        endTc: secondsToTc(row.start_tc, row.fps, row.drop_frame === 1, row.scene_end_s),
+        startTc: sourceTcAtOffset(row.start_tc, row.scene_start_s, row.fps, row.drop_frame === 1),
+        endTc: sourceTcAtOffset(row.start_tc, row.scene_end_s, row.fps, row.drop_frame === 1),
         description: row.description ?? "",
         objects: row.objects ? (JSON.parse(row.objects) as string[]) : [],
         shotType: row.shot_type,
@@ -1497,22 +1460,19 @@ export function openDatabase(dbPath: string): DailiesDB {
         return { refId: row.ref_id, similarity: cosineSimilarity(query, vector) };
       });
       scored.sort((a, b) => b.similarity - a.similarity);
-      const top = scored.slice(0, limit);
-      if (top.length === 0) return [];
-      const max = top[0]?.similarity ?? 0;
-      const min = top[top.length - 1]?.similarity ?? 0;
-      if (max === min) {
-        return top.map((r) => ({ refId: r.refId, score: 1 }));
-      }
-      return top.map((r) => ({
-        refId: r.refId,
-        score: (r.similarity - min) / (max - min),
-      }));
+      return scored
+        .filter((row) => row.similarity >= SEMANTIC_RELEVANCE_FLOOR)
+        .slice(0, limit)
+        .map((row) => ({ refId: row.refId, score: row.similarity }));
     },
 
     // job queue
     enqueueJob(fileId: number, stage: JobStage): void {
-      stmtEnqueueJob.run(fileId, stage, new Date().toISOString());
+      stmtEnqueueJob.run({ fileId, stage, now: new Date().toISOString() });
+    },
+
+    hasActiveJob(fileId: number, stage: JobStage): boolean {
+      return (stmtHasActiveJob.get(fileId, stage)?.count ?? 0) > 0;
     },
 
     claimNextJob(): Job | null {
@@ -1521,6 +1481,23 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     completeJob(jobId: number): void {
       stmtCompleteJob.run(new Date().toISOString(), jobId);
+    },
+
+    waitJob(jobId: number, reason: string): void {
+      stmtWaitJob.run(reason, new Date().toISOString(), jobId);
+    },
+
+    requeueWaitingJobs(stages: JobStage[]): number {
+      let changed = 0;
+      const now = new Date().toISOString();
+      for (const stage of stages) {
+        changed += stmtRequeueWaitingStage.run(now, stage).changes;
+      }
+      return changed;
+    },
+
+    retryJob(jobId: number, error: string): void {
+      stmtRetryJob.run(error, new Date().toISOString(), jobId);
     },
 
     failJob(jobId: number, error: string): void {

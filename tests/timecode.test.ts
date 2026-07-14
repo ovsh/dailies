@@ -7,9 +7,10 @@ import {
   tcAddSeconds,
   tcToSeconds,
   compareTc,
+  formatElapsedOffset,
   isValidTc,
 } from "../src/shared/timecode";
-import { buildEdl } from "../src/main/export/edl";
+import { buildEdl, EdlIncompatibleSourceError } from "../src/main/export/edl";
 import { buildLocatorList } from "../src/main/export/locators";
 import type { ExportItem, MediaFile } from "../src/shared/types";
 
@@ -131,6 +132,12 @@ describe("tcAddSeconds", () => {
   });
 });
 
+describe("formatElapsedOffset", () => {
+  it("keeps unknown-rate media explicit instead of fabricating frame timecode", () => {
+    expect(formatElapsedOffset(61.2345)).toBe("+00:01:01.235");
+  });
+});
+
 describe("tcToSeconds", () => {
   it("uses actual fps, not nominal, for real elapsed seconds", () => {
     // 240 frames @ 23.976fps (10s of nominal 24fps timecode) is slightly
@@ -209,10 +216,10 @@ function getFile(id: number): MediaFile | null {
 }
 
 describe("buildEdl", () => {
-  it("produces an FCM line matching the first file's drop-frame flag and numbered events", () => {
+  it("produces a global FCM line and numbered events for compatible sources", () => {
     const items: ExportItem[] = [
       { fileId: fileA.id, inTc: "01:00:05:00", outTc: "01:00:10:00", comment: "clean take" },
-      { fileId: fileB.id, inTc: "06:30:01;00", outTc: "06:30:03;00", comment: "second take" },
+      { fileId: fileA.id, inTc: "01:00:20:00", outTc: "01:00:22:00", comment: "second take" },
     ];
 
     const edl = buildEdl("My Show Reel", items, getFile);
@@ -225,8 +232,8 @@ describe("buildEdl", () => {
     expect(lines[3]).toBe("* FROM CLIP NAME: A001.mov");
     expect(lines[4]).toBe("* COMMENT: clean take");
 
-    expect(lines[5]).toMatch(/^002\s+AX\s+V\s+C\s+06:30:01;00 06:30:03;00 01:00:05:00 /);
-    expect(lines[6]).toBe("* FROM CLIP NAME: B001.mov");
+    expect(lines[5]).toMatch(/^002\s+AX\s+V\s+C\s+01:00:20:00 01:00:22:00 01:00:05:00 01:00:07:00$/);
+    expect(lines[6]).toBe("* FROM CLIP NAME: A001.mov");
     expect(lines[7]).toBe("* COMMENT: second take");
   });
 
@@ -236,6 +243,75 @@ describe("buildEdl", () => {
     ];
     const edl = buildEdl("Reel 2", items, getFile);
     expect(edl.split("\n")[1]).toBe("FCM: DROP FRAME");
+    expect(edl.split("\n")[2]).toMatch(/01:00:00;00 01:00:02;00$/);
+  });
+
+  it("rejects incompatible mixed source rates with a typed error listing the clips", () => {
+    const items: ExportItem[] = [
+      { fileId: fileA.id, inTc: "01:00:05:00", outTc: "01:00:10:00", comment: "24-rate" },
+      { fileId: fileB.id, inTc: "06:30:01;00", outTc: "06:30:03;00", comment: "30-rate" },
+    ];
+
+    try {
+      buildEdl("Mixed", items, getFile);
+      expect.fail("expected incompatible source formats to be rejected");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EdlIncompatibleSourceError);
+      const typed = error as EdlIncompatibleSourceError;
+      expect(typed.code).toBe("EDL_INCOMPATIBLE_SOURCE_FORMAT");
+      expect(typed.recordFps).toBe(fileA.fps);
+      expect(typed.offendingClips).toEqual([{
+        fileId: fileB.id,
+        filename: fileB.filename,
+        fps: fileB.fps,
+        dropFrame: true,
+      }]);
+    }
+  });
+
+  it("rejects mixed DF and NDF sources even when their numeric rates match", () => {
+    const ndfAt2997: MediaFile = {
+      ...fileB,
+      id: 4,
+      filename: "B002.mov",
+      path: "/media/B002.mov",
+      dropFrame: false,
+      startTc: "06:30:00:00",
+      fileHash: "hashB2",
+    };
+    const items: ExportItem[] = [
+      { fileId: fileB.id, inTc: "06:30:01;00", outTc: "06:30:03;00", comment: "DF" },
+      { fileId: ndfAt2997.id, inTc: "06:30:01:00", outTc: "06:30:03:00", comment: "NDF" },
+    ];
+
+    expect(() => buildEdl("Mixed FCM", items, (id) => (
+      id === fileB.id ? fileB : id === ndfAt2997.id ? ndfAt2997 : null
+    ))).toThrow(EdlIncompatibleSourceError);
+  });
+
+  it("round-trips event rows with monotonic record TC and one event per hit", () => {
+    const items: ExportItem[] = [
+      { fileId: fileB.id, inTc: "06:30:01;00", outTc: "06:30:03;00", comment: "first" },
+      { fileId: fileB.id, inTc: "06:31:00;02", outTc: "06:31:04;02", comment: "second" },
+      { fileId: fileB.id, inTc: "06:39:59;29", outTc: "06:40:01;00", comment: "third" },
+    ];
+    const eventPattern = /^(\d{3})\s+AX\s+V\s+C\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$/;
+    const events = buildEdl("Round Trip", items, getFile)
+      .split("\n")
+      .map((line) => eventPattern.exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => ({
+        event: Number(match[1]),
+        recordIn: parseTc(match[4]!, fileB.fps, true),
+        recordOut: parseTc(match[5]!, fileB.fps, true),
+      }));
+
+    expect(events).toHaveLength(items.length);
+    expect(events.map((event) => event.event)).toEqual([1, 2, 3]);
+    for (let i = 0; i < events.length; i++) {
+      expect(events[i]!.recordOut).toBeGreaterThan(events[i]!.recordIn);
+      if (i > 0) expect(events[i]!.recordIn).toBe(events[i - 1]!.recordOut);
+    }
   });
 
   it("skips items whose file is missing", () => {
@@ -314,5 +390,41 @@ describe("buildLocatorList", () => {
       { fileId: 999, inTc: "01:00:00:00", outTc: "01:00:01:00", comment: "orphan" },
     ];
     expect(buildLocatorList(items, getFile)).toBe("");
+  });
+});
+
+describe("unknown source edit rate exports", () => {
+  const audioOnly: MediaFile = {
+    ...fileA,
+    id: 3,
+    path: "/avid/AUDIO01.mxf",
+    filename: "AUDIO01.mxf",
+    fps: 0,
+    startTc: "11:51:48:00",
+    codec: "pcm_s24le",
+    audioChannels: 1,
+    fileHash: "audio",
+    mediaKind: "opatom",
+  };
+  const item: ExportItem = {
+    fileId: audioOnly.id,
+    inTc: "+00:00:01.000",
+    outTc: "+00:00:03.500",
+    inS: 1,
+    outS: 3.5,
+    comment: "audio select",
+  };
+
+  it("uses seconds and labels the explicit EDL fallback instead of claiming 25 fps", () => {
+    const edl = buildEdl("Audio", [item], () => audioOnly);
+    expect(edl).toContain("11:51:49:00 11:51:51:15");
+    expect(edl).toContain("SOURCE EDIT RATE UNKNOWN; 30 FPS FALLBACK");
+    expect(edl).not.toContain("25 FPS");
+  });
+
+  it("labels the explicit locator fallback", () => {
+    const locator = buildLocatorList([item], () => audioOnly);
+    expect(locator).toContain("SOURCE RATE UNKNOWN; 30 FPS FALLBACK");
+    expect(locator).toContain("\t11:51:49:00\t");
   });
 });

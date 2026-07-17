@@ -133,4 +133,66 @@ describe("database pipeline resilience", () => {
     expect(db.listJobs()).toEqual([]);
     db.close();
   });
+
+  it("deletes only files within a folder path boundary and clears their derived state", () => {
+    const db = makeDb("delete-folder-files");
+    const inside = db.upsertFile(fileInput("/a/b/inside.mov", "inside"));
+    const nested = db.upsertFile(fileInput("/a/b/nested/clip.mov", "nested"));
+    const sibling = db.upsertFile(fileInput("/a/bc/sibling.mov", "sibling"));
+    const outside = db.upsertFile(fileInput("/a/c/outside.mov", "outside"));
+
+    for (const file of [inside, nested, sibling, outside]) {
+      const token = `file${file.id}`;
+      db.replaceTranscript(file.id, [{
+        startS: 0,
+        endS: 1,
+        text: `${token} transcript`,
+        avgConf: 1,
+        words: [],
+      }]);
+      const [scene] = db.replaceScenes(file.id, [{
+        startS: 0,
+        endS: 1,
+        startTc: "01:00:00:00",
+        endTc: "01:00:01:00",
+        keyframePath: null,
+      }]);
+      const segment = db.listSegments(file.id)[0]!;
+      const vector = new Float32Array(768);
+      vector[file.id] = 1;
+      db.upsertEmbedding("segment", segment.id, vector);
+      db.upsertEmbedding("scene", scene!.id, vector);
+      db.enqueueJob(file.id, "embed");
+    }
+
+    const deleted = db.deleteFilesUnderPath("/a/b");
+
+    expect(deleted.map((file) => file.path).sort()).toEqual([
+      "/a/b/inside.mov",
+      "/a/b/nested/clip.mov",
+    ]);
+    for (const file of [inside, nested]) {
+      expect(db.getFile(file.id)).toBeNull();
+      expect(db.listSegments(file.id)).toEqual([]);
+      expect(db.listScenes(file.id)).toEqual([]);
+      const vector = new Float32Array(768);
+      vector[file.id] = 1;
+      expect(db.semanticSearch("segment", vector)).toEqual([]);
+      expect(db.semanticSearch("scene", vector)).toEqual([]);
+    }
+    expect(db.getFile(sibling.id)).not.toBeNull();
+    expect(db.getFile(outside.id)).not.toBeNull();
+    expect(db.listSegments(sibling.id)).toHaveLength(1);
+    expect(db.listScenes(outside.id)).toHaveLength(1);
+    const siblingVector = new Float32Array(768);
+    siblingVector[sibling.id] = 1;
+    expect(db.semanticSearch("segment", siblingVector)).toHaveLength(1);
+    const outsideVector = new Float32Array(768);
+    outsideVector[outside.id] = 1;
+    expect(db.semanticSearch("scene", outsideVector)).toHaveLength(1);
+    expect(new Set(db.listJobs().map((job) => job.fileId))).toEqual(
+      new Set([sibling.id, outside.id]),
+    );
+    db.close();
+  });
 });

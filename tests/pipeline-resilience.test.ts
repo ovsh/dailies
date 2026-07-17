@@ -1,4 +1,10 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +12,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   whisperReady: false,
   probeInput: null as null | Record<string, unknown>,
+  probeByPath: new Map<string, Record<string, unknown>>(),
+  mxfAtoms: new Map<string, {
+    path: string;
+    clipKey: string;
+    clipName: string | null;
+    essence: "video" | "audio";
+    durationS: number;
+    fps: number;
+    dropFrame: boolean;
+    startTc: string;
+    codec: string;
+  }>(),
+  watcherOnFileFound: null as ((path: string) => void) | null,
   detectedScenes: [{ startS: 0, endS: 5 }],
   makeProxy: vi.fn(),
   transcribe: vi.fn(),
@@ -19,8 +38,17 @@ vi.mock("../src/main/pipeline/binaries", () => ({
   findWhisperModel: () => (mocks.whisperReady ? "/fake/model.bin" : null),
 }));
 vi.mock("../src/main/pipeline/probe", () => ({
-  probeFile: vi.fn(async () => mocks.probeInput),
+  probeFile: vi.fn(async (filePath: string) =>
+    mocks.probeByPath.get(filePath) ?? mocks.probeInput),
 }));
+vi.mock("../src/main/pipeline/opatom", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/main/pipeline/opatom")>();
+  return {
+    ...actual,
+    analyzeMxf: vi.fn(async (_ffprobePath: string, filePath: string) =>
+      mocks.mxfAtoms.get(filePath) ?? null),
+  };
+});
 vi.mock("../src/main/pipeline/proxy", () => ({
   extractAudio: vi.fn(async () => {}),
   extractKeyframe: vi.fn(async () => {}),
@@ -33,7 +61,10 @@ vi.mock("../src/main/pipeline/transcribe", () => ({
   transcribeAudio: mocks.transcribe,
 }));
 vi.mock("../src/main/pipeline/watcher", () => ({
-  createWatcher: () => ({ watchFolder() {}, unwatchFolder() {}, async close() {} }),
+  createWatcher: (opts: { onFileFound(path: string): void }) => {
+    mocks.watcherOnFileFound = opts.onFileFound;
+    return { watchFolder() {}, unwatchFolder() {}, async close() {} };
+  },
 }));
 
 import { openDatabase } from "../src/main/db/database";
@@ -64,9 +95,17 @@ async function waitForDrain(db: DailiesDB) {
   }, { timeout: 5000 });
 }
 
+function makeStable(filePath: string): void {
+  const old = new Date(Date.now() - 10_000);
+  utimesSync(filePath, old, old);
+}
+
 beforeEach(() => {
   mocks.whisperReady = false;
   mocks.probeInput = null;
+  mocks.probeByPath.clear();
+  mocks.mxfAtoms.clear();
+  mocks.watcherOnFileFound = null;
   mocks.detectedScenes = [{ startS: 0, endS: 5 }];
   mocks.makeProxy.mockReset().mockImplementation(
     async (_path: string, outDir: string) => path.join(outDir, "proxy.mp4"),
@@ -89,6 +128,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   while (openDbs.length > 0) openDbs.pop()!.close();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("pipeline prerequisite and applicability handling", () => {
@@ -322,6 +363,7 @@ describe("pipeline prerequisite and applicability handling", () => {
     const { dataDir, db, pipeline } = setup();
     const mediaPath = path.join(dataDir, "unchanged.mov");
     writeFileSync(mediaPath, "fixture");
+    makeStable(mediaPath);
     mocks.probeInput = {
       path: mediaPath,
       filename: "unchanged.mov",
@@ -345,6 +387,258 @@ describe("pipeline prerequisite and applicability handling", () => {
 
     const stages = db.listJobs().map((job) => job.stage);
     expect(stages).toEqual(expect.arrayContaining(["audio", "proxy", "scenes"]));
+    await pipeline.stop();
+  });
+
+  it("repoints moved standard media by hash without clearing derived state", async () => {
+    const { dataDir, db, pipeline } = setup();
+    const scanDir = path.join(dataDir, "remounted");
+    mkdirSync(scanDir);
+    const oldPath = path.join(dataDir, "missing-volume", "clip.mov");
+    const newPath = path.join(scanDir, "renamed.mov");
+    writeFileSync(newPath, "same bytes");
+    makeStable(newPath);
+
+    const original = db.upsertFile({
+      path: oldPath,
+      filename: "clip.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "moved-hash",
+    });
+    db.replaceTranscript(original.id, [{
+      startS: 0,
+      endS: 1,
+      text: "keep this transcript",
+      avgConf: 1,
+      words: [],
+    }]);
+    db.markTranscribed(original.id);
+    db.setFileProxy(original.id, "/cache/proxy.mp4");
+    db.markVisuallyIndexed(original.id);
+    // Embed the seeded segment so the file is fully processed — repairFile
+    // enqueues an embed job for any unembedded segment, which would be a
+    // legitimate (not spurious) job after the repoint.
+    const segmentId = db.listSegments(original.id)[0]!.id;
+    db.upsertEmbedding("segment", segmentId, new Float32Array(768));
+    db.setFileStatus(original.id, "ready");
+    mocks.probeByPath.set(newPath, {
+      ...original,
+      path: newPath,
+      filename: "renamed.mov",
+      fileHash: "moved-hash",
+    });
+
+    await pipeline.scanFolder({
+      id: 1,
+      path: scanDir,
+      role: "raw",
+      episodeId: null,
+      lastScannedAt: null,
+    });
+
+    expect(db.listFiles()).toHaveLength(1);
+    expect(db.getFile(original.id)).toMatchObject({
+      path: newPath,
+      filename: "renamed.mov",
+      hasTranscript: true,
+      proxyPath: "/cache/proxy.mp4",
+    });
+    expect(db.listSegments(original.id)[0]?.text).toBe("keep this transcript");
+    expect(db.listJobs()).toEqual([]);
+    await pipeline.stop();
+  });
+
+  it("keeps a duplicate as a new file when the hash-matched old path still exists", async () => {
+    const { dataDir, db, pipeline } = setup();
+    const scanDir = path.join(dataDir, "copies");
+    mkdirSync(scanDir);
+    const oldPath = path.join(dataDir, "original.mov");
+    const newPath = path.join(scanDir, "copy.mov");
+    writeFileSync(oldPath, "same bytes");
+    writeFileSync(newPath, "same bytes");
+    makeStable(oldPath);
+    makeStable(newPath);
+
+    const original = db.upsertFile({
+      path: oldPath,
+      filename: "original.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "duplicate-hash",
+    });
+    mocks.probeByPath.set(newPath, {
+      path: newPath,
+      filename: "copy.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "duplicate-hash",
+    });
+
+    await pipeline.scanFolder({
+      id: 1,
+      path: scanDir,
+      role: "raw",
+      episodeId: null,
+      lastScannedAt: null,
+    });
+
+    const copy = db.getFileByPath(newPath);
+    expect(copy?.id).not.toBe(original.id);
+    expect(db.listFiles()).toHaveLength(2);
+    expect(db.listJobs()).toContainEqual(expect.objectContaining({
+      fileId: copy?.id,
+      stage: "probe",
+    }));
+    await pipeline.stop();
+  });
+
+  it("preserves a completed OP-Atom transcript when a late video atom arrives", async () => {
+    vi.useFakeTimers();
+    const { dataDir, db, pipeline } = setup();
+    const audioPath = path.join(dataDir, "CLIPA01.mxf");
+    const videoPath = path.join(dataDir, "CLIPV01.mxf");
+    writeFileSync(audioPath, "audio atom");
+    writeFileSync(videoPath, "video atom");
+    const base = {
+      clipKey: "umid-late-video",
+      clipName: "Late Video",
+      durationS: 5,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+    };
+    mocks.mxfAtoms.set(audioPath, {
+      ...base,
+      path: audioPath,
+      essence: "audio",
+      fps: 24,
+      codec: "pcm_s24le",
+    });
+    mocks.mxfAtoms.set(videoPath, {
+      ...base,
+      path: videoPath,
+      essence: "video",
+      fps: 24,
+      codec: "dnxhd",
+    });
+    mocks.probeByPath.set(audioPath, { fileHash: "a".repeat(40) });
+    mocks.probeByPath.set(videoPath, { fileHash: "b".repeat(40) });
+
+    expect(mocks.watcherOnFileFound).not.toBeNull();
+    mocks.watcherOnFileFound!(audioPath);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.waitFor(() => expect(db.listFiles()).toHaveLength(1));
+
+    const audioOnly = db.listFiles()[0]!;
+    db.replaceTranscript(audioOnly.id, [{
+      startS: 0,
+      endS: 1,
+      text: "finished before video arrived",
+      avgConf: 1,
+      words: [],
+    }]);
+    db.markTranscribed(audioOnly.id);
+    db.enqueueJob(audioOnly.id, "embed");
+    expect(db.getFile(audioOnly.id)?.hasTranscript).toBe(true);
+    const priorJobIds = new Set(db.listJobs().map((job) => job.id));
+
+    mocks.watcherOnFileFound!(videoPath);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.waitFor(() =>
+      expect(db.getFile(audioOnly.id)?.memberPaths).toEqual([videoPath, audioPath]));
+
+    const joined = db.getFile(audioOnly.id)!;
+    expect(joined.hasTranscript).toBe(true);
+    expect(db.listSegments(joined.id)[0]?.text).toBe("finished before video arrived");
+    const newStages = db.listJobs()
+      .filter((job) => !priorJobIds.has(job.id))
+      .map((job) => job.stage)
+      .sort();
+    expect(newStages).toEqual(["proxy", "scenes"]);
+    await pipeline.stop();
+  });
+
+  it("skips a manually scanned video that changes during the stability window", async () => {
+    const realSetImmediate = setImmediate;
+    vi.useFakeTimers();
+    const { dataDir, db, pipeline } = setup();
+    const mediaPath = path.join(dataDir, "copying.mov");
+    writeFileSync(mediaPath, "partial");
+    mocks.probeByPath.set(mediaPath, {
+      path: mediaPath,
+      filename: "copying.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "partial-hash",
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const scan = pipeline.scanFolder({
+      id: 1,
+      path: dataDir,
+      role: "raw",
+      episodeId: null,
+      lastScannedAt: null,
+    });
+    for (let i = 0; i < 20 && vi.getTimerCount() === 0; i += 1) {
+      await new Promise<void>((resolve) => realSetImmediate(resolve));
+    }
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    setTimeout(() => appendFileSync(mediaPath, " more"), 1000);
+    await vi.advanceTimersByTimeAsync(3000);
+    await scan;
+
+    expect(db.getFileByPath(mediaPath)).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("watcher will pick it up"));
+    warn.mockRestore();
+    await pipeline.stop();
+  });
+
+  it("immediately scans a video older than the stability window", async () => {
+    const { dataDir, db, pipeline } = setup();
+    const mediaPath = path.join(dataDir, "settled.mov");
+    writeFileSync(mediaPath, "complete");
+    makeStable(mediaPath);
+    mocks.probeByPath.set(mediaPath, {
+      path: mediaPath,
+      filename: "settled.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "settled-hash",
+    });
+
+    await pipeline.scanFolder({
+      id: 1,
+      path: dataDir,
+      role: "raw",
+      episodeId: null,
+      lastScannedAt: null,
+    });
+
+    expect(db.getFileByPath(mediaPath)).not.toBeNull();
+    expect(db.listJobs()).toContainEqual(expect.objectContaining({ stage: "probe" }));
     await pipeline.stop();
   });
 

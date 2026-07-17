@@ -122,11 +122,17 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     return folder;
   });
 
-  ipcMain.handle(IPC.removeProjectFolder, (_e, folderId: number) => {
+  ipcMain.handle(IPC.removeProjectFolder, async (_e, folderId: number) => {
     const c = requireProject();
     const folder = c.db.listFolders().find((f) => f.id === folderId);
     if (folder) {
       c.pipeline.unwatchFolder(folder.path);
+      const deletedFiles = c.db.deleteFilesUnderPath(folder.path);
+      await Promise.all(
+        deletedFiles.map((file) =>
+          fs.promises.rm(path.join(c.mediaDir, String(file.id)), { recursive: true, force: true })
+        ),
+      );
       c.db.removeFolder(folderId);
       emitProjectUpdate();
     }

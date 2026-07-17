@@ -87,6 +87,10 @@ describe("legacy database migration", () => {
     expect(folders.map((f) => f.path)).toContain("/footage/raw");
 
     db.close();
+    const verify = new Database(dbPath);
+    const indexes = verify.pragma("index_list(files)") as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toContain("idx_files_file_hash");
+    verify.close();
   });
 
   it("opens the pre-episodes documents schema before creating its episode index", () => {

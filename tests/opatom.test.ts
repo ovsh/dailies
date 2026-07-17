@@ -40,10 +40,14 @@ describe("OP-Atom metadata and grouping", () => {
     expect((await analyzeMxf("ffprobe", "/avid/unknown.mxf"))?.fps).toBe(0);
   });
 
-  it("treats quiescence as batching only and includes a late atom in the same group", async () => {
+  it("emits a late atom in a fresh batch and releases fired group state", async () => {
     vi.useFakeTimers();
     const emitted: Array<{ atoms: MxfAtomInfo[] }> = [];
     const grouper = new OpAtomGrouper({ debounceMs: 20, onClip: (clip) => emitted.push(clip) });
+    const internals = grouper as unknown as {
+      groups: Map<string, MxfAtomInfo[]>;
+      timers: Map<string, ReturnType<typeof setTimeout>>;
+    };
     const base = {
       clipKey: "umid-late",
       clipName: "Late Clip",
@@ -55,12 +59,13 @@ describe("OP-Atom metadata and grouping", () => {
     grouper.addAtom({ ...base, path: "/avid/A01.mxf", essence: "audio", codec: "pcm" });
     await vi.advanceTimersByTimeAsync(20);
     expect(emitted[0]?.atoms.map((atom) => atom.path)).toEqual(["/avid/A01.mxf"]);
+    expect(internals.groups.size).toBe(0);
+    expect(internals.timers.size).toBe(0);
 
     grouper.addAtom({ ...base, path: "/avid/V01.mxf", essence: "video", codec: "dnx" });
     await vi.advanceTimersByTimeAsync(20);
-    expect(emitted[1]?.atoms.map((atom) => atom.path)).toEqual([
-      "/avid/A01.mxf",
-      "/avid/V01.mxf",
-    ]);
+    expect(emitted[1]?.atoms.map((atom) => atom.path)).toEqual(["/avid/V01.mxf"]);
+    expect(internals.groups.size).toBe(0);
+    expect(internals.timers.size).toBe(0);
   });
 });

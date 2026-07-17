@@ -35,8 +35,14 @@ export interface DailiesDB {
   upsertFile(input: FileInput): MediaFile;
   getFile(id: number): MediaFile | null;
   getFileByPath(path: string): MediaFile | null;
+  getFileByHash(hash: string): MediaFile | null;
+  repointFilePath(fileId: number, newPath: string, newFilename: string): MediaFile;
   /** OP-Atom lookup by material package UMID. */
   getFileByClipKey(clipKey: string): MediaFile | null;
+  /** Update OP-Atom structure without invalidating byte-identical derived state. */
+  updateOpAtomMembers(fileId: number, input: FileInput): MediaFile;
+  /** Delete files at or below a watched-folder path, including all derived state. */
+  deleteFilesUnderPath(pathPrefix: string): MediaFile[];
   /** All files, or one episode's when episodeId is given. */
   listFiles(episodeId?: number): MediaFile[];
   setFileStatus(id: number, status: FileStatus): void;

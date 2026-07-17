@@ -161,6 +161,12 @@ export function createMockApi(): DailiesAPI {
       notifyProjectUpdate();
     },
 
+    async clearProjectCache() {
+      notifyProjectUpdate();
+      notifyIndexUpdate();
+      return { clearedFiles: MOCK_FILES.length };
+    },
+
     async rescanFolders(episodeId: number | null) {
       if (!currentProjectId) return;
       const now = new Date().toISOString();

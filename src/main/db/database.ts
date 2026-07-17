@@ -1040,6 +1040,17 @@ export function openDatabase(dbPath: string): DailiesDB {
     return withFilename ? mapJob(withFilename) : null;
   });
 
+  const clearDerivedStateTx = db.transaction((fileId: number): void => {
+    stmtDeleteSegmentEmbeddingsForFile.run(fileId);
+    stmtDeleteSceneEmbeddingsForFile.run(fileId);
+    stmtDeleteTranscriptFts.run(fileId);
+    stmtDeleteVisualFtsForFile.run(fileId);
+    stmtDeleteSegments.run(fileId);
+    stmtDeleteScenes.run(fileId);
+    stmtDeleteJobsForFile.run(fileId);
+    stmtClearDerivedFileState.run(fileId);
+  });
+
   const upsertFileTx = db.transaction((input: FileInput): MediaFile => {
     const role = input.role ?? "raw";
     const mediaKind = input.mediaKind ?? "standard";
@@ -1055,14 +1066,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         // Clear every searchable/derived representation before exposing the
         // new hash. This transaction prevents stale transcript, visual, proxy,
         // and embedding state from masquerading as current content.
-        stmtDeleteSegmentEmbeddingsForFile.run(existing.id);
-        stmtDeleteSceneEmbeddingsForFile.run(existing.id);
-        stmtDeleteTranscriptFts.run(existing.id);
-        stmtDeleteVisualFtsForFile.run(existing.id);
-        stmtDeleteSegments.run(existing.id);
-        stmtDeleteScenes.run(existing.id);
-        stmtDeleteJobsForFile.run(existing.id);
-        stmtClearDerivedFileState.run(existing.id);
+        clearDerivedStateTx(existing.id);
       }
       const updated = stmtUpdateFile.get(
         input.path,
@@ -1181,6 +1185,10 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     setFileProxy(id: number, proxyPath: string): void {
       stmtSetFileProxy.run(proxyPath, id);
+    },
+
+    clearDerivedState(fileId: number): void {
+      clearDerivedStateTx(fileId);
     },
 
     markTranscribed(id: number): void {

@@ -46,6 +46,7 @@ export interface DailiesAPI {
     e2eFolderPath?: string,
   ): Promise<ProjectFolder | null>;
   removeProjectFolder(folderId: number): Promise<void>;
+  clearProjectCache(): Promise<{ clearedFiles: number }>;
   /** Re-scans watched folders (all, or one episode's) and stamps lastScannedAt. */
   rescanFolders(episodeId: number | null): Promise<void>;
   /** Opens a multi-file picker for notes/docs/spreadsheets; returns count ingested. */
@@ -99,6 +100,7 @@ export const IPC = {
   createEpisode: "dailies:createEpisode",
   addProjectFolder: "dailies:addProjectFolder",
   removeProjectFolder: "dailies:removeProjectFolder",
+  clearProjectCache: "dailies:clearProjectCache",
   rescanFolders: "dailies:rescanFolders",
   importDocuments: "dailies:importDocuments",
   listFiles: "dailies:listFiles",

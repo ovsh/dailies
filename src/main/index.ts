@@ -8,6 +8,7 @@ import { setGlobalModelsDir } from "./pipeline/binaries";
 import { createAppSettings } from "./app-settings";
 import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
+import { forwardedRequestInit, parseMediaRequestPath } from "./media-protocol";
 
 /**
  * When the app is launched from Finder/Dock (rather than a terminal), the
@@ -75,11 +76,10 @@ function createWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
-  // media:// — serves local media (proxies, keyframes, originals) to the renderer.
+  // media:// — serves local media and forwards Range requests for 206 responses.
   protocol.handle("media", (request) => {
-    const raw = request.url.slice("media://local/".length);
-    const filePath = decodeURIComponent(raw);
-    return net.fetch(pathToFileURL(filePath).toString());
+    const filePath = parseMediaRequestPath(request.url);
+    return net.fetch(pathToFileURL(filePath).toString(), forwardedRequestInit(request));
   });
 
   const dataDir = app.getPath("userData");

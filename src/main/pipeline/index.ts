@@ -24,6 +24,12 @@ import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo, type OpAtomClip } from "./
 import { extractAudio, extractKeyframe, makeProxy } from "./proxy";
 import { probeFile } from "./probe";
 import { detectScenes } from "./scenes";
+import {
+  audioExtractTimeoutMs,
+  KEYFRAME_TIMEOUT_MS,
+  proxyTimeoutMs,
+  transcribeTimeoutMs,
+} from "./timeouts";
 import { transcribeAudio } from "./transcribe";
 import { createWatcher, type Watcher } from "./watcher";
 
@@ -406,13 +412,14 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     const mediaDir = mediaDirFor(dataDir, file.id);
     await mkdir(mediaDir, { recursive: true });
     const audioPath = join(mediaDir, "audio.wav");
+    const timeoutMs = audioExtractTimeoutMs(file.durationS);
 
     if (file.mediaKind === "opatom") {
       const candidates = file.memberPaths ?? [file.path];
       let extracted = false;
       for (const candidate of candidates) {
         try {
-          await extractAudio(candidate, audioPath);
+          await extractAudio(candidate, audioPath, timeoutMs);
           extracted = true;
           break;
         } catch {
@@ -423,7 +430,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
         throw new Error(`No member path of opatom clip ${file.id} yielded audio`);
       }
     } else {
-      await extractAudio(file.path, audioPath);
+      await extractAudio(file.path, audioPath, timeoutMs);
     }
 
     db.enqueueJob(file.id, "transcribe");
@@ -437,7 +444,13 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
    * memberPaths[0], since memberPaths is ordered [videoAtoms..., audioAtoms...])
    * is itself a video atom.
    */
-  async function hasVideoAtom(file: { mediaKind: string; path: string; fps: number }): Promise<boolean> {
+  async function hasVideoAtom(file: {
+    mediaKind: string;
+    path: string;
+    fps: number;
+    videoUnplayable: boolean;
+  }): Promise<boolean> {
+    if (file.videoUnplayable) return false;
     if (file.mediaKind !== "opatom") return file.fps > 0;
     const ffprobeBin = findFfprobeBinary();
     const info = await analyzeMxf(ffprobeBin, file.path);
@@ -457,7 +470,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     const mediaDir = mediaDirFor(dataDir, file.id);
     await mkdir(mediaDir, { recursive: true });
 
-    const proxyPath = await makeProxy(file.path, mediaDir);
+    const proxyPath = await makeProxy(file.path, mediaDir, proxyTimeoutMs(file.durationS));
     db.setFileProxy(file.id, proxyPath);
 
     db.completeJob(job.id);
@@ -494,7 +507,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
         const midpointS = scene.startS + (scene.endS - scene.startS) / 2;
         const outPath = join(mediaDir, `keyframe-${keyframeCount}.jpg`);
         try {
-          await extractKeyframe(file.path, midpointS, outPath);
+          await extractKeyframe(file.path, midpointS, outPath, KEYFRAME_TIMEOUT_MS);
           keyframePath = outPath;
           keyframeCount += 1;
         } catch {
@@ -540,7 +553,12 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     const mediaDir = mediaDirFor(dataDir, file.id);
     const audioPath = join(mediaDir, "audio.wav");
 
-    const segments = await transcribeAudio(audioPath, whisperBin, modelPath);
+    const segments = await transcribeAudio(
+      audioPath,
+      whisperBin,
+      modelPath,
+      transcribeTimeoutMs(file.durationS),
+    );
     db.replaceTranscript(file.id, segments);
     db.markTranscribed(file.id);
     await maybeMarkReady(file.id);
@@ -712,6 +730,13 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       if (isTransientError(err) && job.attempts < MAX_TRANSIENT_RETRIES) {
         await delay(RETRY_BASE_MS * 2 ** job.attempts);
         db.retryJob(job.id, message);
+      } else if (job.stage === "proxy" || job.stage === "scenes") {
+        // Video-stage give-up: degrade to audio-only instead of dead-ending the
+        // file — a good transcript can still make it 'ready'. The failed job
+        // stays visible in Settings.
+        db.failJob(job.id, message);
+        db.setVideoUnplayable(job.fileId, true);
+        await maybeMarkReady(job.fileId);
       } else {
         db.failJob(job.id, message);
         db.setFileStatus(job.fileId, "error");

@@ -77,6 +77,8 @@ export interface MediaFile {
   memberPaths: string[] | null;
   /** OP-Atom: material package UMID — the grouping key. */
   clipKey: string | null;
+  /** Video decode failed permanently; process and render the clip as audio-only. */
+  videoUnplayable: boolean;
 }
 
 export interface Scene {

@@ -4,6 +4,7 @@
  */
 import { findFfmpegBinary } from "./binaries";
 import { run } from "./exec";
+import { scenesTimeoutMs } from "./timeouts";
 
 export interface DetectedScene {
   startS: number;
@@ -69,6 +70,7 @@ function mergeShortScenes(scenes: DetectedScene[]): DetectedScene[] {
 
 export async function detectScenes(path: string, durationS: number): Promise<DetectedScene[]> {
   const ffmpegBin = findFfmpegBinary();
+  const timeoutMs = scenesTimeoutMs(durationS);
   const args = [
     "-i",
     path,
@@ -79,7 +81,10 @@ export async function detectScenes(path: string, durationS: number): Promise<Det
     "-",
   ];
 
-  const { stderr } = await run(ffmpegBin, args);
+  const { stderr, timedOut } = await run(ffmpegBin, args, { timeoutMs });
+  if (timedOut) {
+    throw new Error(`ffmpeg scene detection timed out after ${timeoutMs}ms for ${path}`);
+  }
   const boundaries = parseSceneBoundaries(stderr).sort((a, b) => a - b);
 
   if (boundaries.length === 0) {

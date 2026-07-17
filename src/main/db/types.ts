@@ -41,6 +41,7 @@ export interface DailiesDB {
   listFiles(episodeId?: number): MediaFile[];
   setFileStatus(id: number, status: FileStatus): void;
   setFileProxy(id: number, proxyPath: string): void;
+  setVideoUnplayable(id: number, value: boolean): void;
   markTranscribed(id: number): void;
   markVisuallyIndexed(id: number): void;
 

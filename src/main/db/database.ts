@@ -60,6 +60,7 @@ interface FileRow {
   media_kind: string;
   member_paths: string | null;
   clip_key: string | null;
+  video_unplayable: number;
   episode_id: number | null;
 }
 
@@ -235,6 +236,7 @@ function mapFile(row: FileRow): MediaFile {
     mediaKind: row.media_kind as MediaKind,
     memberPaths: row.member_paths ? (JSON.parse(row.member_paths) as string[]) : null,
     clipKey: row.clip_key,
+    videoUnplayable: row.video_unplayable === 1,
     episodeId: row.episode_id,
   };
 }
@@ -469,6 +471,7 @@ function migrate(db: BetterSqlite3Database): void {
     ["media_kind", "TEXT NOT NULL DEFAULT 'standard'"],
     ["member_paths", "TEXT"],
     ["clip_key", "TEXT"],
+    ["video_unplayable", "INTEGER NOT NULL DEFAULT 0"],
     ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
   ]);
   addMissingColumns(db, "documents", [
@@ -566,9 +569,12 @@ export function openDatabase(dbPath: string): DailiesDB {
   );
   const stmtSetFileStatus = db.prepare<[string, number]>("UPDATE files SET status = ? WHERE id = ?");
   const stmtSetFileProxy = db.prepare<[string, number]>("UPDATE files SET proxy_path = ? WHERE id = ?");
+  const stmtSetVideoUnplayable = db.prepare<[number, number]>(
+    "UPDATE files SET video_unplayable = ? WHERE id = ?",
+  );
   const stmtClearDerivedFileState = db.prepare<[number]>(
     `UPDATE files SET status = 'pending', has_transcript = 0,
-       has_visual_index = 0, proxy_path = NULL WHERE id = ?`,
+       has_visual_index = 0, proxy_path = NULL, video_unplayable = 0 WHERE id = ?`,
   );
   const stmtMarkTranscribed = db.prepare<[number]>("UPDATE files SET has_transcript = 1 WHERE id = ?");
   const stmtMarkVisuallyIndexed = db.prepare<[number]>("UPDATE files SET has_visual_index = 1 WHERE id = ?");
@@ -1181,6 +1187,10 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     setFileProxy(id: number, proxyPath: string): void {
       stmtSetFileProxy.run(proxyPath, id);
+    },
+
+    setVideoUnplayable(id: number, value: boolean): void {
+      stmtSetVideoUnplayable.run(value ? 1 : 0, id);
     },
 
     markTranscribed(id: number): void {

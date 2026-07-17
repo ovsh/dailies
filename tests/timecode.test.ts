@@ -183,6 +183,7 @@ const fileA: MediaFile = {
   mediaKind: "standard" as const,
   memberPaths: null,
   clipKey: null,
+  videoUnplayable: false,
 };
 
 const fileB: MediaFile = {
@@ -207,6 +208,7 @@ const fileB: MediaFile = {
   mediaKind: "standard" as const,
   memberPaths: null,
   clipKey: null,
+  videoUnplayable: false,
 };
 
 function getFile(id: number): MediaFile | null {

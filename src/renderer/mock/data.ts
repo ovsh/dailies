@@ -307,6 +307,7 @@ export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => ({
   mediaKind: s.mediaKind ?? "standard",
   memberPaths: null,
   clipKey: null,
+  videoUnplayable: false,
 }));
 
 // ---------- scenes ----------

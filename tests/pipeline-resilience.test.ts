@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   whisperReady: false,
   probeInput: null as null | Record<string, unknown>,
   detectedScenes: [{ startS: 0, endS: 5 }],
+  makeProxy: vi.fn(),
   transcribe: vi.fn(),
   annotate: vi.fn(),
   embed: vi.fn(),
@@ -23,7 +24,7 @@ vi.mock("../src/main/pipeline/probe", () => ({
 vi.mock("../src/main/pipeline/proxy", () => ({
   extractAudio: vi.fn(async () => {}),
   extractKeyframe: vi.fn(async () => {}),
-  makeProxy: vi.fn(async (_path: string, outDir: string) => path.join(outDir, "proxy.mp4")),
+  makeProxy: mocks.makeProxy,
 }));
 vi.mock("../src/main/pipeline/scenes", () => ({
   detectScenes: vi.fn(async () => mocks.detectedScenes),
@@ -38,6 +39,7 @@ vi.mock("../src/main/pipeline/watcher", () => ({
 import { openDatabase } from "../src/main/db/database";
 import { createPipeline } from "../src/main/pipeline";
 import type { DailiesDB } from "../src/main/db/types";
+import { isAudioOnly } from "../src/renderer/lib/media";
 
 const openDbs: DailiesDB[] = [];
 
@@ -66,6 +68,9 @@ beforeEach(() => {
   mocks.whisperReady = false;
   mocks.probeInput = null;
   mocks.detectedScenes = [{ startS: 0, endS: 5 }];
+  mocks.makeProxy.mockReset().mockImplementation(
+    async (_path: string, outDir: string) => path.join(outDir, "proxy.mp4"),
+  );
   mocks.transcribe.mockReset().mockResolvedValue([{
     startS: 0,
     endS: 1,
@@ -166,6 +171,122 @@ describe("pipeline prerequisite and applicability handling", () => {
 
     await vi.waitFor(() => expect(db.getFile(file.id)?.status).toBe("error"));
     expect(db.listJobs().find((job) => job.stage === "transcribe")?.status).toBe("error");
+    await pipeline.stop();
+  });
+
+  it("degrades a video with an undecodable proxy to ready audio-only media", async () => {
+    const { db, pipeline } = setup();
+    mocks.makeProxy.mockRejectedValue(
+      new Error("Invalid data found when processing input"),
+    );
+    const file = db.upsertFile({
+      path: "/media/undecodable.mov",
+      filename: "undecodable.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "exotic",
+      audioChannels: 2,
+      fileHash: "undecodable",
+    });
+    db.setFileStatus(file.id, "processing");
+    db.replaceTranscript(file.id, []);
+    db.markTranscribed(file.id);
+    db.enqueueJob(file.id, "proxy");
+    pipeline.start();
+
+    await vi.waitFor(() => expect(db.getFile(file.id)?.status).toBe("ready"), { timeout: 5000 });
+    const degraded = db.getFile(file.id)!;
+    expect(degraded.videoUnplayable).toBe(true);
+    expect(degraded.proxyPath).toBeNull();
+    expect(isAudioOnly(degraded)).toBe(true);
+    expect(db.listJobs().find((job) => job.stage === "proxy")?.status).toBe("error");
+    await waitForDrain(db);
+    await pipeline.stop();
+  });
+
+  it("degrades a proxy after transient retries are exhausted", async () => {
+    const { db, pipeline } = setup();
+    mocks.makeProxy.mockRejectedValue(new Error("HTTP 429 rate limit"));
+    const file = db.upsertFile({
+      path: "/media/rate-limited.mov",
+      filename: "rate-limited.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "rate-limited",
+    });
+    db.setFileStatus(file.id, "processing");
+    db.replaceTranscript(file.id, []);
+    db.markTranscribed(file.id);
+    db.enqueueJob(file.id, "proxy");
+    pipeline.start();
+
+    await vi.waitFor(() => expect(db.getFile(file.id)?.videoUnplayable).toBe(true), {
+      timeout: 5000,
+    });
+    const proxyJob = db.listJobs().find((job) => job.stage === "proxy");
+    expect(proxyJob).toMatchObject({ status: "error", attempts: 4 });
+    expect(db.getFile(file.id)?.status).toBe("ready");
+    expect(mocks.makeProxy).toHaveBeenCalledTimes(4);
+    await waitForDrain(db);
+    await pipeline.stop();
+  });
+
+  it("retries a timed-out proxy and frees its slot for later unrelated work", async () => {
+    const { db, pipeline } = setup();
+    mocks.makeProxy.mockImplementation(async (mediaPath: string, outDir: string) => {
+      if (mediaPath === "/media/hung.mov") {
+        throw new Error("ffmpeg proxy timed out after 90000ms");
+      }
+      return path.join(outDir, "proxy.mp4");
+    });
+    const hung = db.upsertFile({
+      path: "/media/hung.mov",
+      filename: "hung.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "hung",
+    });
+    db.setFileStatus(hung.id, "processing");
+    db.replaceTranscript(hung.id, []);
+    db.markTranscribed(hung.id);
+    db.enqueueJob(hung.id, "proxy");
+    pipeline.start();
+
+    await vi.waitFor(() => {
+      expect(db.listJobs().find((job) => job.fileId === hung.id && job.stage === "proxy"))
+        .toMatchObject({ status: "error", attempts: 4 });
+    }, { timeout: 5000 });
+    expect(mocks.makeProxy.mock.calls.filter(([mediaPath]) => mediaPath === hung.path)).toHaveLength(4);
+
+    const unrelated = db.upsertFile({
+      path: "/media/unrelated.mov",
+      filename: "unrelated.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "02:00:00:00",
+      codec: "prores",
+      audioChannels: 0,
+      fileHash: "unrelated",
+    });
+    db.enqueueJob(unrelated.id, "probe");
+
+    await vi.waitFor(() => expect(db.getFile(unrelated.id)?.status).toBe("ready"), {
+      timeout: 5000,
+    });
+    expect(db.listJobs().find((job) => job.fileId === unrelated.id && job.stage === "probe")?.status)
+      .toBe("done");
+    await waitForDrain(db);
     await pipeline.stop();
   });
 

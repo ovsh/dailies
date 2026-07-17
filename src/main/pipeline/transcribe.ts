@@ -86,13 +86,17 @@ export async function transcribeAudio(
   wavPath: string,
   whisperBin: string,
   modelPath: string,
+  timeoutMs?: number,
 ): Promise<SegmentInput[]> {
   const outBase = join(tmpdir(), `dailies-whisper-${randomUUID()}`);
   const outJsonPath = `${outBase}.json`;
 
   const args = ["-m", modelPath, "-f", wavPath, "-oj", "-of", outBase, "-ml", "0"];
 
-  const { stderr, code } = await run(whisperBin, args);
+  const { stderr, code, timedOut } = await run(whisperBin, args, { timeoutMs });
+  if (timedOut) {
+    throw new Error(`whisper-cli timed out after ${timeoutMs}ms for ${wavPath}`);
+  }
   if (code !== 0) {
     throw new Error(`whisper-cli failed (exit ${code ?? "unknown"}): ${stderr.slice(-2000)}`);
   }

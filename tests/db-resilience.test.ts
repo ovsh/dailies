@@ -110,6 +110,7 @@ describe("database pipeline resilience", () => {
       model: "test",
     });
     db.markVisuallyIndexed(file.id);
+    db.setVideoUnplayable(file.id, true);
     const segmentId = db.listSegments(file.id)[0]!.id;
     db.upsertEmbedding("segment", segmentId, new Float32Array(768).fill(1));
     db.upsertEmbedding("scene", scene!.id, new Float32Array(768).fill(1));
@@ -121,6 +122,7 @@ describe("database pipeline resilience", () => {
     expect(updated.hasTranscript).toBe(false);
     expect(updated.hasVisualIndex).toBe(false);
     expect(updated.proxyPath).toBeNull();
+    expect(updated.videoUnplayable).toBe(false);
     expect(db.listSegments(file.id)).toEqual([]);
     expect(db.listScenes(file.id)).toEqual([]);
     expect(db.listAnnotations(file.id)).toEqual([]);

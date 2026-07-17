@@ -4,6 +4,7 @@
  * clip; atoms of the same clip share a material package UMID (clipKey).
  */
 import { run } from "./exec";
+import { PROBE_TIMEOUT_MS } from "./timeouts";
 
 export interface MxfAtomInfo {
   path: string;
@@ -96,8 +97,10 @@ function findPackageUmid(format: FfprobeFormat | undefined, streams: FfprobeStre
 export async function analyzeMxf(ffprobePath: string, path: string): Promise<MxfAtomInfo | null> {
   const args = ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path];
 
-  const { stdout, code } = await run(ffprobePath, args);
-  if (code !== 0) {
+  const { stdout, code, timedOut } = await run(ffprobePath, args, {
+    timeoutMs: PROBE_TIMEOUT_MS,
+  });
+  if (timedOut || code !== 0) {
     return null;
   }
 

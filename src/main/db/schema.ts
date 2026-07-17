@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS files (
   media_kind TEXT NOT NULL DEFAULT 'standard',
   member_paths TEXT,
   clip_key TEXT,
+  video_unplayable INTEGER NOT NULL DEFAULT 0,
   episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
 );
 

@@ -7,16 +7,19 @@ import { join } from "node:path";
 import { findFfmpegBinary } from "./binaries";
 import { run } from "./exec";
 
-async function runFfmpeg(args: string[]): Promise<void> {
+async function runFfmpeg(args: string[], timeoutMs?: number): Promise<void> {
   const ffmpegBin = findFfmpegBinary();
-  const { stderr, code } = await run(ffmpegBin, args);
+  const { stderr, code, timedOut } = await run(ffmpegBin, args, { timeoutMs });
+  if (timedOut) {
+    throw new Error(`ffmpeg timed out after ${timeoutMs}ms`);
+  }
   if (code !== 0) {
     throw new Error(`ffmpeg failed (exit ${code ?? "unknown"}): ${stderr.slice(-2000)}`);
   }
 }
 
 /** Generates a 960px-wide H.264/AAC proxy with faststart, returns its output path. */
-export async function makeProxy(path: string, outDir: string): Promise<string> {
+export async function makeProxy(path: string, outDir: string, timeoutMs?: number): Promise<string> {
   const outPath = join(outDir, "proxy.mp4");
   await runFfmpeg([
     "-y",
@@ -37,12 +40,17 @@ export async function makeProxy(path: string, outDir: string): Promise<string> {
     "-movflags",
     "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
   return outPath;
 }
 
 /** Extracts a single JPEG frame at `atS` seconds, scaled to 640px wide. */
-export async function extractKeyframe(path: string, atS: number, outPath: string): Promise<void> {
+export async function extractKeyframe(
+  path: string,
+  atS: number,
+  outPath: string,
+  timeoutMs?: number,
+): Promise<void> {
   await runFfmpeg([
     "-y",
     "-ss",
@@ -54,7 +62,7 @@ export async function extractKeyframe(path: string, atS: number, outPath: string
     "-vf",
     "scale=640:-2",
     outPath,
-  ]);
+  ], timeoutMs);
 }
 
 /**
@@ -62,7 +70,7 @@ export async function extractKeyframe(path: string, atS: number, outPath: string
  * There is intentionally no seek/trim: the WAV starts at source t=0, so
  * transcript startS offsets map 1:1 to playback time.
  */
-export async function extractAudio(path: string, outWav: string): Promise<void> {
+export async function extractAudio(path: string, outWav: string, timeoutMs?: number): Promise<void> {
   await runFfmpeg([
     "-y",
     "-i",
@@ -75,5 +83,5 @@ export async function extractAudio(path: string, outWav: string): Promise<void> 
     "-c:a",
     "pcm_s16le",
     outWav,
-  ]);
+  ], timeoutMs);
 }

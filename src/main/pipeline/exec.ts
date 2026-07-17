@@ -14,6 +14,7 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   code: number | null;
+  timedOut: boolean;
 }
 
 export function run(bin: string, args: string[], opts?: RunOptions): Promise<RunResult> {
@@ -27,10 +28,12 @@ export function run(bin: string, args: string[], opts?: RunOptions): Promise<Run
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
 
     if (opts?.timeoutMs !== undefined) {
       timeout = setTimeout(() => {
+        timedOut = true;
         child.kill("SIGKILL");
       }, opts.timeoutMs);
     }
@@ -54,7 +57,7 @@ export function run(bin: string, args: string[], opts?: RunOptions): Promise<Run
       if (settled) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
-      resolve({ stdout, stderr, code });
+      resolve({ stdout, stderr, code, timedOut });
     });
   });
 }

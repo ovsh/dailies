@@ -42,6 +42,7 @@ export interface DailiesDB {
   setFileStatus(id: number, status: FileStatus): void;
   setFileProxy(id: number, proxyPath: string): void;
   clearDerivedState(fileId: number): void;
+  setVideoUnplayable(id: number, value: boolean): void;
   markTranscribed(id: number): void;
   markVisuallyIndexed(id: number): void;
 

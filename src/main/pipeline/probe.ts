@@ -10,6 +10,7 @@ import { basename } from "node:path";
 import type { FileInput } from "../../shared/types";
 import { findFfprobeBinary } from "./binaries";
 import { run } from "./exec";
+import { PROBE_TIMEOUT_MS } from "./timeouts";
 
 interface FfprobeStream {
   codec_type?: string;
@@ -86,7 +87,12 @@ export async function probeFile(path: string): Promise<FileInput> {
     path,
   ];
 
-  const { stdout, code } = await run(ffprobeBin, args);
+  const { stdout, code, timedOut } = await run(ffprobeBin, args, {
+    timeoutMs: PROBE_TIMEOUT_MS,
+  });
+  if (timedOut) {
+    throw new Error(`ffprobe timed out after ${PROBE_TIMEOUT_MS}ms for ${path}`);
+  }
   if (code !== 0) {
     throw new Error(`ffprobe failed for ${path} (exit ${code ?? "unknown"})`);
   }

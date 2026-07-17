@@ -129,6 +129,14 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
                   controls
                   aria-label={`Play ${file.filename}`}
                   onTimeUpdate={handleTimeUpdate}
+                  onError={(e) => {
+                    const err = e.currentTarget.error;
+                    setLoadError(
+                      err?.message
+                        ? `Playback failed: ${err.message}`
+                        : "This clip could not be played back.",
+                    );
+                  }}
                   onLoadedMetadata={() => {
                     if (audioRef.current) audioRef.current.currentTime = seekS;
                   }}
@@ -141,6 +149,14 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
                 src={mediaSrc}
                 controls
                 onTimeUpdate={handleTimeUpdate}
+                onError={(e) => {
+                  const err = e.currentTarget.error;
+                  setLoadError(
+                    err?.message
+                      ? `Playback failed: ${err.message}`
+                      : "This clip could not be played back.",
+                  );
+                }}
                 onLoadedMetadata={() => {
                   if (videoRef.current) videoRef.current.currentTime = seekS;
                 }}

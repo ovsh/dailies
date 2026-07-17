@@ -16,6 +16,7 @@ const api: DailiesAPI = {
     ipcRenderer.invoke(IPC.addProjectFolder, role, episodeId, e2eFolderPath),
   removeProjectFolder: (folderId: number) =>
     ipcRenderer.invoke(IPC.removeProjectFolder, folderId),
+  clearProjectCache: () => ipcRenderer.invoke(IPC.clearProjectCache),
   rescanFolders: (episodeId: number | null) => ipcRenderer.invoke(IPC.rescanFolders, episodeId),
   importDocuments: (episodeId: number | null) =>
     ipcRenderer.invoke(IPC.importDocuments, episodeId),

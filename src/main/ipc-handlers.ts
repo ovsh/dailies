@@ -1,5 +1,6 @@
 import { app, dialog, ipcMain, shell, type BrowserWindow } from "electron";
 import { GoogleGenAI } from "@google/genai";
+import fs from "node:fs";
 import path from "node:path";
 import { downloadWhisperModel } from "./model-download";
 import { IPC } from "../shared/ipc";
@@ -129,6 +130,20 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       c.db.removeFolder(folderId);
       emitProjectUpdate();
     }
+  });
+
+  ipcMain.handle(IPC.clearProjectCache, async () => {
+    const c = requireProject();
+    await c.pipeline.stop();
+    const files = c.db.listFiles();
+    for (const file of files) {
+      await fs.promises.rm(path.join(c.mediaDir, String(file.id)), { recursive: true, force: true });
+      c.db.clearDerivedState(file.id);
+      c.db.enqueueJob(file.id, "probe");
+    }
+    c.pipeline.start();
+    emitProjectUpdate();
+    return { clearedFiles: files.length };
   });
 
   ipcMain.handle(IPC.rescanFolders, async (_e, episodeId: number | null) => {

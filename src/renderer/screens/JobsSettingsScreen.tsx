@@ -177,6 +177,22 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
     if (result.ok) setRetryAction(null);
   }
 
+  async function handleClearProjectCache() {
+    const confirmed = window.confirm(
+      "Clear every generated proxy, transcript, scene index, and embedding for this project and re-process all watched footage? Your source files will not be touched.",
+    );
+    if (!confirmed) return;
+    setRetryAction(() => () => void handleClearProjectCache());
+    const result = await runIpc(
+      async () => {
+        await api.clearProjectCache();
+        await Promise.all([refreshJobs(), onRefresh()]);
+      },
+      { setPending: setActionPending, setError: setActionError, fallback: "Could not clear the project cache." },
+    );
+    if (result.ok) setRetryAction(null);
+  }
+
   const waitingCount = jobs?.filter((job) => job.status === "waiting").length ?? 0;
 
   return (
@@ -389,6 +405,23 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="jobs-section">
+            <div className="section-head">
+              <span className="label">Danger zone</span>
+              <h2 className="display">Clear cache &amp; reprocess</h2>
+            </div>
+            <p className="jobs-hint mono">
+              Deletes every generated proxy, transcript, scene index, and embedding for this project and re-processes all watched footage from scratch. Your source files are never touched.
+            </p>
+            <button
+              className="ghost-btn label"
+              onClick={() => void handleClearProjectCache()}
+              disabled={actionPending}
+            >
+              {actionPending ? "Clearing…" : "Clear cache & reprocess"}
+            </button>
           </section>
         </div>
       </div>

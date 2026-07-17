@@ -1,14 +1,13 @@
-import { app, BrowserWindow, net, protocol } from "electron";
+import { app, BrowserWindow, protocol } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { pathToFileURL } from "node:url";
 import { IPC } from "../shared/ipc";
 import type { IndexUpdate } from "../shared/types";
 import { setGlobalModelsDir } from "./pipeline/binaries";
 import { createAppSettings } from "./app-settings";
 import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
-import { forwardedRequestInit, parseMediaRequestPath } from "./media-protocol";
+import { buildMediaResponse, parseMediaRequestPath } from "./media-protocol";
 
 /**
  * When the app is launched from Finder/Dock (rather than a terminal), the
@@ -76,10 +75,11 @@ function createWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
-  // media:// — serves local media and forwards Range requests for 206 responses.
+  // media:// — serves local media (proxies, keyframes, originals) with real
+  // 200/206/416 Range semantics so <video>/<audio> can buffer and seek.
   protocol.handle("media", (request) => {
     const filePath = parseMediaRequestPath(request.url);
-    return net.fetch(pathToFileURL(filePath).toString(), forwardedRequestInit(request));
+    return buildMediaResponse(filePath, request.headers.get("range"));
   });
 
   const dataDir = app.getPath("userData");

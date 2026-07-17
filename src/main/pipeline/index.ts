@@ -5,7 +5,8 @@
  * renderer. Also ingests documents (producer notes, scripts) alongside
  * media, and groups Avid OP-Atom MXF essence atoms into single clips.
  */
-import { mkdir, readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 import type { DailiesDB } from "../db/types";
@@ -74,6 +75,29 @@ const UPDATE_DEBOUNCE_MS = 300;
 const EMBED_BATCH_SIZE = 64;
 const MAX_TRANSIENT_RETRIES = 3;
 const RETRY_BASE_MS = 250;
+const SCAN_STABILITY_WINDOW_MS = 3000;
+
+function parseMemberHashMap(fileHash: string): Map<string, string> {
+  const members = new Map<string, string>();
+  if (!fileHash) return members;
+  for (const entry of fileHash.split("|")) {
+    const separator = entry.lastIndexOf(":");
+    const path = entry.slice(0, separator);
+    const hash = entry.slice(separator + 1);
+    if (separator <= 0 || !path || !/^[a-f0-9]{40}$/i.test(hash)) return new Map();
+    members.set(path, hash);
+  }
+  return members;
+}
+
+function isUnchangedSuperset(oldFileHash: string, newMap: Map<string, string>): boolean {
+  const oldMap = parseMemberHashMap(oldFileHash);
+  if (oldMap.size === 0) return false;
+  for (const [path, hash] of oldMap) {
+    if (newMap.get(path) !== hash) return false;
+  }
+  return true;
+}
 
 function mediaDirFor(dataDir: string, fileId: number): string {
   return join(dataDir, "media", String(fileId));
@@ -222,6 +246,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       memberPaths.map(async (path) => `${path}:${await computePartialHashSafe(path)}`),
     );
     const fileHash = memberHashes.join("|");
+    const newHashMap = parseMemberHashMap(fileHash);
     if (
       existing &&
       existing.memberPaths &&
@@ -250,6 +275,15 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       memberPaths,
       clipKey: clip.clipKey,
     };
+
+    if (existing && isUnchangedSuperset(existing.fileHash, newHashMap)) {
+      // Member set grew (e.g. video atom finally landed) but every
+      // previously-known atom is byte-identical — preserve finished work.
+      const updated = db.updateOpAtomMembers(existing.id, input);
+      await repairFile(updated);
+      scheduleUpdate();
+      return;
+    }
 
     const file = db.upsertFile(input);
     db.enqueueJob(file.id, "probe");
@@ -323,6 +357,22 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     probed.role = roleForPath(path);
     probed.episodeId = episodeIdForPath(path);
 
+    if (!existing) {
+      const byHash = db.getFileByHash(probed.fileHash);
+      if (
+        byHash?.mediaKind === "standard" &&
+        byHash.path !== path &&
+        !existsSync(byHash.path)
+      ) {
+        // A remounted drive or renamed folder changes the absolute path but
+        // not the content hash, so keep the existing clip's derived state.
+        const repointed = db.repointFilePath(byHash.id, path, probed.filename);
+        await repairFile(repointed);
+        scheduleUpdate();
+        return;
+      }
+    }
+
     if (existing && existing.fileHash === probed.fileHash) {
       // File identity is unchanged, but derived processing may be incomplete.
       await repairFile(existing);
@@ -354,6 +404,18 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     watcher.unwatchFolder(path);
   }
 
+  async function isStableForScan(path: string): Promise<boolean> {
+    try {
+      const first = await stat(path);
+      if (Date.now() - first.mtimeMs >= SCAN_STABILITY_WINDOW_MS) return true;
+      await delay(SCAN_STABILITY_WINDOW_MS);
+      const second = await stat(path);
+      return first.size === second.size && first.mtimeMs === second.mtimeMs;
+    } catch {
+      return false;
+    }
+  }
+
   async function scanFolder(folder: ProjectFolder): Promise<void> {
     // A missing folder (unmounted drive, deleted path) must never take the
     // app down — skip quietly; the watcher recovers when it reappears.
@@ -368,6 +430,12 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       const ext = extname(file).toLowerCase();
       try {
         if (VIDEO_EXTENSIONS.has(ext)) {
+          if (!(await isStableForScan(file))) {
+            console.warn(
+              `scanFolder: ${file} is still being written; the watcher will pick it up`,
+            );
+            continue;
+          }
           await onFileFound(file);
         } else if (DOC_EXTENSIONS_SET.has(ext)) {
           await onDocFound(file);

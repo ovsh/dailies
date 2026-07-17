@@ -478,6 +478,7 @@ function migrate(db: BetterSqlite3Database): void {
     ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
   ]);
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_clip_key ON files(clip_key)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_episode_id ON files(episode_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id)");
   migrateWatchedFoldersKv(db);
@@ -506,6 +507,9 @@ export function openDatabase(dbPath: string): DailiesDB {
 
   const stmtGetFileById = db.prepare<[number], FileRow>("SELECT * FROM files WHERE id = ?");
   const stmtGetFileByPath = db.prepare<[string], FileRow>("SELECT * FROM files WHERE path = ?");
+  const stmtGetFileByHash = db.prepare<[string], FileRow>(
+    "SELECT * FROM files WHERE file_hash = ? LIMIT 1",
+  );
   const stmtGetFileByClipKey = db.prepare<[string], FileRow>(
     "SELECT * FROM files WHERE clip_key = ?",
   );
@@ -563,7 +567,11 @@ export function openDatabase(dbPath: string): DailiesDB {
      WHERE id = ?
      RETURNING *`,
   );
+  const stmtRepointFilePath = db.prepare<[string, string, number], FileRow>(
+    "UPDATE files SET path = ?, filename = ? WHERE id = ? RETURNING *",
+  );
   const stmtListFiles = db.prepare<[], FileRow>("SELECT * FROM files ORDER BY added_at DESC");
+  const stmtDeleteFile = db.prepare<[number]>("DELETE FROM files WHERE id = ?");
   const stmtListFilesByEpisode = db.prepare<[number], FileRow>(
     "SELECT * FROM files WHERE episode_id = ? ORDER BY added_at DESC",
   );
@@ -1057,6 +1065,29 @@ export function openDatabase(dbPath: string): DailiesDB {
     stmtClearDerivedFileState.run(fileId);
   });
 
+  function updateExistingFile(existing: FileRow, input: FileInput): MediaFile {
+    const updated = stmtUpdateFile.get(
+      input.path,
+      input.filename,
+      input.durationS,
+      input.fps,
+      input.dropFrame ? 1 : 0,
+      input.startTc,
+      input.codec,
+      input.audioChannels,
+      input.fileHash,
+      input.role ?? "raw",
+      input.clipName ?? null,
+      input.mediaKind ?? "standard",
+      input.memberPaths ? JSON.stringify(input.memberPaths) : null,
+      input.clipKey ?? null,
+      input.episodeId ?? null,
+      existing.id,
+    );
+    if (!updated) throw new Error(`updateFile: file ${existing.id} not found`);
+    return mapFile(updated);
+  }
+
   const upsertFileTx = db.transaction((input: FileInput): MediaFile => {
     const role = input.role ?? "raw";
     const mediaKind = input.mediaKind ?? "standard";
@@ -1074,25 +1105,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         // and embedding state from masquerading as current content.
         clearDerivedStateTx(existing.id);
       }
-      const updated = stmtUpdateFile.get(
-        input.path,
-        input.filename,
-        input.durationS,
-        input.fps,
-        input.dropFrame ? 1 : 0,
-        input.startTc,
-        input.codec,
-        input.audioChannels,
-        input.fileHash,
-        role,
-        clipName,
-        mediaKind,
-        memberPaths,
-        clipKey,
-        episodeId,
-        existing.id,
-      );
-      return mapFile(updated ?? existing);
+      return updateExistingFile(existing, input);
     }
 
     const row = stmtInsertFile.get(
@@ -1115,6 +1128,20 @@ export function openDatabase(dbPath: string): DailiesDB {
     );
     if (!row) throw new Error("upsertFile: insert failed");
     return mapFile(row);
+  });
+
+  const deleteFilesUnderPathTx = db.transaction((pathPrefix: string): MediaFile[] => {
+    const rows = stmtListFiles.all().filter((row) =>
+      row.path.startsWith(pathPrefix) &&
+      (row.path.length === pathPrefix.length ||
+        pathPrefix.endsWith("/") ||
+        row.path[pathPrefix.length] === "/")
+    );
+    for (const row of rows) {
+      clearDerivedStateTx(row.id);
+      stmtDeleteFile.run(row.id);
+    }
+    return rows.map(mapFile);
   });
 
   const upsertDocumentTx = db.transaction((input: DocumentInput): DocumentRecord => {
@@ -1175,9 +1202,30 @@ export function openDatabase(dbPath: string): DailiesDB {
       return row ? mapFile(row) : null;
     },
 
+    getFileByHash(hash: string): MediaFile | null {
+      const row = stmtGetFileByHash.get(hash);
+      return row ? mapFile(row) : null;
+    },
+
+    repointFilePath(fileId: number, newPath: string, newFilename: string): MediaFile {
+      const row = stmtRepointFilePath.get(newPath, newFilename, fileId);
+      if (!row) throw new Error(`repointFilePath: file ${fileId} not found`);
+      return mapFile(row);
+    },
+
     getFileByClipKey(clipKey: string): MediaFile | null {
       const row = stmtGetFileByClipKey.get(clipKey);
       return row ? mapFile(row) : null;
+    },
+
+    updateOpAtomMembers(fileId: number, input: FileInput): MediaFile {
+      const existing = stmtGetFileById.get(fileId);
+      if (!existing) throw new Error(`updateOpAtomMembers: file ${fileId} not found`);
+      return updateExistingFile(existing, input);
+    },
+
+    deleteFilesUnderPath(pathPrefix: string): MediaFile[] {
+      return deleteFilesUnderPathTx(pathPrefix);
     },
 
     listFiles(episodeId?: number): MediaFile[] {

@@ -177,8 +177,8 @@ const DEFAULT_DEBOUNCE_MS = 4000;
 /**
  * Collects OP-Atom essence atoms and emits complete clips after quiescence:
  * groups by clipKey, (re)starting a per-group timer on every new atom for
- * that clip. The timer is only a batching boundary: atoms remain associated
- * with their durable clipKey, so a late atom emits an updated complete group.
+ * that clip. Each timer fire consumes its batch; callers can reconstruct
+ * earlier membership from durable clipKey state when a late atom arrives.
  */
 export class OpAtomGrouper {
   private readonly debounceMs: number;
@@ -206,6 +206,7 @@ export class OpAtomGrouper {
     const timer = setTimeout(() => {
       this.timers.delete(info.clipKey);
       const atoms = this.groups.get(info.clipKey);
+      this.groups.delete(info.clipKey);
       if (!atoms || atoms.length === 0) return;
 
       const clipName = atoms.find((a) => a.clipName)?.clipName ?? null;

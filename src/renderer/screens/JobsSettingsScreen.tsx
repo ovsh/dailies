@@ -97,8 +97,12 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
     return unsub;
   }, [refreshSettings]);
 
-  async function handleRemoveFolder(folderId: number) {
-    setRetryAction(() => () => void handleRemoveFolder(folderId));
+  async function handleRemoveFolder(folderId: number, folderPath: string) {
+    const confirmed = window.confirm(
+      `Remove watched folder "${folderPath}"? Every clip, transcript, and piece of derived media under it will be permanently removed from this project. Your source files will not be touched.`,
+    );
+    if (!confirmed) return;
+    setRetryAction(() => () => void handleRemoveFolder(folderId, folderPath));
     const result = await runIpc(
       async () => {
         await api.removeProjectFolder(folderId);
@@ -286,7 +290,10 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                         {folder.lastScannedAt ? formatScanTime(folder.lastScannedAt) : "never"}
                       </span>
                     </span>
-                    <button className="ghost-btn label" onClick={() => handleRemoveFolder(folder.id)}>
+                    <button
+                      className="ghost-btn label"
+                      onClick={() => void handleRemoveFolder(folder.id, folder.path)}
+                    >
                       Remove
                     </button>
                   </div>

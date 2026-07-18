@@ -2,7 +2,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { GoogleGenAI } from "@google/genai";
 import { describe, expect, it, vi } from "vitest";
 
 import { runTranscriptScout, runVisualScout } from "../src/main/agents/subagents";
@@ -12,6 +11,8 @@ import {
   runChatTurn,
 } from "../src/main/agents/supervisor";
 import { openDatabase } from "../src/main/db/database";
+import type { OpenRouterClient } from "../src/main/agents/openrouter-client";
+import { MODEL_PROFILES } from "../src/shared/types";
 
 function makeDb(name: string) {
   const dir = mkdtempSync(path.join(tmpdir(), "dailies-grounding-"));
@@ -169,34 +170,35 @@ describe("final answer grounding", () => {
       words: [],
     }]);
     const segmentId = db.listSegments(file.id)[0]!.id;
-    const ai = {
-      models: {
-        generateContent: vi.fn(async () => ({
-          functionCalls: [],
-          text: `Here is the answer:\n${JSON.stringify({
+    const client = {
+      chat: vi.fn(async () => ({
+        message: {
+          content: `Here is the answer:\n${JSON.stringify({
             prose: "Model prose",
             hits: [{ source: "segment", id: String(segmentId), confidence: "high" }],
           })}\nDone.`,
-        })),
-      },
-    } as unknown as GoogleGenAI;
+        },
+      })),
+      embed: vi.fn(),
+    } as unknown as OpenRouterClient;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const answer = await runChatTurn({
       db,
       history: [],
       userText: "hello",
-      geminiKey: "unused-test-value",
+      apiKey: "unused-test-value",
       qualityMode: "standard",
+      modelProfile: MODEL_PROFILES[0]!,
       gemini: null,
       embedder: null,
       episodeId: null,
       emit: () => {},
-      ai,
+      client,
     });
 
     expect(answer).toEqual({ prose: "Model prose", hits: [] });
-    expect(ai.models.generateContent).toHaveBeenCalledTimes(1);
+    expect(client.chat).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("not returned by a scout"));
     warn.mockRestore();
     db.close();
@@ -217,19 +219,27 @@ describe("scout parsing", () => {
     const segmentId = db.listSegments(file.id)[0]!.id;
     const responses = [
       {
-        functionCalls: [{ name: "search_transcripts", args: { query: "bear", extra_terms: [] } }],
-        candidates: [{ content: { role: "model", parts: [] } }],
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "search-1",
+            type: "function" as const,
+            function: {
+              name: "search_transcripts",
+              arguments: JSON.stringify({ query: "bear", extra_terms: [] }),
+            },
+          }],
+        },
       },
-      { functionCalls: [], text: finalText(segmentId) },
+      { message: { content: finalText(segmentId) } },
     ];
-    const ai = {
-      models: {
-        generateContent: vi.fn(async () => responses.shift()!),
-      },
-    } as unknown as GoogleGenAI;
+    const client = {
+      chat: vi.fn(async () => responses.shift()!),
+      embed: vi.fn(),
+    } as unknown as OpenRouterClient;
 
     const result = await runTranscriptScout({
-      ai,
+      client,
       model: "test-model",
       db,
       query: "bear",
@@ -286,20 +296,28 @@ describe("scout parsing", () => {
 
     const responses = [
       {
-        functionCalls: [{ name: "search_transcripts", args: { query: "bear", extra_terms: [] } }],
-        candidates: [{ content: { role: "model", parts: [] } }],
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "search-1",
+            type: "function" as const,
+            function: {
+              name: "search_transcripts",
+              arguments: JSON.stringify({ query: "bear", extra_terms: [] }),
+            },
+          }],
+        },
       },
-      { functionCalls: [], text: `not valid\n${"x".repeat(500)}` },
+      { message: { content: `not valid\n${"x".repeat(500)}` } },
     ];
-    const ai = {
-      models: {
-        generateContent: vi.fn(async () => responses.shift()!),
-      },
-    } as unknown as GoogleGenAI;
+    const client = {
+      chat: vi.fn(async () => responses.shift()!),
+      embed: vi.fn(),
+    } as unknown as OpenRouterClient;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const result = await runTranscriptScout({
-      ai,
+      client,
       model: "test-model",
       db,
       query: "bear",
@@ -335,20 +353,28 @@ describe("scout parsing", () => {
 
     const responses = [
       {
-        functionCalls: [{ name: "search_visuals", args: { query: "bear", extra_terms: [] } }],
-        candidates: [{ content: { role: "model", parts: [] } }],
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "search-1",
+            type: "function" as const,
+            function: {
+              name: "search_visuals",
+              arguments: JSON.stringify({ query: "bear", extra_terms: [] }),
+            },
+          }],
+        },
       },
-      { functionCalls: [], text: "not valid scout JSON" },
+      { message: { content: "not valid scout JSON" } },
     ];
-    const ai = {
-      models: {
-        generateContent: vi.fn(async () => responses.shift()!),
-      },
-    } as unknown as GoogleGenAI;
+    const client = {
+      chat: vi.fn(async () => responses.shift()!),
+      embed: vi.fn(),
+    } as unknown as OpenRouterClient;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const result = await runVisualScout({
-      ai,
+      client,
       model: "test-model",
       db,
       query: "bear",

@@ -86,7 +86,7 @@ export function App() {
     projectState !== null &&
     !welcomeDismissed &&
     (forceWelcome ||
-      settings.geminiKeyStatus !== "connected" ||
+      settings.apiKeyStatus !== "connected" ||
       projectState.folders.length === 0 ||
       !settings.whisperModelReady);
 
@@ -126,7 +126,7 @@ export function App() {
         {screen === "chat" && (
           <ChatScreen
             onOpenClip={(fileId, seekS) => openClip(fileId, seekS, "chat")}
-            geminiKeySet={settings ? settings.geminiKeyStatus === "connected" : null}
+            apiKeySet={settings ? settings.apiKeyStatus === "connected" : null}
             onOpenSettings={() => setScreen("jobs")}
             episodeId={episodeId}
             episodes={projectState.episodes}

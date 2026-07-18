@@ -4,17 +4,19 @@
  *
  * Registry: ${dataDir}/projects.json. Project data: ${dataDir}/projects/<id>/.
  * A pre-projects installation (${dataDir}/dailies.db) is adopted as a project
- * on first boot, and its stored Gemini key is promoted to the global store.
+ * on first boot.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Project, ProjectState } from "../shared/types";
+import type { ModelProfile, Project, ProjectState } from "../shared/types";
+import { EMBEDDING_MODEL, MODEL_PROFILES } from "../shared/types";
 import { openDatabase } from "./db/database";
 import type { DailiesDB } from "./db/types";
 import { createPipeline, type Pipeline } from "./pipeline";
 import type { AppSettingsStore } from "./app-settings";
-import { createGeminiEmbedder, createGeminiIndexer } from "./agents/gemini";
+import { createOpenRouterClient } from "./agents/openrouter-client";
+import { createOpenRouterEmbedder, createOpenRouterIndexer } from "./agents/openrouter";
 
 interface ProjectRecord extends Project {
   dbPath: string;
@@ -82,12 +84,8 @@ export function createProjectManager(opts: {
     writeRegistry({ projects: [record], lastOpenedId: record.id });
   }
 
-  /** Promote a legacy per-project Gemini key into the global store. */
-  function promoteLegacyKey(db: DailiesDB): void {
-    const enc = db.getSetting("apiKey.gemini.enc");
-    if (enc) {
-      opts.settings.adoptLegacyKey(enc, db.getSetting("apiKey.gemini.plain") === "1");
-    }
+  function activeProfile(): ModelProfile {
+    return MODEL_PROFILES.find((profile) => profile.id === opts.settings.getModelProfileId()) ?? MODEL_PROFILES[0]!;
   }
 
   function toProject(r: ProjectRecord): Project {
@@ -115,19 +113,28 @@ export function createProjectManager(opts: {
     fs.mkdirSync(record.mediaDir, { recursive: true });
     const db = openDatabase(record.dbPath);
     db.resetRunningJobs();
-    promoteLegacyKey(db);
+
+    const storedEmbeddingModel = db.getMeta("embedding_model");
+    if (storedEmbeddingModel === null) {
+      db.setMeta("embedding_model", EMBEDDING_MODEL);
+    } else if (storedEmbeddingModel !== EMBEDDING_MODEL) {
+      db.deleteAllEmbeddings();
+      db.setMeta("embedding_model", EMBEDDING_MODEL);
+    }
+
+    const client = createOpenRouterClient(() => opts.settings.getOpenRouterKey());
+    const indexer = createOpenRouterIndexer(client, () => activeProfile().visualIndex);
+    const textEmbedder = createOpenRouterEmbedder(client);
 
     const pipeline = createPipeline({
       db,
       dataDir: path.dirname(record.mediaDir) === opts.dataDir ? opts.dataDir : path.dirname(record.mediaDir),
       whisperModel: opts.settings.getWhisperModel(),
       gemini: () => {
-        const key = opts.settings.getApiKey();
-        return key ? createGeminiIndexer(() => key) : null;
+        return opts.settings.hasOpenRouterKey() ? indexer : null;
       },
       embedder: () => {
-        const key = opts.settings.getApiKey();
-        return key ? createGeminiEmbedder(() => key) : null;
+        return opts.settings.hasOpenRouterKey() ? textEmbedder : null;
       },
       onUpdate: opts.onUpdate,
     });

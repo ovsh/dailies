@@ -791,6 +791,7 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtListEmbeddingsByKind = db.prepare<[string], EmbeddingRow>(
     "SELECT kind, ref_id, vector FROM embeddings WHERE kind = ?",
   );
+  const stmtDeleteAllEmbeddings = db.prepare("DELETE FROM embeddings");
 
   const stmtEnqueueJob = db.prepare<[{ fileId: number; stage: string; now: string }]>(
     `INSERT INTO jobs (file_id, stage, status, attempts, updated_at)
@@ -1530,6 +1531,20 @@ export function openDatabase(dbPath: string): DailiesDB {
         .filter((row) => row.similarity >= SEMANTIC_RELEVANCE_FLOOR)
         .slice(0, limit)
         .map((row) => ({ refId: row.refId, score: row.similarity }));
+    },
+
+    deleteAllEmbeddings(): void {
+      stmtDeleteAllEmbeddings.run();
+    },
+
+    // project metadata
+    getMeta(key: string): string | null {
+      const row = stmtGetSetting.get(key);
+      return row ? row.value : null;
+    },
+
+    setMeta(key: string, value: string): void {
+      stmtSetSetting.run(key, value);
     },
 
     // job queue

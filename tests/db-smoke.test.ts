@@ -249,6 +249,13 @@ describe("db end-to-end smoke", () => {
     junk[2] = 1;
     expect(db.semanticSearch("segment", junk, 2)).toEqual([]);
 
+    // Project metadata and embedding-model invalidation primitives.
+    expect(db.getMeta("embedding_model")).toBeNull();
+    db.setMeta("embedding_model", "google/gemini-embedding-001");
+    expect(db.getMeta("embedding_model")).toBe("google/gemini-embedding-001");
+    db.deleteAllEmbeddings();
+    expect(db.listUnembeddedSegments(file.id)).toHaveLength(2);
+
     db.close();
   });
 });

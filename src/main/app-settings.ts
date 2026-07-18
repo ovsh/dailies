@@ -1,5 +1,6 @@
 /**
- * Global (cross-project) settings: the Gemini key, quality mode, whisper model.
+ * Global (cross-project) settings: OpenRouter key, model profile, quality mode,
+ * and whisper model.
  * Stored as JSON in userData; the API key is encrypted with safeStorage
  * (macOS Keychain-backed). Replaces the old per-database settings for these.
  */
@@ -7,23 +8,28 @@ import { safeStorage } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import type { QualityMode } from "../shared/types";
+import { DEFAULT_MODEL_PROFILE_ID, MODEL_PROFILES } from "../shared/types";
 
 interface AppSettingsFile {
+  /** Retained only so older settings files round-trip without losing fields. */
   geminiKeyEnc?: string;
   geminiKeyIsPlain?: boolean;
+  openrouterKeyEnc?: string;
+  openrouterKeyIsPlain?: boolean;
+  modelProfileId?: string;
   qualityMode?: QualityMode;
   whisperModel?: string;
 }
 
 export interface AppSettingsStore {
-  getApiKey(): string | null;
-  setApiKey(key: string): boolean;
-  hasApiKey(): boolean;
+  getOpenRouterKey(): string | null;
+  setOpenRouterKey(key: string): boolean;
+  hasOpenRouterKey(): boolean;
+  getModelProfileId(): string;
+  setModelProfileId(id: string): void;
   getQualityMode(): QualityMode;
   setQualityMode(mode: QualityMode): void;
   getWhisperModel(): string;
-  /** One-time import from a legacy per-project settings value (encrypted base64). */
-  adoptLegacyKey(enc: string, isPlain: boolean): void;
 }
 
 export function createAppSettings(dataDir: string): AppSettingsStore {
@@ -53,23 +59,33 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
   }
 
   return {
-    getApiKey() {
+    getOpenRouterKey() {
       const s = read();
-      if (!s.geminiKeyEnc) return null;
-      return decrypt(s.geminiKeyEnc, s.geminiKeyIsPlain === true);
+      if (!s.openrouterKeyEnc) return null;
+      return decrypt(s.openrouterKeyEnc, s.openrouterKeyIsPlain === true);
     },
-    setApiKey(key: string) {
+    setOpenRouterKey(key: string) {
       const trimmed = key.trim();
       if (!trimmed) return false;
       const canEncrypt = safeStorage.isEncryptionAvailable();
       const enc = canEncrypt
         ? safeStorage.encryptString(trimmed).toString("base64")
         : Buffer.from(trimmed, "utf8").toString("base64");
-      write({ geminiKeyEnc: enc, geminiKeyIsPlain: !canEncrypt });
+      write({ openrouterKeyEnc: enc, openrouterKeyIsPlain: !canEncrypt });
       return true;
     },
-    hasApiKey() {
-      return this.getApiKey() !== null;
+    hasOpenRouterKey() {
+      return this.getOpenRouterKey() !== null;
+    },
+    getModelProfileId() {
+      const id = read().modelProfileId;
+      return MODEL_PROFILES.some((profile) => profile.id === id) ? id! : DEFAULT_MODEL_PROFILE_ID;
+    },
+    setModelProfileId(id: string) {
+      if (!MODEL_PROFILES.some((profile) => profile.id === id)) {
+        throw new Error(`Unknown model profile: ${id}`);
+      }
+      write({ modelProfileId: id });
     },
     getQualityMode() {
       return read().qualityMode === "high" ? "high" : "standard";
@@ -79,10 +95,6 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
     },
     getWhisperModel() {
       return read().whisperModel ?? "large-v3-turbo";
-    },
-    adoptLegacyKey(enc: string, isPlain: boolean) {
-      if (read().geminiKeyEnc) return;
-      write({ geminiKeyEnc: enc, geminiKeyIsPlain: isPlain });
     },
   };
 }

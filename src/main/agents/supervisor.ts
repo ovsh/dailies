@@ -3,22 +3,21 @@
  * scouts, the frame verifier, and the clip reader as tools, then emits one
  * final structured answer for the editor.
  */
-import type { Content, FunctionDeclaration, Part } from "@google/genai";
-import { FunctionCallingConfigMode, GoogleGenAI, Type } from "@google/genai";
-
 import type {
   AgentAnswer,
   ChatMessageRecord,
   Confidence,
   DocumentHit,
   GeminiIndexer,
+  ModelProfile,
   QualityMode,
   TextEmbedder,
   TranscriptHit,
   VisualHit,
 } from "../../shared/types";
-import { GEMINI_MODELS } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
+import { createOpenRouterClient } from "./openrouter-client";
+import type { ChatMessage, OpenRouterClient, ToolCall, ToolDef } from "./openrouter-client";
 import { getFileInfoTool, searchNotesTool } from "./tools";
 import { runClipReader, runFrameVerifier, runTranscriptScout, runVisualScout } from "./subagents";
 
@@ -28,14 +27,15 @@ export interface ChatTurnOptions {
   db: DailiesDB;
   history: ChatMessageRecord[]; // oldest first
   userText: string;
-  geminiKey: string;
+  apiKey: string;
   qualityMode: QualityMode; // "high" => supervisor tries the pro model first
+  modelProfile: ModelProfile;
   gemini: GeminiIndexer | null;
   embedder: TextEmbedder | null;
   episodeId: number | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
-  /** Test seam; production creates a client from geminiKey. */
-  ai?: GoogleGenAI;
+  /** Test seam; production creates a client from apiKey. */
+  client?: OpenRouterClient;
 }
 
 const SUPERVISOR_SYSTEM = `You are a conversational assistant for a professional documentary editor cutting in Avid. You help them find and understand footage in their library. You are a chat partner first and a researcher second — you talk with the editor, and you go dig through the footage ONLY when they actually ask you to find or analyze something.
@@ -129,81 +129,85 @@ function normalizeFinalAnswerArgs(args: unknown): unknown {
 
 // ---------- supervisor tool schemas ----------
 
-const SUPERVISOR_DECLARATIONS: FunctionDeclaration[] = [
-  {
-    name: "transcript_scout",
-    description: "Search the transcripts for spoken references to a topic. Returns hits and researcher notes.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: { query: { type: Type.STRING } },
+function toolDef(name: string, description: string, parameters: object): ToolDef {
+  return { type: "function", function: { name, description, parameters } };
+}
+
+const SUPERVISOR_TOOLS: ToolDef[] = [
+  toolDef(
+    "transcript_scout",
+    "Search the transcripts for spoken references to a topic. Returns hits and researcher notes.",
+    {
+      type: "object",
+      properties: { query: { type: "string" } },
       required: ["query"],
     },
-  },
-  {
-    name: "visual_scout",
-    description: "Search the visual index for scenes that visually show a subject. Returns hits and researcher notes.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: { query: { type: Type.STRING } },
+  ),
+  toolDef(
+    "visual_scout",
+    "Search the visual index for scenes that visually show a subject. Returns hits and researcher notes.",
+    {
+      type: "object",
+      properties: { query: { type: "string" } },
       required: ["query"],
     },
-  },
-  {
-    name: "frame_verifier",
-    description: "Verify a list of candidate visual scene IDs (from visual_scout) by inspecting their keyframes.",
-    parameters: {
-      type: Type.OBJECT,
+  ),
+  toolDef(
+    "frame_verifier",
+    "Verify a list of candidate visual scene IDs (from visual_scout) by inspecting their keyframes.",
+    {
+      type: "object",
       properties: {
-        scene_ids: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+        scene_ids: { type: "array", items: { type: "number" } },
       },
       required: ["scene_ids"],
     },
-  },
-  {
-    name: "clip_reader",
-    description: "Read the full transcript of one file and answer a question about it.",
-    parameters: {
-      type: Type.OBJECT,
+  ),
+  toolDef(
+    "clip_reader",
+    "Read the full transcript of one file and answer a question about it.",
+    {
+      type: "object",
       properties: {
-        file_id: { type: Type.NUMBER },
-        question: { type: Type.STRING },
+        file_id: { type: "number" },
+        question: { type: "string" },
       },
       required: ["file_id", "question"],
     },
-  },
-  {
-    name: "get_file_info",
-    description: "Get compact metadata for a file (duration, fps, status, etc).",
-    parameters: {
-      type: Type.OBJECT,
-      properties: { file_id: { type: Type.NUMBER } },
+  ),
+  toolDef(
+    "get_file_info",
+    "Get compact metadata for a file (duration, fps, status, etc).",
+    {
+      type: "object",
+      properties: { file_id: { type: "number" } },
       required: ["file_id"],
     },
-  },
-  {
-    name: "search_notes",
-    description: "Search the producer notes / scripts / documents that were dropped into watched folders.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: { query: { type: Type.STRING } },
+  ),
+  toolDef(
+    "search_notes",
+    "Search the producer notes / scripts / documents that were dropped into watched folders.",
+    {
+      type: "object",
+      properties: { query: { type: "string" } },
       required: ["query"],
     },
-  },
-  {
-    name: "final_answer",
-    description: "Deliver the final answer to the editor. Call this exactly once, when you are done researching.",
-    parameters: {
-      type: Type.OBJECT,
+  ),
+  toolDef(
+    "final_answer",
+    "Deliver the final answer to the editor. Call this exactly once, when you are done researching.",
+    {
+      type: "object",
       properties: {
-        prose: { type: Type.STRING },
+        prose: { type: "string" },
         hits: {
-          type: Type.ARRAY,
+          type: "array",
           items: {
-            type: Type.OBJECT,
+            type: "object",
             properties: {
-              source: { type: Type.STRING, enum: ["segment", "scene"] },
-              id: { type: Type.NUMBER },
-              confidence: { type: Type.STRING, enum: ["high", "medium", "low"] },
+              source: { type: "string", enum: ["segment", "scene"] },
+              id: { type: "number" },
+              confidence: { type: "string", enum: ["high", "medium", "low"] },
             },
             required: ["source", "id", "confidence"],
           },
@@ -211,8 +215,10 @@ const SUPERVISOR_DECLARATIONS: FunctionDeclaration[] = [
       },
       required: ["prose", "hits"],
     },
-  },
+  ),
 ];
+
+const FINAL_ANSWER_TOOL = SUPERVISOR_TOOLS.find((tool) => tool.function.name === "final_answer")!;
 
 // ---------- final_answer hydration ----------
 
@@ -457,18 +463,39 @@ function isModelUnavailableError(err: unknown): boolean {
   const status = rec.status;
   const message = typeof rec.message === "string" ? rec.message : err instanceof Error ? err.message : String(err);
   const statusUnavailable = status === 404 || status === 403 || status === "404" || status === "403";
-  const messageUnavailable = /not found/i.test(message);
+  const messageUnavailable = /\b(?:403|404)\b|not found/i.test(message);
   return statusUnavailable || messageUnavailable;
+}
+
+function parseToolArguments(call: ToolCall): unknown {
+  try {
+    const parsed: unknown = JSON.parse(call.function.arguments);
+    return parsed !== null && typeof parsed === "object" ? parsed : {};
+  } catch {
+    console.warn(`[agents] could not parse arguments for tool ${call.function.name}; using {}`);
+    return {};
+  }
 }
 
 // ---------- main entry ----------
 
 export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
-  const { db, history, userText, geminiKey, qualityMode, gemini, embedder, episodeId, emit } = opts;
-  const ai = opts.ai ?? new GoogleGenAI({ apiKey: geminiKey });
-  const subagentModel = GEMINI_MODELS.subagent;
+  const {
+    db,
+    history,
+    userText,
+    apiKey,
+    qualityMode,
+    modelProfile,
+    gemini,
+    embedder,
+    episodeId,
+    emit,
+  } = opts;
+  const client = opts.client ?? createOpenRouterClient(() => apiKey);
+  const subagentModel = modelProfile.subagent;
 
-  let supervisorModel: string = qualityMode === "high" ? GEMINI_MODELS.supervisorHigh : GEMINI_MODELS.supervisor;
+  let supervisorModel = qualityMode === "high" ? modelProfile.supervisorHigh : modelProfile.supervisor;
   const systemInstruction =
     episodeId === null ? SUPERVISOR_SYSTEM : `${SUPERVISOR_SYSTEM}\n\n${EPISODE_SCOPE_NOTICE}`;
 
@@ -476,9 +503,13 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
   // questions are answered from real content, not blind keyword searches.
   const digest = buildLibraryDigest(db, episodeId);
 
-  const contents: Content[] = [
-    ...history.map((m): Content => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-    { role: "user", parts: [{ text: `${digest}\n\n---\n\nEditor's question: ${userText}` }] },
+  const messages: ChatMessage[] = [
+    { role: "system", content: systemInstruction },
+    ...history.map((message): ChatMessage => ({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: message.content,
+    })),
+    { role: "user", content: `${digest}\n\n---\n\nEditor's question: ${userText}` },
   ];
 
   // Turn-local proof that a final reference came from a scout in this turn.
@@ -490,7 +521,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     if (name === "transcript_scout") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "transcript scout", status: `transcript scout — searching spoken references for "${query}"` });
-      const result = await runTranscriptScout({ ai, model: subagentModel, db, query, embedder, episodeId });
+      const result = await runTranscriptScout({ client, model: subagentModel, db, query, embedder, episodeId });
       for (const hit of result.hits) registry.segments.set(hit.segmentId, hit);
       return JSON.stringify(result);
     }
@@ -498,7 +529,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     if (name === "visual_scout") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "visual scout", status: `visual scout — searching visual matches for "${query}"` });
-      const result = await runVisualScout({ ai, model: subagentModel, db, query, gemini, embedder, episodeId });
+      const result = await runVisualScout({ client, model: subagentModel, db, query, gemini, embedder, episodeId });
       for (const hit of result.hits) registry.scenes.set(hit.sceneId, hit);
       return JSON.stringify(result);
     }
@@ -519,7 +550,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       const candidates = sceneIds
         .map((id) => registry.scenes.get(id))
         .filter((h): h is VisualHit => h !== undefined);
-      const verdicts = await runFrameVerifier({ ai, model: subagentModel, db, candidates });
+      const verdicts = await runFrameVerifier({ client, model: subagentModel, db, candidates });
       for (const verdict of verdicts) {
         if (verdict.verdict === "reject") registry.rejectedSceneIds.add(verdict.sceneId);
       }
@@ -530,7 +561,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       const fileId = typeof rec.file_id === "number" ? rec.file_id : 0;
       const question = typeof rec.question === "string" ? rec.question : "";
       emit({ type: "activity", agent: "clip reader", status: `clip reader — reading file ${fileId}` });
-      return runClipReader({ ai, model: subagentModel, db, fileId, question });
+      return runClipReader({ client, model: subagentModel, db, fileId, question });
     }
 
     if (name === "get_file_info") {
@@ -543,10 +574,10 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
   };
 
   const generate = () =>
-    ai.models.generateContent({
+    client.chat({
       model: supervisorModel,
-      contents,
-      config: { systemInstruction, tools: [{ functionDeclarations: SUPERVISOR_DECLARATIONS }] },
+      messages,
+      tools: SUPERVISOR_TOOLS,
     });
 
   /**
@@ -555,27 +586,15 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
    * from the evidence already gathered, never a blank response.
    */
   const generateForcedFinal = () => {
-    contents.push({
+    messages.push({
       role: "user",
-      parts: [
-        {
-          text: "You have gathered enough evidence. Stop searching and call final_answer now with your best prose and references to the strongest candidate segment or scene IDs you found.",
-        },
-      ],
+      content: "You have gathered enough evidence. Stop searching and call final_answer now with your best prose and references to the strongest candidate segment or scene IDs you found.",
     });
-    return ai.models.generateContent({
+    return client.chat({
       model: supervisorModel,
-      contents,
-      config: {
-        systemInstruction,
-        tools: [{ functionDeclarations: SUPERVISOR_DECLARATIONS }],
-        toolConfig: {
-          functionCallingConfig: {
-            mode: FunctionCallingConfigMode.ANY,
-            allowedFunctionNames: ["final_answer"],
-          },
-        },
-      },
+      messages,
+      tools: [FINAL_ANSWER_TOOL],
+      tool_choice: "required",
     });
   };
 
@@ -584,12 +603,17 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     try {
       response = await generate();
     } catch (err) {
-      if (qualityMode === "high" && supervisorModel === GEMINI_MODELS.supervisorHigh && isModelUnavailableError(err)) {
-        supervisorModel = GEMINI_MODELS.supervisor;
+      if (
+        qualityMode === "high" &&
+        modelProfile.supervisorHigh !== modelProfile.supervisor &&
+        supervisorModel === modelProfile.supervisorHigh &&
+        isModelUnavailableError(err)
+      ) {
+        supervisorModel = modelProfile.supervisor;
         emit({
           type: "activity",
           agent: "supervisor",
-          status: "gemini-3.5-pro unavailable on this key — using flash",
+          status: `${modelProfile.supervisorHigh} unavailable — using ${modelProfile.supervisor}`,
         });
         response = await generate();
       } else {
@@ -599,36 +623,43 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
 
     let iters = 0;
     while (iters < MAX_ITERS) {
-      const calls = response.functionCalls ?? [];
-      const finalCall = calls.find((c) => c.name === "final_answer");
+      const calls = response.message.tool_calls ?? [];
+      const finalCall = calls.find((call) => call.function.name === "final_answer");
       if (finalCall) {
-        return hydrateFinalAnswer(normalizeFinalAnswerArgs(finalCall.args), db, registry, episodeId);
+        return hydrateFinalAnswer(
+          normalizeFinalAnswerArgs(finalCall.function.arguments),
+          db,
+          registry,
+          episodeId,
+        );
       }
 
       if (calls.length === 0) {
-        const parsedFinal = parseFinalAnswerText(response.text ?? "");
+        const parsedFinal = parseFinalAnswerText(response.message.content ?? "");
         if (parsedFinal && (typeof parsedFinal.prose === "string" || Array.isArray(parsedFinal.hits))) {
           return hydrateFinalAnswer(parsedFinal, db, registry, episodeId);
         }
-        return { prose: response.text ?? "", hits: [] };
+        return { prose: response.message.content ?? "", hits: [] };
       }
 
       iters += 1;
-      const modelContent = response.candidates?.[0]?.content;
-      contents.push(modelContent ?? { role: "model", parts: [] });
+      messages.push({
+        role: "assistant",
+        content: response.message.content,
+        tool_calls: calls,
+      });
 
-      const responseParts: Part[] = [];
       for (const call of calls) {
-        const name = call.name ?? "";
+        const name = call.function.name;
+        const args = parseToolArguments(call);
         let content: string;
         try {
-          content = await executeTool(name, call.args);
+          content = await executeTool(name, args);
         } catch (err) {
           content = `error: ${err instanceof Error ? err.message : String(err)}`;
         }
-        responseParts.push({ functionResponse: { name, response: { result: content } } });
+        messages.push({ role: "tool", tool_call_id: call.id, content });
       }
-      contents.push({ role: "user", parts: responseParts });
 
       response = await generate();
     }
@@ -638,15 +669,22 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     // than a blank response after all that searching.
     emit({ type: "activity", agent: "supervisor", status: "wrapping up the answer" });
     const forced = await generateForcedFinal();
-    const forcedFinal = (forced.functionCalls ?? []).find((c) => c.name === "final_answer");
+    const forcedFinal = (forced.message.tool_calls ?? []).find(
+      (call) => call.function.name === "final_answer",
+    );
     if (forcedFinal) {
-      return hydrateFinalAnswer(normalizeFinalAnswerArgs(forcedFinal.args), db, registry, episodeId);
+      return hydrateFinalAnswer(
+        normalizeFinalAnswerArgs(forcedFinal.function.arguments),
+        db,
+        registry,
+        episodeId,
+      );
     }
-    const parsedFinal = parseFinalAnswerText(forced.text ?? "");
+    const parsedFinal = parseFinalAnswerText(forced.message.content ?? "");
     if (parsedFinal && (typeof parsedFinal.prose === "string" || Array.isArray(parsedFinal.hits))) {
       return hydrateFinalAnswer(parsedFinal, db, registry, episodeId);
     }
-    return { prose: forced.text ?? response.text ?? "", hits: [] };
+    return { prose: forced.message.content ?? response.message.content ?? "", hits: [] };
   } catch (err) {
     throw new Error(describeError(err));
   }

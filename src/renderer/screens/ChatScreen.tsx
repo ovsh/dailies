@@ -17,7 +17,7 @@ import { Toast } from "../components/Toast";
 interface ChatScreenProps {
   onOpenClip: (fileId: number, seekS: number) => void;
   /** null while settings are loading; false shows the setup hint. */
-  geminiKeySet?: boolean | null;
+  apiKeySet?: boolean | null;
   onOpenSettings?: () => void;
   /** Current episode scope; null = whole project. */
   episodeId: number | null;
@@ -80,7 +80,7 @@ function messagesToTurns(messages: ChatMessageRecord[]): Turn[] {
 
 export function ChatScreen({
   onOpenClip,
-  geminiKeySet,
+  apiKeySet,
   onOpenSettings,
   episodeId,
   episodes,
@@ -270,9 +270,9 @@ export function ChatScreen({
                   salmon run."
                 </p>
                 {activeEpisode && <p className="chat-empty-scope mono">Searching episode {activeEpisode.code}</p>}
-                {geminiKeySet === false && onOpenSettings && (
+                {apiKeySet === false && onOpenSettings && (
                   <button className="chat-key-hint" onClick={onOpenSettings}>
-                    No Gemini key yet — set one up in Settings →
+                    No OpenRouter key yet — set one up in Settings →
                   </button>
                 )}
               </div>

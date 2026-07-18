@@ -63,7 +63,8 @@ export interface DailiesAPI {
   /** Starts (or joins) the speech-model download; progress arrives via onModelProgress. */
   downloadWhisperModel(): Promise<void>;
   onModelProgress(cb: (p: ModelDownloadProgress) => void): () => void;
-  setApiKey(provider: "gemini", key: string): Promise<ApiKeyValidationStatus>;
+  setApiKey(provider: "openrouter", key: string): Promise<ApiKeyValidationStatus>;
+  setModelProfile(id: string): Promise<void>;
   setQualityMode(mode: QualityMode): Promise<void>;
 
   // chat (current project; episodeId scopes the search, null = whole project)
@@ -111,6 +112,7 @@ export const IPC = {
   downloadWhisperModel: "dailies:downloadWhisperModel",
   modelProgress: "dailies:modelProgress",
   setApiKey: "dailies:setApiKey",
+  setModelProfile: "dailies:setModelProfile",
   setQualityMode: "dailies:setQualityMode",
   listChats: "dailies:listChats",
   getChat: "dailies:getChat",

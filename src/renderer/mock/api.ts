@@ -231,10 +231,14 @@ export function createMockApi(): DailiesAPI {
       return settings;
     },
 
-    async setApiKey(_provider: "gemini") {
-      settings = { ...settings, geminiKeySet: true, geminiKeyStatus: "connected" };
+    async setApiKey(_provider: "openrouter") {
+      settings = { ...settings, apiKeySet: true, apiKeyStatus: "connected" };
       notifyIndexUpdate();
       return "connected" as const;
+    },
+
+    async setModelProfile(id: string) {
+      settings = { ...settings, modelProfileId: id };
     },
 
     async setQualityMode(mode) {

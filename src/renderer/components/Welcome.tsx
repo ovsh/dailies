@@ -15,8 +15,8 @@ interface WelcomeProps {
  * First-run setup. Each requirement is independent and reports its real state.
  */
 export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: WelcomeProps) {
-  const [geminiKey, setGeminiKey] = useState("");
-  const [saving, setSaving] = useState<"gemini" | null>(null);
+  const [openRouterKey, setOpenRouterKey] = useState("");
+  const [saving, setSaving] = useState<"openrouter" | null>(null);
   const [addingFolder, setAddingFolder] = useState(false);
   const [modelProgress, setModelProgress] = useState<ModelDownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +24,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
   const onSettingsChangedRef = useRef(onSettingsChanged);
   onSettingsChangedRef.current = onSettingsChanged;
 
-  const keyConnected = settings.geminiKeyStatus === "connected";
+  const keyConnected = settings.apiKeyStatus === "connected";
   const allReady = keyConnected && folders.length > 0 && settings.whisperModelReady;
 
   useEffect(() => api.onModelProgress((progress) => {
@@ -36,7 +36,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
     }
   }), []);
 
-  async function saveKey(provider: "gemini", key: string) {
+  async function saveKey(provider: "openrouter", key: string) {
     if (!key.trim()) return;
     setRetryAction(() => () => void saveKey(provider, key));
     const result = await runIpc(
@@ -44,19 +44,19 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
       {
         setPending: (pending) => setSaving(pending ? provider : null),
         setError,
-        fallback: "Could not validate that Gemini key.",
+        fallback: "Could not validate that OpenRouter key.",
       },
     );
     if (!result.ok) return;
     if (result.value === "invalid") {
-      setError("Gemini rejected that API key. Check it and try again.");
+      setError("OpenRouter rejected that API key. Check it and try again.");
       return;
     }
     if (result.value === "unavailable") {
-      setError("Gemini could not be reached to validate the key. Check your connection and retry.");
+      setError("OpenRouter could not be reached to validate the key. Check your connection and retry.");
       return;
     }
-    setGeminiKey("");
+    setOpenRouterKey("");
     setRetryAction(null);
     onSettingsChanged();
   }
@@ -102,9 +102,9 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
         <div className="welcome-step">
           <div className="welcome-step-head">
             <span className="welcome-step-num mono">01</span>
-            <span className="label">Gemini API key</span>
+            <span className="label">OpenRouter API key</span>
             <span className={`welcome-check${keyConnected ? "" : " missing"}`}>
-              {keyConnected ? "connected" : settings.geminiKeyStatus === "invalid" ? "invalid" : settings.geminiKeyStatus === "unavailable" ? "not verified" : "not connected"}
+              {keyConnected ? "connected" : settings.apiKeyStatus === "invalid" ? "invalid" : settings.apiKeyStatus === "unavailable" ? "not verified" : "not connected"}
             </span>
           </div>
           <p className="welcome-step-why">
@@ -116,17 +116,17 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
               <input
                 type="password"
                 className="welcome-input mono"
-                placeholder="AIza…"
-                value={geminiKey}
-                onChange={(e) => setGeminiKey(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && saveKey("gemini", geminiKey)}
+                placeholder="sk-or-v1-…"
+                value={openRouterKey}
+                onChange={(e) => setOpenRouterKey(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveKey("openrouter", openRouterKey)}
               />
               <button
                 className="ghost-btn label"
-                onClick={() => saveKey("gemini", geminiKey)}
-                disabled={!geminiKey.trim() || saving === "gemini"}
+                onClick={() => saveKey("openrouter", openRouterKey)}
+                disabled={!openRouterKey.trim() || saving === "openrouter"}
               >
-                {saving === "gemini" ? "Validating…" : "Validate & save"}
+                {saving === "openrouter" ? "Validating…" : "Validate & save"}
               </button>
             </div>
           )}
@@ -197,7 +197,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
         <div className="welcome-footer">
           {!allReady && (
             <p className="welcome-limitations mono">
-              {!keyConnected && "Without a validated Gemini key, chat and visual indexing will wait. "}
+              {!keyConnected && "Without a validated OpenRouter key, chat and visual indexing will wait. "}
               {folders.length === 0 && "Without a footage folder, there is nothing to index. "}
               {!settings.whisperModelReady && "Without the speech model, transcription will wait."}
             </p>

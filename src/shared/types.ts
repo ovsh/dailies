@@ -324,42 +324,47 @@ export interface ModelProfile {
   visualIndex: string;
 }
 
+/**
+ * Curated from a July 2026 scan of the OpenRouter catalog (vision + tool
+ * support + pricing), LMArena text/vision leaderboards, and OpenRouter usage
+ * rankings. Re-scan periodically — this tier moves fast.
+ */
 export const MODEL_PROFILES: ModelProfile[] = [
   {
     id: "balanced",
     label: "Balanced (recommended)",
-    description: "Gemini 2.5 Flash — fast, cheap, proven",
+    description: "Gemini 2.5 Flash — proven with Dailies, cheap",
     supervisor: "google/gemini-2.5-flash",
-    supervisorHigh: "google/gemini-3.1-pro-preview",
+    supervisorHigh: "meta/muse-spark-1.1",
     subagent: "google/gemini-2.5-flash",
     visualIndex: "google/gemini-2.5-flash",
   },
   {
-    id: "cheapest",
-    label: "Fastest & cheapest",
-    description: "Gemini 3.1 Flash-Lite",
-    supervisor: "google/gemini-3.1-flash-lite",
-    supervisorHigh: "google/gemini-3.5-flash",
-    subagent: "google/gemini-3.1-flash-lite",
-    visualIndex: "google/gemini-3.1-flash-lite",
+    id: "value",
+    label: "Best value",
+    description: "Qwen 3.7 Plus — top arena rank per dollar, non-Google",
+    supervisor: "qwen/qwen3.7-plus",
+    supervisorHigh: "meta/muse-spark-1.1",
+    subagent: "qwen/qwen3.7-plus",
+    visualIndex: "qwen/qwen3.7-plus",
   },
   {
     id: "best",
     label: "Best quality",
-    description: "Gemini 3.5 Flash (may hit capacity limits)",
+    description: "Gemini 3.5 Flash — top-10 vision arena (can hit capacity)",
     supervisor: "google/gemini-3.5-flash",
-    supervisorHigh: "google/gemini-3.1-pro-preview",
+    supervisorHigh: "meta/muse-spark-1.1",
     subagent: "google/gemini-3.5-flash",
     visualIndex: "google/gemini-3.5-flash",
   },
   {
-    id: "alt-provider",
-    label: "Grok (capacity hedge)",
-    description: "xAI Grok 4.3 — different provider when Google is saturated",
-    supervisor: "x-ai/grok-4.3",
-    supervisorHigh: "x-ai/grok-4.3",
-    subagent: "x-ai/grok-4.3",
-    visualIndex: "x-ai/grok-4.3",
+    id: "budget",
+    label: "Budget bulk indexing",
+    description: "Xiaomi MiMo V2.5 — most-used model on OpenRouter, ~10× cheaper",
+    supervisor: "xiaomi/mimo-v2.5",
+    supervisorHigh: "qwen/qwen3.7-plus",
+    subagent: "xiaomi/mimo-v2.5",
+    visualIndex: "xiaomi/mimo-v2.5",
   },
 ];
 

@@ -1,24 +1,19 @@
 /**
- * Subagents invoked by the supervisor: transcript scout, visual scout,
- * frame verifier, and clip reader. Each wraps a focused provider call (or a
+ * Subagents invoked by the supervisor: transcript scout and clip reader.
+ * Each wraps a focused provider call (or a
  * manual function-calling loop) over the DailiesDB search surface.
  */
 import type {
-  GeminiIndexer,
-  SceneAnnotationRequest,
   TextEmbedder,
   TranscriptHit,
-  VisualHit,
 } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
-import type { ChatMessage, ContentPart, OpenRouterClient, ToolCall, ToolDef } from "./openrouter-client";
+import type { ChatMessage, OpenRouterClient, ToolCall, ToolDef } from "./openrouter-client";
 import {
   expandTerms,
   getFullTranscriptTool,
   getTranscriptWindowTool,
-  readKeyframesAsParts,
   searchTranscriptsTool,
-  searchVisualsTool,
 } from "./tools";
 
 // ---------- shared function-calling loop ----------
@@ -276,219 +271,6 @@ export async function runTranscriptScout(
   }
   const hits = selection.keep.map((id) => cache.get(id)).filter((h): h is TranscriptHit => h !== undefined);
   return { hits, notes: selection.notes };
-}
-
-// ---------- visual scout ----------
-
-export interface VisualScoutOptions {
-  client: OpenRouterClient;
-  model: string;
-  db: DailiesDB;
-  query: string;
-  gemini: GeminiIndexer | null;
-  embedder: TextEmbedder | null;
-  episodeId: number | null;
-}
-
-const VISUAL_SCOUT_SYSTEM = `You are a footage researcher on a documentary editing team. Your job is to find footage that VISUALLY SHOWS a subject — not people talking about it, the actual imagery.
-Expand synonyms aggressively when searching. Use shot_type and time_of_day filters when they narrow the search meaningfully.
-If a candidate scene's description is ambiguous, use gemini_look to ask a clarifying visual question about that scene before deciding.
-When you are done, reply with ONLY a JSON object (no prose, no markdown fences) of the exact shape:
-{"keep": [sceneId, sceneId, ...], "notes": "short summary of what you found and why"}`;
-
-function buildVisualScoutTools(geminiEnabled: boolean): ToolDef[] {
-  const tools: ToolDef[] = [
-    toolDef(
-      "search_visuals",
-      "Search visual scene annotations. Optionally filter by shot_type or time_of_day.",
-      {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Primary search query" },
-          extra_terms: {
-            type: "array",
-            items: { type: "string" },
-            description: "Additional synonym/related terms",
-          },
-          shot_type: { type: "string", description: "Optional shot type filter: WS|MS|CU|ECU|aerial|insert" },
-          time_of_day: { type: "string", description: "Optional time of day filter: dawn|day|dusk|night" },
-        },
-        required: ["query", "extra_terms"],
-      },
-    ),
-  ];
-  if (geminiEnabled) {
-    tools.push(toolDef(
-      "gemini_look",
-      "Ask the visual provider a free-form question about a specific scene's keyframe(s).",
-      {
-        type: "object",
-        properties: {
-          scene_id: { type: "number" },
-          question: { type: "string" },
-        },
-        required: ["scene_id", "question"],
-      },
-    ));
-  }
-  return tools;
-}
-
-export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: VisualHit[]; notes: string }> {
-  const { client, model, db, query, gemini, embedder, episodeId } = opts;
-  const cache = new Map<number, VisualHit>();
-
-  const executeTool = async (name: string, args: unknown): Promise<string> => {
-    if (name === "search_visuals") {
-      const rec = isRecord(args) ? args : {};
-      const q = typeof rec.query === "string" ? rec.query : query;
-      const extra = Array.isArray(rec.extra_terms)
-        ? rec.extra_terms.filter((x): x is string => typeof x === "string")
-        : [];
-      const filters =
-        typeof rec.shot_type === "string" || typeof rec.time_of_day === "string"
-          ? {
-              ...(typeof rec.shot_type === "string" ? { shotType: rec.shot_type } : {}),
-              ...(typeof rec.time_of_day === "string" ? { timeOfDay: rec.time_of_day } : {}),
-            }
-          : undefined;
-      const hits = await searchVisualsTool(db, q, extra, embedder, episodeId, filters);
-      for (const hit of hits) cache.set(hit.sceneId, hit);
-      return JSON.stringify(hits);
-    }
-    if (name === "gemini_look") {
-      if (!gemini) return "error: gemini not available";
-      const rec = isRecord(args) ? args : {};
-      const sceneId = typeof rec.scene_id === "number" ? rec.scene_id : 0;
-      const question = typeof rec.question === "string" ? rec.question : "";
-      const scene = db.getScene(sceneId);
-      if (!scene) return `error: scene ${sceneId} not found`;
-      const file = db.getFile(scene.fileId);
-      if (!file) return `error: file ${scene.fileId} not found`;
-      const req: SceneAnnotationRequest = {
-        proxyPath: file.proxyPath,
-        keyframePaths: scene.keyframePath ? [scene.keyframePath] : [],
-        startS: scene.startS,
-        endS: scene.endS,
-      };
-      return gemini.lookAtScene(req, question);
-    }
-    return `error: unknown tool ${name}`;
-  };
-
-  const finalText = await runToolLoop({
-    client,
-    model,
-    systemInstruction: VISUAL_SCOUT_SYSTEM,
-    tools: buildVisualScoutTools(gemini !== null),
-    userText: `Find footage that visually shows: ${query}`,
-    executeTool,
-    maxIters: 8,
-  });
-
-  const selection = parseScoutSelection(finalText);
-  if (!selection) {
-    console.warn(
-      `[chat-grounding] visual scout returned malformed output; accepting no candidates; raw=${rawTextExcerpt(finalText)}`,
-    );
-    return { hits: [], notes: "Visual scout response was malformed; no candidates accepted." };
-  }
-  const unknownIds = selection.keep.filter((id) => !cache.has(id));
-  if (unknownIds.length > 0) {
-    console.warn(`[chat-grounding] visual scout referenced ${unknownIds.length} unknown candidate ID(s)`);
-  }
-  const hits = selection.keep.map((id) => cache.get(id)).filter((h): h is VisualHit => h !== undefined);
-  return { hits, notes: selection.notes };
-}
-
-// ---------- frame verifier ----------
-
-export interface FrameVerifierOptions {
-  client: OpenRouterClient;
-  model: string;
-  db: DailiesDB;
-  candidates: VisualHit[];
-}
-
-export interface FrameVerdict {
-  sceneId: number;
-  verdict: "confirm" | "reject" | "unsure";
-  visible: string;
-}
-
-const FRAME_VERIFIER_SYSTEM = `You are verifying candidate footage scenes for a documentary editor. For each keyframe image shown, decide whether it actually confirms the claimed subject.
-Respond with STRICT JSON only (no markdown fences, no commentary): an array of objects of the exact shape:
-[{"sceneId": number, "verdict": "confirm" | "reject" | "unsure", "visible": "short description of what is actually visible"}]
-One entry per scene, in the order the scenes were given.`;
-
-const BATCH_SIZE = 6;
-
-function isVerdict(v: string): v is FrameVerdict["verdict"] {
-  return v === "confirm" || v === "reject" || v === "unsure";
-}
-
-async function verifyBatch(client: OpenRouterClient, model: string, batch: VisualHit[]): Promise<FrameVerdict[]> {
-  const withKeyframe = batch.filter((c) => c.keyframePath !== null);
-  const withoutKeyframe = batch.filter((c) => c.keyframePath === null);
-
-  const withoutResults: FrameVerdict[] = withoutKeyframe.map((c) => ({
-    sceneId: c.sceneId,
-    verdict: "unsure",
-    visible: "no keyframe available",
-  }));
-
-  if (withKeyframe.length === 0) return withoutResults;
-
-  const imageParts: ContentPart[] = await readKeyframesAsParts(withKeyframe.map((c) => c.keyframePath as string));
-  const listText = withKeyframe
-    .map((c, i) => `Image ${i + 1}: sceneId=${c.sceneId}, claimed: ${c.description}`)
-    .join("\n");
-
-  const response = await client.chat({
-    model,
-    messages: [
-      { role: "system", content: FRAME_VERIFIER_SYSTEM },
-      { role: "user", content: [...imageParts, { type: "text", text: listText }] },
-    ],
-  });
-
-  const text = response.message.content ?? "";
-
-  try {
-    const parsed: unknown = JSON.parse(stripFences(text));
-    if (!Array.isArray(parsed)) throw new Error("not an array");
-    const bySceneId = new Map<number, FrameVerdict>();
-    for (const entry of parsed) {
-      if (!isRecord(entry)) continue;
-      const sceneId = typeof entry.sceneId === "number" ? entry.sceneId : null;
-      if (sceneId === null) continue;
-      const verdictRaw = typeof entry.verdict === "string" ? entry.verdict : "unsure";
-      const visible = typeof entry.visible === "string" ? entry.visible : "";
-      bySceneId.set(sceneId, { sceneId, verdict: isVerdict(verdictRaw) ? verdictRaw : "unsure", visible });
-    }
-    const withResults: FrameVerdict[] = withKeyframe.map(
-      (c) => bySceneId.get(c.sceneId) ?? { sceneId: c.sceneId, verdict: "unsure", visible: "" },
-    );
-    return [...withResults, ...withoutResults];
-  } catch {
-    const fallback: FrameVerdict[] = withKeyframe.map((c) => ({
-      sceneId: c.sceneId,
-      verdict: "unsure",
-      visible: "",
-    }));
-    return [...fallback, ...withoutResults];
-  }
-}
-
-export async function runFrameVerifier(opts: FrameVerifierOptions): Promise<FrameVerdict[]> {
-  const { client, model, candidates } = opts;
-  const results: FrameVerdict[] = [];
-  for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
-    const batch = candidates.slice(i, i + BATCH_SIZE);
-    const batchResults = await verifyBatch(client, model, batch);
-    results.push(...batchResults);
-  }
-  return results;
 }
 
 // ---------- clip reader ----------

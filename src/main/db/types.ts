@@ -23,10 +23,6 @@ import type {
   SegmentInput,
   TranscriptHit,
   TranscriptSegment,
-  VisualAnnotation,
-  VisualAnnotationInput,
-  VisualHit,
-  VisualSearchFilters,
   WordTiming,
 } from "../../shared/types";
 
@@ -50,7 +46,6 @@ export interface DailiesDB {
   clearDerivedState(fileId: number): void;
   setVideoUnplayable(id: number, value: boolean): void;
   markTranscribed(id: number): void;
-  markVisuallyIndexed(id: number): void;
 
   // episodes
   createEpisode(code: string): Episode;
@@ -73,16 +68,10 @@ export interface DailiesDB {
   getWords(segmentId: number): WordTiming[];
   getTranscriptWindow(fileId: number, centerS: number, windowS: number): TranscriptSegment[];
 
-  // visual annotations
-  upsertAnnotation(sceneId: number, ann: VisualAnnotationInput): void;
-  listAnnotations(fileId: number): VisualAnnotation[];
-
   // search (FTS5; terms are OR-combined; scores normalized 0..1, best first)
   searchTranscripts(terms: string[], limit?: number, episodeId?: number): TranscriptHit[];
-  searchVisuals(terms: string[], filters?: VisualSearchFilters, limit?: number): VisualHit[];
   /** Hydrate a single hit by id (used to merge semantic results with FTS). */
   getTranscriptHit(segmentId: number): TranscriptHit | null;
-  getVisualHitByScene(sceneId: number): VisualHit | null;
 
   // documents (producer notes, scripts) — replaces content/chunks/FTS on re-ingest
   upsertDocument(input: DocumentInput): DocumentRecord;
@@ -94,7 +83,6 @@ export interface DailiesDB {
   // embeddings (vectors stored as Float32Array blobs, EMBEDDING_DIM long)
   upsertEmbedding(kind: EmbeddingKind, refId: number, vector: Float32Array): void;
   listUnembeddedSegments(fileId: number): Array<{ refId: number; text: string }>;
-  listUnembeddedAnnotations(fileId: number): Array<{ refId: number; text: string }>;
   listUnembeddedDocChunks(limit?: number): Array<{ refId: number; text: string }>;
   /** Brute-force cosine over stored vectors; relevant hits only, with absolute cosine scores. */
   semanticSearch(kind: EmbeddingKind, query: Float32Array, limit?: number): Array<{ refId: number; score: number }>;

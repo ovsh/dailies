@@ -1,7 +1,7 @@
 /**
  * Document ingest: extracts text + paragraph-aligned chunks from producer
  * notes / scripts / spreadsheets (.pdf, .txt, .md, .xlsx, .csv) so they can
- * be stored and embedded alongside transcript/visual data.
+ * be stored and embedded alongside transcript data.
  */
 import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";

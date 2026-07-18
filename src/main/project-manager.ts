@@ -9,14 +9,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ModelProfile, Project, ProjectState } from "../shared/types";
-import { EMBEDDING_MODEL, MODEL_PROFILES } from "../shared/types";
+import type { Project, ProjectState } from "../shared/types";
+import { EMBEDDING_MODEL } from "../shared/types";
 import { openDatabase } from "./db/database";
 import type { DailiesDB } from "./db/types";
 import { createPipeline, type Pipeline } from "./pipeline";
 import type { AppSettingsStore } from "./app-settings";
 import { createOpenRouterClient } from "./agents/openrouter-client";
-import { createOpenRouterEmbedder, createOpenRouterIndexer } from "./agents/openrouter";
+import { createOpenRouterEmbedder } from "./agents/openrouter";
 
 interface ProjectRecord extends Project {
   dbPath: string;
@@ -84,10 +84,6 @@ export function createProjectManager(opts: {
     writeRegistry({ projects: [record], lastOpenedId: record.id });
   }
 
-  function activeProfile(): ModelProfile {
-    return MODEL_PROFILES.find((profile) => profile.id === opts.settings.getModelProfileId()) ?? MODEL_PROFILES[0]!;
-  }
-
   function toProject(r: ProjectRecord): Project {
     return { id: r.id, name: r.name, createdAt: r.createdAt, lastOpenedAt: r.lastOpenedAt };
   }
@@ -123,16 +119,12 @@ export function createProjectManager(opts: {
     }
 
     const client = createOpenRouterClient(() => opts.settings.getOpenRouterKey());
-    const indexer = createOpenRouterIndexer(client, () => activeProfile().visualIndex);
     const textEmbedder = createOpenRouterEmbedder(client);
 
     const pipeline = createPipeline({
       db,
       dataDir: path.dirname(record.mediaDir) === opts.dataDir ? opts.dataDir : path.dirname(record.mediaDir),
       whisperModel: opts.settings.getWhisperModel(),
-      gemini: () => {
-        return opts.settings.hasOpenRouterKey() ? indexer : null;
-      },
       embedder: () => {
         return opts.settings.hasOpenRouterKey() ? textEmbedder : null;
       },

@@ -34,39 +34,11 @@ describe("db end-to-end smoke", () => {
       { startS: atFrame(beforeMinuteTen), endS: atFrame(minuteTen), text: "preexempt", avgConf: 1, words: [] },
       { startS: atFrame(minuteTen), endS: atFrame(minuteTen + 1), text: "postexempt", avgConf: 1, words: [] },
     ]);
-    db.replaceScenes(file.id, [
-      {
-        startS: atFrame(beforeMinute),
-        endS: atFrame(minuteOne),
-        startTc: "ignored",
-        endTc: "ignored",
-      },
-      {
-        startS: atFrame(minuteOne),
-        endS: atFrame(minuteOne + 1),
-        startTc: "ignored",
-        endTc: "ignored",
-      },
-    ]);
-    const scenes = db.listScenes(file.id);
-    db.upsertAnnotation(scenes[0]!.id, {
-      description: "visualpreboundary",
-      objects: [],
-      model: "test",
-    });
-    db.upsertAnnotation(scenes[1]!.id, {
-      description: "visualpostboundary",
-      objects: [],
-      model: "test",
-    });
-
     expect(db.searchTranscripts(["twopreboundary"])[0]?.startTc).toBe("00:00:59;28");
     expect(db.searchTranscripts(["preboundary"])[0]?.startTc).toBe("00:00:59;29");
     expect(db.searchTranscripts(["postboundary"])[0]?.startTc).toBe("00:01:00;02");
     expect(db.searchTranscripts(["preexempt"])[0]?.startTc).toBe("00:09:59;29");
     expect(db.searchTranscripts(["postexempt"])[0]?.startTc).toBe("00:10:00;00");
-    expect(db.searchVisuals(["visualpreboundary"])[0]?.startTc).toBe("00:00:59;29");
-    expect(db.searchVisuals(["visualpostboundary"])[0]?.startTc).toBe("00:01:00;02");
 
     db.close();
   });
@@ -117,25 +89,12 @@ describe("db end-to-end smoke", () => {
 
     const scenes = db.listScenes(file.id);
     expect(scenes).toHaveLength(2);
-    db.upsertAnnotation(scenes[0].id, {
-      description: "A brown bear stands mid-river as salmon leap around it.",
-      objects: ["bear", "river", "salmon"],
-      shotType: "WS",
-      timeOfDay: "day",
-      peopleCount: 0,
-      actions: ["fishing"],
-      model: "gemini-2.5-flash",
-    });
 
     // FTS + source-TC offset: 34 wall-clock seconds into a 23.976 NDF clip
     // starting 01:00:00:00 is round(34 * 23.976) = 815 frames = 33s 23f.
     const spoken = db.searchTranscripts(["bears", "salmon"]);
     expect(spoken.length).toBeGreaterThan(0);
     expect(spoken[0].startTc).toBe("01:00:33:23");
-
-    const seen = db.searchVisuals(["bear"]);
-    expect(seen).toHaveLength(1);
-    expect(seen[0].description).toContain("brown bear");
 
     // episodes + folders + scoped search
     const ep = db.createEpisode("201");

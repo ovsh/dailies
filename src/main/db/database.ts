@@ -28,10 +28,6 @@ import type {
   SegmentInput,
   TranscriptHit,
   TranscriptSegment,
-  VisualAnnotation,
-  VisualAnnotationInput,
-  VisualHit,
-  VisualSearchFilters,
   WordTiming,
 } from "../../shared/types";
 import { sourceTcAtOffset } from "../../shared/timecode";
@@ -53,7 +49,6 @@ interface FileRow {
   status: string;
   added_at: string;
   has_transcript: number;
-  has_visual_index: number;
   proxy_path: string | null;
   role: string;
   clip_name: string | null;
@@ -106,20 +101,6 @@ interface WordRow {
   end_s: number;
 }
 
-interface AnnotationRow {
-  id: number;
-  scene_id: number;
-  file_id: number;
-  description: string;
-  objects: string;
-  shot_type: string | null;
-  time_of_day: string | null;
-  people_count: number | null;
-  actions: string;
-  model: string;
-  indexed_at: string;
-}
-
 interface JobRow {
   id: number;
   file_id: number;
@@ -158,25 +139,6 @@ interface TranscriptSearchRow {
   start_s: number;
   end_s: number;
   text: string;
-  rank: number;
-}
-
-interface VisualSearchRow {
-  ann_id: number;
-  scene_id: number;
-  file_id: number;
-  filename: string;
-  role: string;
-  episode_id: number | null;
-  fps: number;
-  drop_frame: number;
-  start_tc: string;
-  scene_start_s: number;
-  scene_end_s: number;
-  description: string;
-  objects: string;
-  shot_type: string | null;
-  keyframe_path: string | null;
   rank: number;
 }
 
@@ -229,7 +191,6 @@ function mapFile(row: FileRow): MediaFile {
     status: row.status as FileStatus,
     addedAt: row.added_at,
     hasTranscript: row.has_transcript === 1,
-    hasVisualIndex: row.has_visual_index === 1,
     proxyPath: row.proxy_path,
     role: row.role as MediaRole,
     clipName: row.clip_name,
@@ -288,22 +249,6 @@ function mapWord(row: WordRow): WordTiming {
     word: row.word,
     startS: row.start_s,
     endS: row.end_s,
-  };
-}
-
-function mapAnnotation(row: AnnotationRow): VisualAnnotation {
-  return {
-    id: row.id,
-    sceneId: row.scene_id,
-    fileId: row.file_id,
-    description: row.description,
-    objects: JSON.parse(row.objects) as string[],
-    shotType: row.shot_type,
-    timeOfDay: row.time_of_day,
-    peopleCount: row.people_count,
-    actions: JSON.parse(row.actions) as string[],
-    model: row.model,
-    indexedAt: row.indexed_at,
   };
 }
 
@@ -481,6 +426,12 @@ function migrate(db: BetterSqlite3Database): void {
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_episode_id ON files(episode_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id)");
+  db.exec(`
+    DROP TABLE IF EXISTS visual_fts;
+    DROP TABLE IF EXISTS visual_annotations;
+    DELETE FROM embeddings WHERE kind = 'scene';
+    DELETE FROM jobs WHERE stage = 'visual_index';
+  `);
   migrateWatchedFoldersKv(db);
 }
 
@@ -582,10 +533,9 @@ export function openDatabase(dbPath: string): DailiesDB {
   );
   const stmtClearDerivedFileState = db.prepare<[number]>(
     `UPDATE files SET status = 'pending', has_transcript = 0,
-       has_visual_index = 0, proxy_path = NULL, video_unplayable = 0 WHERE id = ?`,
+       proxy_path = NULL, video_unplayable = 0 WHERE id = ?`,
   );
   const stmtMarkTranscribed = db.prepare<[number]>("UPDATE files SET has_transcript = 1 WHERE id = ?");
-  const stmtMarkVisuallyIndexed = db.prepare<[number]>("UPDATE files SET has_visual_index = 1 WHERE id = ?");
 
   // ---------- episodes ----------
 
@@ -649,27 +599,6 @@ export function openDatabase(dbPath: string): DailiesDB {
     `SELECT * FROM transcript_segments
      WHERE file_id = ? AND end_s >= ? AND start_s <= ?
      ORDER BY start_s ASC`,
-  );
-
-  const stmtDeleteAnnotationsForScene = db.prepare<[number]>(
-    "DELETE FROM visual_annotations WHERE scene_id = ?",
-  );
-  const stmtDeleteVisualFtsForScene = db.prepare<[number]>("DELETE FROM visual_fts WHERE scene_id = ?");
-  const stmtDeleteVisualFtsForFile = db.prepare<[number]>("DELETE FROM visual_fts WHERE file_id = ?");
-  const stmtInsertAnnotation = db.prepare<
-    [number, number, string, string, string | null, string | null, number | null, string, string, string],
-    AnnotationRow
-  >(
-    `INSERT INTO visual_annotations
-       (scene_id, file_id, description, objects, shot_type, time_of_day, people_count, actions, model, indexed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     RETURNING *`,
-  );
-  const stmtInsertVisualFts = db.prepare<[string, number, number]>(
-    "INSERT INTO visual_fts (content, file_id, scene_id) VALUES (?, ?, ?)",
-  );
-  const stmtListAnnotations = db.prepare<[number], AnnotationRow>(
-    "SELECT * FROM visual_annotations WHERE file_id = ? ORDER BY id ASC",
   );
 
   // ---------- documents ----------
@@ -751,10 +680,6 @@ export function openDatabase(dbPath: string): DailiesDB {
     `DELETE FROM embeddings WHERE kind = 'segment'
      AND ref_id IN (SELECT id FROM transcript_segments WHERE file_id = ?)`,
   );
-  const stmtDeleteSceneEmbeddingsForFile = db.prepare<[number]>(
-    `DELETE FROM embeddings WHERE kind = 'scene'
-     AND ref_id IN (SELECT id FROM scenes WHERE file_id = ?)`,
-  );
   const stmtListUnembeddedSegments = db.prepare<[number], { ref_id: number; text: string }>(
     `SELECT transcript_segments.id AS ref_id, transcript_segments.text AS text
      FROM transcript_segments
@@ -762,21 +687,6 @@ export function openDatabase(dbPath: string): DailiesDB {
        AND NOT EXISTS (
          SELECT 1 FROM embeddings
          WHERE embeddings.kind = 'segment' AND embeddings.ref_id = transcript_segments.id
-       )`,
-  );
-  const stmtListUnembeddedAnnotations = db.prepare<
-    [number],
-    { ref_id: number; description: string; objects: string }
-  >(
-    `SELECT
-       visual_annotations.scene_id AS ref_id,
-       visual_annotations.description AS description,
-       visual_annotations.objects AS objects
-     FROM visual_annotations
-     WHERE visual_annotations.file_id = ?
-       AND NOT EXISTS (
-         SELECT 1 FROM embeddings
-         WHERE embeddings.kind = 'scene' AND embeddings.ref_id = visual_annotations.scene_id
        )`,
   );
   const stmtListUnembeddedDocChunks = db.prepare<[number], { ref_id: number; text: string }>(
@@ -913,76 +823,13 @@ export function openDatabase(dbPath: string): DailiesDB {
      WHERE transcript_segments.id = ?`,
   );
 
-  function buildVisualSearchStmt(filters?: VisualSearchFilters) {
-    const clauses: string[] = ["visual_fts MATCH ?"];
-    if (filters?.shotType) clauses.push("visual_annotations.shot_type = ?");
-    if (filters?.timeOfDay) clauses.push("visual_annotations.time_of_day = ?");
-    if (filters?.episodeId !== undefined) clauses.push("files.episode_id = ?");
-    const sql = `SELECT
-        visual_annotations.id AS ann_id,
-        visual_fts.scene_id AS scene_id,
-        visual_fts.file_id AS file_id,
-        files.filename AS filename,
-        files.role AS role,
-        files.episode_id AS episode_id,
-        files.fps AS fps,
-        files.drop_frame AS drop_frame,
-        files.start_tc AS start_tc,
-        scenes.start_s AS scene_start_s,
-        scenes.end_s AS scene_end_s,
-        visual_annotations.description AS description,
-        visual_annotations.objects AS objects,
-        visual_annotations.shot_type AS shot_type,
-        scenes.keyframe_path AS keyframe_path,
-        bm25(visual_fts) AS rank
-      FROM visual_fts
-      JOIN visual_annotations ON visual_annotations.scene_id = visual_fts.scene_id
-      JOIN scenes ON scenes.id = visual_fts.scene_id
-      JOIN files ON files.id = visual_fts.file_id
-      WHERE ${clauses.join(" AND ")}
-      ORDER BY rank ASC
-      LIMIT ?`;
-    return db.prepare<unknown[], VisualSearchRow>(sql);
-  }
-
-  const stmtGetVisualHitByScene = db.prepare<[number], VisualSearchRow>(
-    `SELECT
-       visual_annotations.id AS ann_id,
-       scenes.id AS scene_id,
-       scenes.file_id AS file_id,
-       files.filename AS filename,
-       files.role AS role,
-       files.episode_id AS episode_id,
-       files.fps AS fps,
-       files.drop_frame AS drop_frame,
-       files.start_tc AS start_tc,
-       scenes.start_s AS scene_start_s,
-       scenes.end_s AS scene_end_s,
-       visual_annotations.description AS description,
-       visual_annotations.objects AS objects,
-       visual_annotations.shot_type AS shot_type,
-       scenes.keyframe_path AS keyframe_path,
-       0 AS rank
-     FROM scenes
-     JOIN files ON files.id = scenes.file_id
-     LEFT JOIN visual_annotations ON visual_annotations.scene_id = scenes.id
-     WHERE scenes.id = ?`,
-  );
-
   // ---------- transactional helpers ----------
 
-  const stmtGetSceneIdsForFile = db.prepare<[number], { id: number }>(
-    "SELECT id FROM scenes WHERE file_id = ?",
-  );
   const stmtGetSegmentIdsForFile = db.prepare<[number], { id: number }>(
     "SELECT id FROM transcript_segments WHERE file_id = ?",
   );
 
   const replaceScenesTx = db.transaction((fileId: number, scenes: SceneInput[]): Scene[] => {
-    const staleSceneIds = stmtGetSceneIdsForFile.all(fileId);
-    for (const { id } of staleSceneIds) {
-      stmtDeleteEmbedding.run("scene", id);
-    }
     stmtDeleteScenes.run(fileId);
     const inserted: Scene[] = [];
     for (const s of scenes) {
@@ -1023,29 +870,6 @@ export function openDatabase(dbPath: string): DailiesDB {
     }
   });
 
-  const upsertAnnotationTx = db.transaction((sceneId: number, ann: VisualAnnotationInput): void => {
-    const scene = stmtGetScene.get(sceneId);
-    if (!scene) throw new Error(`upsertAnnotation: scene ${sceneId} not found`);
-    stmtDeleteAnnotationsForScene.run(sceneId);
-    stmtDeleteVisualFtsForScene.run(sceneId);
-    const objectsJson = JSON.stringify(ann.objects);
-    const actionsJson = JSON.stringify(ann.actions ?? []);
-    stmtInsertAnnotation.get(
-      sceneId,
-      scene.file_id,
-      ann.description,
-      objectsJson,
-      ann.shotType ?? null,
-      ann.timeOfDay ?? null,
-      ann.peopleCount ?? null,
-      actionsJson,
-      ann.model,
-      new Date().toISOString(),
-    );
-    const ftsContent = `${ann.description} ${ann.objects.join(" ")}`;
-    stmtInsertVisualFts.run(ftsContent, scene.file_id, sceneId);
-  });
-
   const claimNextJobTx = db.transaction((): Job | null => {
     const next = stmtClaimNextJobId.get();
     if (!next) return null;
@@ -1057,9 +881,7 @@ export function openDatabase(dbPath: string): DailiesDB {
 
   const clearDerivedStateTx = db.transaction((fileId: number): void => {
     stmtDeleteSegmentEmbeddingsForFile.run(fileId);
-    stmtDeleteSceneEmbeddingsForFile.run(fileId);
     stmtDeleteTranscriptFts.run(fileId);
-    stmtDeleteVisualFtsForFile.run(fileId);
     stmtDeleteSegments.run(fileId);
     stmtDeleteScenes.run(fileId);
     stmtDeleteJobsForFile.run(fileId);
@@ -1102,8 +924,8 @@ export function openDatabase(dbPath: string): DailiesDB {
     if (existing) {
       if (existing.file_hash !== input.fileHash) {
         // Clear every searchable/derived representation before exposing the
-        // new hash. This transaction prevents stale transcript, visual, proxy,
-        // and embedding state from masquerading as current content.
+        // new hash. This transaction prevents stale transcript, proxy, and
+        // embedding state from masquerading as current content.
         clearDerivedStateTx(existing.id);
       }
       return updateExistingFile(existing, input);
@@ -1254,10 +1076,6 @@ export function openDatabase(dbPath: string): DailiesDB {
       stmtMarkTranscribed.run(id);
     },
 
-    markVisuallyIndexed(id: number): void {
-      stmtMarkVisuallyIndexed.run(id);
-    },
-
     // episodes
     createEpisode(code: string): Episode {
       const trimmed = code.trim();
@@ -1333,15 +1151,6 @@ export function openDatabase(dbPath: string): DailiesDB {
       return stmtGetTranscriptWindow.all(fileId, lo, hi).map(mapSegment);
     },
 
-    // visual annotations
-    upsertAnnotation(sceneId: number, ann: VisualAnnotationInput): void {
-      upsertAnnotationTx(sceneId, ann);
-    },
-
-    listAnnotations(fileId: number): VisualAnnotation[] {
-      return stmtListAnnotations.all(fileId).map(mapAnnotation);
-    },
-
     // search
     searchTranscripts(terms: string[], limit = 40, episodeId?: number): TranscriptHit[] {
       const query = buildFtsQuery(terms);
@@ -1367,35 +1176,6 @@ export function openDatabase(dbPath: string): DailiesDB {
       }));
     },
 
-    searchVisuals(terms: string[], filters?: VisualSearchFilters, limit = 40): VisualHit[] {
-      const query = buildFtsQuery(terms);
-      if (!query) return [];
-      const stmt = buildVisualSearchStmt(filters);
-      const params: unknown[] = [query];
-      if (filters?.shotType) params.push(filters.shotType);
-      if (filters?.timeOfDay) params.push(filters.timeOfDay);
-      if (filters?.episodeId !== undefined) params.push(filters.episodeId);
-      params.push(limit);
-      const rows = stmt.all(...params);
-      const scores = normalizeScores(rows);
-      return rows.map((row, i) => ({
-        fileId: row.file_id,
-        filename: row.filename,
-        role: row.role as MediaRole,
-        episodeId: row.episode_id,
-        sceneId: row.scene_id,
-        startS: row.scene_start_s,
-        endS: row.scene_end_s,
-        startTc: sourceTcAtOffset(row.start_tc, row.scene_start_s, row.fps, row.drop_frame === 1),
-        endTc: sourceTcAtOffset(row.start_tc, row.scene_end_s, row.fps, row.drop_frame === 1),
-        description: row.description,
-        objects: JSON.parse(row.objects) as string[],
-        shotType: row.shot_type,
-        keyframePath: row.keyframe_path,
-        score: scores[i] ?? 0,
-      }));
-    },
-
     getTranscriptHit(segmentId: number): TranscriptHit | null {
       const row = stmtGetTranscriptHit.get(segmentId);
       if (!row) return null;
@@ -1410,27 +1190,6 @@ export function openDatabase(dbPath: string): DailiesDB {
         startTc: sourceTcAtOffset(row.start_tc, row.start_s, row.fps, row.drop_frame === 1),
         endTc: sourceTcAtOffset(row.start_tc, row.end_s, row.fps, row.drop_frame === 1),
         text: row.text,
-        score: 0,
-      };
-    },
-
-    getVisualHitByScene(sceneId: number): VisualHit | null {
-      const row = stmtGetVisualHitByScene.get(sceneId);
-      if (!row) return null;
-      return {
-        fileId: row.file_id,
-        filename: row.filename,
-        role: row.role as MediaRole,
-        episodeId: row.episode_id,
-        sceneId: row.scene_id,
-        startS: row.scene_start_s,
-        endS: row.scene_end_s,
-        startTc: sourceTcAtOffset(row.start_tc, row.scene_start_s, row.fps, row.drop_frame === 1),
-        endTc: sourceTcAtOffset(row.start_tc, row.scene_end_s, row.fps, row.drop_frame === 1),
-        description: row.description ?? "",
-        objects: row.objects ? (JSON.parse(row.objects) as string[]) : [],
-        shotType: row.shot_type,
-        keyframePath: row.keyframe_path,
         score: 0,
       };
     },
@@ -1497,13 +1256,6 @@ export function openDatabase(dbPath: string): DailiesDB {
       return stmtListUnembeddedSegments
         .all(fileId)
         .map((row) => ({ refId: row.ref_id, text: row.text }));
-    },
-
-    listUnembeddedAnnotations(fileId: number): Array<{ refId: number; text: string }> {
-      return stmtListUnembeddedAnnotations.all(fileId).map((row) => {
-        const objects = JSON.parse(row.objects) as string[];
-        return { refId: row.ref_id, text: `${row.description} ${objects.join(" ")}` };
-      });
     },
 
     listUnembeddedDocChunks(limit = 500): Array<{ refId: number; text: string }> {

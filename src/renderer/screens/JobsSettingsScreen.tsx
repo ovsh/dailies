@@ -34,7 +34,7 @@ function formatScanTime(iso: string): string {
 
 function waitingMessage(job: Job): string {
   if (job.stage === "transcribe") return "Waiting for speech model — download it below.";
-  if (job.stage === "visual_index" || job.stage === "embed") {
+  if (job.stage === "embed") {
     return "Waiting for a connected OpenRouter API key — check it below.";
   }
   return job.error ?? "Waiting for a required setup step.";

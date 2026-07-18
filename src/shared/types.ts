@@ -66,7 +66,6 @@ export interface MediaFile {
   status: FileStatus;
   addedAt: string;
   hasTranscript: boolean;
-  hasVisualIndex: boolean;
   proxyPath: string | null;
   episodeId: number | null;
   role: MediaRole;
@@ -107,20 +106,6 @@ export interface WordTiming {
   endS: number;
 }
 
-export interface VisualAnnotation {
-  id: number;
-  sceneId: number;
-  fileId: number;
-  description: string;
-  objects: string[];
-  shotType: string | null;
-  timeOfDay: string | null;
-  peopleCount: number | null;
-  actions: string[];
-  model: string;
-  indexedAt: string;
-}
-
 // ---------- pipeline input shapes ----------
 
 export interface FileInput {
@@ -158,16 +143,6 @@ export interface SegmentInput {
   words: WordTiming[];
 }
 
-export interface VisualAnnotationInput {
-  description: string;
-  objects: string[];
-  shotType?: string | null;
-  timeOfDay?: string | null;
-  peopleCount?: number | null;
-  actions?: string[];
-  model: string;
-}
-
 // ---------- jobs ----------
 
 export type JobStage =
@@ -176,7 +151,6 @@ export type JobStage =
   | "proxy"
   | "scenes"
   | "transcribe"
-  | "visual_index"
   | "embed";
 export type JobStatus = "queued" | "running" | "waiting" | "done" | "error";
 
@@ -212,32 +186,9 @@ export interface TranscriptHit {
   score: number;
 }
 
-export interface VisualHit {
-  fileId: number;
-  filename: string;
-  role: MediaRole;
-  episodeId: number | null;
-  sceneId: number;
-  startS: number;
-  endS: number;
-  startTc: string;
-  endTc: string;
-  description: string;
-  objects: string[];
-  shotType: string | null;
-  keyframePath: string | null;
-  score: number;
-}
-
-export interface VisualSearchFilters {
-  shotType?: string;
-  timeOfDay?: string;
-  /** Restrict results to one episode. */
-  episodeId?: number;
-}
-
 // ---------- agent answers ----------
 
+/** "visual" persists only in historical chat records. */
 export type HitKind = "visual" | "spoken";
 export type Confidence = "high" | "medium" | "low";
 
@@ -321,7 +272,6 @@ export interface ModelProfile {
   supervisor: string;
   supervisorHigh: string;
   subagent: string;
-  visualIndex: string;
 }
 
 /**
@@ -337,7 +287,6 @@ export const MODEL_PROFILES: ModelProfile[] = [
     supervisor: "google/gemini-2.5-flash",
     supervisorHigh: "meta/muse-spark-1.1",
     subagent: "google/gemini-2.5-flash",
-    visualIndex: "google/gemini-2.5-flash",
   },
   {
     id: "value",
@@ -346,7 +295,6 @@ export const MODEL_PROFILES: ModelProfile[] = [
     supervisor: "qwen/qwen3.7-plus",
     supervisorHigh: "meta/muse-spark-1.1",
     subagent: "qwen/qwen3.7-plus",
-    visualIndex: "qwen/qwen3.7-plus",
   },
   {
     id: "best",
@@ -355,7 +303,6 @@ export const MODEL_PROFILES: ModelProfile[] = [
     supervisor: "google/gemini-3.5-flash",
     supervisorHigh: "meta/muse-spark-1.1",
     subagent: "google/gemini-3.5-flash",
-    visualIndex: "google/gemini-3.5-flash",
   },
   {
     id: "budget",
@@ -364,7 +311,6 @@ export const MODEL_PROFILES: ModelProfile[] = [
     supervisor: "xiaomi/mimo-v2.5",
     supervisorHigh: "qwen/qwen3.7-plus",
     subagent: "xiaomi/mimo-v2.5",
-    visualIndex: "xiaomi/mimo-v2.5",
   },
 ];
 
@@ -433,29 +379,11 @@ export interface DocumentHit {
 
 // ---------- embeddings ----------
 
-export type EmbeddingKind = "segment" | "scene" | "doc";
+export type EmbeddingKind = "segment" | "doc";
 
 export interface TextEmbedder {
   /** Embeds up to ~100 texts per call; vectors are EMBEDDING_DIM floats. */
   embed(texts: string[]): Promise<Float32Array[]>;
-}
-
-// ---------- Gemini (visual indexing) ----------
-
-export interface SceneAnnotationRequest {
-  /** Low-res proxy for the whole file, if generated. */
-  proxyPath: string | null;
-  /** Keyframe image paths for this scene (1-5). */
-  keyframePaths: string[];
-  startS: number;
-  endS: number;
-}
-
-export interface GeminiIndexer {
-  /** Structured visual annotation for one scene. Throws on API failure. */
-  annotateScene(req: SceneAnnotationRequest): Promise<VisualAnnotationInput>;
-  /** Free-form question about one scene ("look again" tool). */
-  lookAtScene(req: SceneAnnotationRequest, question: string): Promise<string>;
 }
 
 // ---------- file detail (renderer) ----------
@@ -466,5 +394,4 @@ export interface FileDetail {
   playbackPath: string | null;
   scenes: Scene[];
   segments: TranscriptSegment[];
-  annotations: VisualAnnotation[];
 }

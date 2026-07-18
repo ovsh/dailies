@@ -54,6 +54,7 @@ const api: DailiesAPI = {
   exportHits: (kind: ExportKind, items: ExportItem[]) =>
     ipcRenderer.invoke(IPC.exportHits, kind, items),
   revealInFinder: (path: string) => ipcRenderer.invoke(IPC.revealInFinder, path),
+  openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url),
 
   // project updates (indexing progress, scans)
   onProjectUpdate: (cb: () => void) => {

@@ -312,4 +312,9 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC.revealInFinder, (_e, p: string) => {
     shell.showItemInFolder(p);
   });
+
+  ipcMain.handle(IPC.openExternal, (_e, url: string) => {
+    // https-only: never let the renderer launch arbitrary protocols/apps.
+    if (/^https:\/\//.test(url)) void shell.openExternal(url);
+  });
 }

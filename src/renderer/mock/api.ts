@@ -319,6 +319,10 @@ export function createMockApi(): DailiesAPI {
       // no-op in browser
     },
 
+    async openExternal(url: string) {
+      window.open(url, "_blank");
+    },
+
     onProjectUpdate(cb: () => void) {
       projectUpdateListeners.add(cb);
       return () => projectUpdateListeners.delete(cb);

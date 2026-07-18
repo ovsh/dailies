@@ -82,6 +82,8 @@ export interface DailiesAPI {
   // export (current project)
   exportHits(kind: ExportKind, items: ExportItem[]): Promise<ExportResult>;
   revealInFinder(path: string): Promise<void>;
+  /** Opens an https:// URL in the system browser (e.g. the OpenRouter key page). */
+  openExternal(url: string): Promise<void>;
 
   /** Fired when project state changes in the main process (indexing, scans). */
   onProjectUpdate(cb: () => void): () => void;
@@ -120,6 +122,7 @@ export const IPC = {
   chatEvent: "dailies:chatEvent",
   exportHits: "dailies:exportHits",
   revealInFinder: "dailies:revealInFinder",
+  openExternal: "dailies:openExternal",
   projectUpdate: "dailies:projectUpdate",
   indexUpdate: "dailies:indexUpdate",
 } as const;

@@ -368,6 +368,16 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
               onSave={() => handleSaveKey("openrouter")}
               saving={savingProvider === "openrouter"}
             />
+            <p className="jobs-hint mono">
+              Need a key?{" "}
+              <button
+                className="text-link"
+                onClick={() => void api.openExternal("https://openrouter.ai/keys")}
+              >
+                Create one at openrouter.ai/keys
+              </button>{" "}
+              — free to sign up, then paste it here.
+            </p>
           </section>
 
           <section className="jobs-section">
@@ -475,6 +485,18 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         .jobs-screen {
           height: 100%;
           overflow: hidden;
+        }
+        .text-link {
+          background: none;
+          border: none;
+          padding: 0;
+          font: inherit;
+          color: var(--accent);
+          text-decoration: underline;
+          cursor: pointer;
+        }
+        .text-link:hover {
+          color: var(--accent-dim);
         }
         .jobs-scroll {
           height: 100%;

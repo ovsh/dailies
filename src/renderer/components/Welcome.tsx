@@ -109,7 +109,14 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           </div>
           <p className="welcome-step-why">
             Powers everything — the chat agents that search your footage, and the visual index
-            that reads what's on screen.
+            that reads what's on screen. Don't have a key?{" "}
+            <button
+              className="text-link"
+              onClick={() => void api.openExternal("https://openrouter.ai/keys")}
+            >
+              Create one at openrouter.ai/keys
+            </button>{" "}
+            — free to sign up, takes about a minute, then paste it below.
           </p>
           {!keyConnected && (
             <div className="welcome-row">
@@ -230,6 +237,18 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           font-size: 44px;
           color: var(--ink);
           margin: 0 0 10px;
+        }
+        .text-link {
+          background: none;
+          border: none;
+          padding: 0;
+          font: inherit;
+          color: var(--accent);
+          text-decoration: underline;
+          cursor: pointer;
+        }
+        .text-link:hover {
+          color: var(--accent-dim);
         }
         .welcome-sub {
           font-size: 13.5px;

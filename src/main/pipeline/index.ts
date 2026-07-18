@@ -1,7 +1,7 @@
 /**
  * Orchestrates the local media-processing pipeline: watches folders, walks
- * files through probe -> {audio, proxy, scenes} -> transcribe / visual_index
- * -> embed, persisting every result via DailiesDB and notifying the
+ * files through probe -> {audio, proxy, scenes} -> transcribe -> embed,
+ * persisting every result via DailiesDB and notifying the
  * renderer. Also ingests documents (producer notes, scripts) alongside
  * media, and groups Avid OP-Atom MXF essence atoms into single clips.
  */
@@ -12,7 +12,6 @@ import { join, extname } from "node:path";
 import type { DailiesDB } from "../db/types";
 import type {
   FileInput,
-  GeminiIndexer,
   Job,
   MediaRole,
   ProjectFolder,
@@ -39,8 +38,6 @@ export interface PipelineOptions {
   /** app-support dir; derived media is stored under `${dataDir}/media/<fileId>/`. */
   dataDir: string;
   whisperModel: string;
-  /** late-bound; null when no API key is configured. */
-  gemini: () => GeminiIndexer | null;
   /** late-bound; null when no API key is configured. */
   embedder: () => TextEmbedder | null;
   /** fires after any job/file state change so the renderer can refresh. */
@@ -120,7 +117,7 @@ async function walkFiles(root: string): Promise<string[]> {
 }
 
 export function createPipeline(opts: PipelineOptions): Pipeline {
-  const { db, dataDir, whisperModel, gemini, embedder, onUpdate } = opts;
+  const { db, dataDir, whisperModel, embedder, onUpdate } = opts;
 
   let running = false;
   let loopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -324,7 +321,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     // db.upsertFile() is the only way to obtain a fileId, and it requires a
     // full FileInput, so a lightweight probe is unavoidable here just to
     // identify the file and compare hashes. The heavier per-stage work
-    // (audio/proxy/scenes/transcribe/visual_index) is still fully deferred
+    // (audio/proxy/scenes/transcribe) is still fully deferred
     // to the worker loop via enqueueJob — this call never dispatches those.
     let probed: FileInput;
     try {
@@ -597,9 +594,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     }
 
     db.replaceScenes(file.id, scenesWithKeyframes);
-    db.enqueueJob(file.id, "visual_index");
-
     db.completeJob(job.id);
+    await maybeMarkReady(file.id);
   }
 
   async function handleTranscribe(job: Job): Promise<void> {
@@ -640,40 +636,10 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     const file = db.getFile(fileId);
     if (!file) return;
     const videoComplete = !(await hasVideoAtom(file)) ||
-      (file.proxyPath !== null && file.hasVisualIndex);
+      file.proxyPath !== null;
     if (file.hasTranscript && videoComplete) {
       db.setFileStatus(fileId, "ready");
     }
-  }
-
-  async function handleVisualIndex(job: Job): Promise<void> {
-    const file = db.getFile(job.fileId);
-    if (!file) throw new Error(`Job ${job.id}: file ${job.fileId} not found`);
-
-    const indexer = gemini();
-    if (!indexer) {
-      db.waitJob(job.id, "Gemini API key not set");
-      return;
-    }
-
-    const scenes = db.listScenes(file.id);
-    for (const scene of scenes) {
-      const annotation = await indexer.annotateScene({
-        proxyPath: file.proxyPath,
-        keyframePaths: scene.keyframePath ? [scene.keyframePath] : [],
-        startS: scene.startS,
-        endS: scene.endS,
-      });
-      db.upsertAnnotation(scene.id, annotation);
-      scheduleUpdate();
-    }
-
-    db.markVisuallyIndexed(file.id);
-    await maybeMarkReady(file.id);
-
-    db.enqueueJob(file.id, "embed");
-
-    db.completeJob(job.id);
   }
 
   async function handleEmbed(job: Job): Promise<void> {
@@ -693,16 +659,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       });
     }
 
-    const annotations = db.listUnembeddedAnnotations(job.fileId);
-    for (let i = 0; i < annotations.length; i += EMBED_BATCH_SIZE) {
-      const batch = annotations.slice(i, i + EMBED_BATCH_SIZE);
-      const vectors = await e.embed(batch.map((a) => a.text));
-      batch.forEach((ann, idx) => {
-        const vector = vectors[idx];
-        if (vector) db.upsertEmbedding("scene", ann.refId, vector);
-      });
-    }
-
+    await embedDocChunks();
     db.completeJob(job.id);
   }
 
@@ -725,16 +682,13 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
         incomplete = true;
         db.enqueueJob(file.id, "proxy");
       }
-      if (!file.hasVisualIndex) {
-        incomplete = true;
-        if (!db.hasActiveJob(file.id, "visual_index")) db.enqueueJob(file.id, "scenes");
+      const scenes = db.listScenes(file.id);
+      if (!scenes.some((scene) => scene.keyframePath !== null)) {
+        db.enqueueJob(file.id, "scenes");
       }
     }
 
-    if (
-      db.listUnembeddedSegments(file.id).length > 0 ||
-      db.listUnembeddedAnnotations(file.id).length > 0
-    ) {
+    if (db.listUnembeddedSegments(file.id).length > 0) {
       db.enqueueJob(file.id, "embed");
     }
 
@@ -747,7 +701,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       db.requeueWaitingJobs(["transcribe"]);
     }
     if (kind === "gemini" || kind === "all") {
-      db.requeueWaitingJobs(["visual_index", "embed"]);
+      db.requeueWaitingJobs(["embed"]);
     }
     for (const file of db.listFiles()) {
       if (file.status === "error" && file.durationS === 0) continue;
@@ -785,9 +739,6 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
           break;
         case "transcribe":
           await handleTranscribe(job);
-          break;
-        case "visual_index":
-          await handleVisualIndex(job);
           break;
         case "embed":
           await handleEmbed(job);

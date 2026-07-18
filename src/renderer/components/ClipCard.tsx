@@ -27,15 +27,6 @@ function TranscriptGlyph({ active }: { active: boolean }) {
   );
 }
 
-function VisualGlyph({ active }: { active: boolean }) {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.3" style={{ opacity: active ? 1 : 0.3 }}>
-      <path d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8Z" />
-      <circle cx="8" cy="8" r="2" />
-    </svg>
-  );
-}
-
 export function ClipCard({ file, keyframe, onOpen }: ClipCardProps) {
   const audioOnly = isAudioOnly(file);
 
@@ -62,7 +53,6 @@ export function ClipCard({ file, keyframe, onOpen }: ClipCardProps) {
           <span className="clip-dur mono">{formatDuration(file.durationS)}</span>
           <span className="clip-glyphs">
             <TranscriptGlyph active={file.hasTranscript} />
-            <VisualGlyph active={file.hasVisualIndex} />
           </span>
         </div>
       </div>

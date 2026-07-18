@@ -36,7 +36,6 @@ const pipeline = createPipeline({
   db,
   dataDir: workDir,
   whisperModel: model,
-  gemini: () => null, // audio-first: no visual index, no key needed
   embedder: () => null,
   onUpdate: () => {},
 });

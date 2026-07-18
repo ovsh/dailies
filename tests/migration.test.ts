@@ -123,4 +123,76 @@ describe("legacy database migration", () => {
     verify.close();
     db.close();
   });
+
+  it("removes legacy visual index data without disturbing files or transcripts", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-mig-visual-"));
+    const dbPath = path.join(dir, "visual-index.db");
+    const raw = new Database(dbPath);
+    raw.exec(`${V1_SCHEMA}
+      CREATE TABLE visual_annotations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scene_id INTEGER NOT NULL,
+        file_id INTEGER NOT NULL,
+        description TEXT NOT NULL,
+        objects TEXT NOT NULL,
+        shot_type TEXT,
+        time_of_day TEXT,
+        people_count INTEGER,
+        actions TEXT NOT NULL,
+        model TEXT NOT NULL,
+        indexed_at TEXT NOT NULL
+      );
+      CREATE VIRTUAL TABLE visual_fts USING fts5(
+        content,
+        file_id UNINDEXED,
+        scene_id UNINDEXED
+      );
+      CREATE TABLE embeddings (
+        kind TEXT NOT NULL,
+        ref_id INTEGER NOT NULL,
+        vector BLOB NOT NULL,
+        PRIMARY KEY (kind, ref_id)
+      );
+    `);
+    const fileId = Number(raw.prepare(
+      "INSERT INTO files (path, filename, duration_s, fps, drop_frame, start_tc, codec, audio_channels, file_hash, status, added_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    ).run("/x/visual.mov", "visual.mov", 10, 24, 0, "01:00:00:00", "prores", 2, "vh", "ready", new Date(0).toISOString()).lastInsertRowid);
+    const sceneId = Number(raw.prepare(
+      "INSERT INTO scenes (file_id, start_s, end_s, start_tc, end_tc, keyframe_path) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(fileId, 0, 5, "01:00:00:00", "01:00:05:00", "/cache/frame.jpg").lastInsertRowid);
+    raw.prepare(
+      "INSERT INTO transcript_segments (file_id, start_s, end_s, text, speaker, avg_conf) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(fileId, 1, 2, "keep this transcript", null, 1);
+    raw.prepare(
+      "INSERT INTO visual_annotations (scene_id, file_id, description, objects, shot_type, time_of_day, people_count, actions, model, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(sceneId, fileId, "legacy visual", "[]", null, null, null, "[]", "old-model", new Date(0).toISOString());
+    raw.prepare("INSERT INTO visual_fts (content, file_id, scene_id) VALUES (?, ?, ?)")
+      .run("legacy visual", fileId, sceneId);
+    raw.prepare("INSERT INTO embeddings (kind, ref_id, vector) VALUES (?, ?, ?)")
+      .run("scene", sceneId, Buffer.alloc(4));
+    raw.prepare(
+      "INSERT INTO jobs (file_id, stage, status, attempts, error, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(fileId, "visual_index", "queued", 0, null, new Date(0).toISOString());
+    raw.close();
+
+    const db = openDatabase(dbPath);
+    expect(db.listFiles()).toHaveLength(1);
+    expect(db.listSegments(fileId)[0]?.text).toBe("keep this transcript");
+    expect(db.listJobs()).toEqual([]);
+    db.close();
+
+    const verify = new Database(dbPath);
+    const tables = verify.prepare<[], { name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    ).all().map((row) => row.name);
+    expect(tables).not.toContain("visual_annotations");
+    expect(tables).not.toContain("visual_fts");
+    expect(verify.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE kind = 'scene'").get())
+      .toEqual({ count: 0 });
+    expect(verify.prepare("SELECT COUNT(*) AS count FROM jobs WHERE stage = 'visual_index'").get())
+      .toEqual({ count: 0 });
+    expect(verify.prepare("SELECT COUNT(*) AS count FROM files").get()).toEqual({ count: 1 });
+    expect(verify.prepare("SELECT COUNT(*) AS count FROM transcript_segments").get()).toEqual({ count: 1 });
+    verify.close();
+  });
 });

@@ -266,8 +266,7 @@ export function ChatScreen({
               <div className="chat-empty">
                 <p className="display chat-empty-line">Ask your footage anything.</p>
                 <p className="chat-empty-sub">
-                  Search transcripts and visuals together — "bears fishing at the river bend," "where does Marsh mention the
-                  salmon run."
+                  Search transcripts and producer notes — "where does Marsh mention the salmon run?"
                 </p>
                 {activeEpisode && <p className="chat-empty-scope mono">Searching episode {activeEpisode.code}</p>}
                 {apiKeySet === false && onOpenSettings && (

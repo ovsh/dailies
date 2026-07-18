@@ -21,7 +21,7 @@ import { checkAvailability, findWhisperModel } from "./pipeline/binaries";
 import { DOC_EXTENSIONS } from "./pipeline/docs";
 import { runChatTurn } from "./agents/supervisor";
 import { createOpenRouterClient, validateOpenRouterKey } from "./agents/openrouter-client";
-import { createOpenRouterEmbedder, createOpenRouterIndexer } from "./agents/openrouter";
+import { createOpenRouterEmbedder } from "./agents/openrouter";
 import { writeExport } from "./export";
 import { resolvePlaybackPath } from "./playback-path";
 
@@ -188,7 +188,6 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       playbackPath: resolvePlaybackPath(file, mediaDir),
       scenes: db.listScenes(fileId),
       segments: db.listSegments(fileId),
-      annotations: db.listAnnotations(fileId),
     };
   });
 
@@ -278,7 +277,6 @@ export function registerIpcHandlers(ctx: IpcContext): void {
             apiKey,
             qualityMode: settings.getQualityMode(),
             modelProfile,
-            gemini: createOpenRouterIndexer(client, () => activeProfile().visualIndex),
             embedder: createOpenRouterEmbedder(client),
             episodeId,
             emit: (ev) => emitChatEvent({ ...ev, chatId: id, turnId }),

@@ -61,12 +61,12 @@ export function LibraryScreen({
         // Detail calls are limited to clips whose indexing signature changed.
         // This keeps frequent job revisions cheap even in large libraries.
         const changed = f.filter((file) => {
-          const signature = `${file.status}:${file.hasVisualIndex}:${file.proxyPath ?? ""}`;
+          const signature = `${file.status}:${file.proxyPath ?? ""}`;
           return detailSignaturesRef.current[file.id] !== signature;
         });
         const entries = await Promise.all(
           changed.map(async (file) => {
-            const signature = `${file.status}:${file.hasVisualIndex}:${file.proxyPath ?? ""}`;
+            const signature = `${file.status}:${file.proxyPath ?? ""}`;
             detailSignaturesRef.current[file.id] = signature;
             try {
               const detail = await api.getFileDetail(file.id);
@@ -209,8 +209,8 @@ export function LibraryScreen({
           <div className="library-empty">
             <p className="display library-empty-line">Nothing here yet.</p>
             <p className="library-empty-sub">
-              Point Dailies at a footage folder. Clips are indexed in place — transcribed and
-              visually catalogued — and new files are picked up automatically.
+              Point Dailies at a footage folder. Clips are indexed in place and transcribed,
+              and new files are picked up automatically.
             </p>
             <div className="library-header-btns">
               <button className="ghost-btn label" onClick={() => addFolder("raw")} disabled={addingFolder}>

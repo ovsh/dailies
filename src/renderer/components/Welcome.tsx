@@ -108,8 +108,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
             </span>
           </div>
           <p className="welcome-step-why">
-            Powers everything — the chat agents that search your footage, and the visual index
-            that reads what's on screen. Don't have a key?{" "}
+            Powers the chat agents that search your transcripts and producer notes. Don't have a key?{" "}
             <button
               className="text-link"
               onClick={() => void api.openExternal("https://openrouter.ai/keys")}
@@ -204,7 +203,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
         <div className="welcome-footer">
           {!allReady && (
             <p className="welcome-limitations mono">
-              {!keyConnected && "Without a validated OpenRouter key, chat and visual indexing will wait. "}
+              {!keyConnected && "Without a validated OpenRouter key, chat and semantic search will wait. "}
               {folders.length === 0 && "Without a footage folder, there is nothing to index. "}
               {!settings.whisperModelReady && "Without the speech model, transcription will wait."}
             </p>

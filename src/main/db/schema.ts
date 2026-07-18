@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS files (
   status TEXT NOT NULL DEFAULT 'pending',
   added_at TEXT NOT NULL,
   has_transcript INTEGER NOT NULL DEFAULT 0,
+  -- legacy, unused
   has_visual_index INTEGER NOT NULL DEFAULT 0,
   proxy_path TEXT,
   role TEXT NOT NULL DEFAULT 'raw',
@@ -82,23 +83,6 @@ CREATE TABLE IF NOT EXISTS words (
 
 CREATE INDEX IF NOT EXISTS idx_words_segment_id ON words(segment_id);
 
-CREATE TABLE IF NOT EXISTS visual_annotations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
-  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-  description TEXT NOT NULL,
-  objects TEXT NOT NULL,
-  shot_type TEXT,
-  time_of_day TEXT,
-  people_count INTEGER,
-  actions TEXT NOT NULL,
-  model TEXT NOT NULL,
-  indexed_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_visual_annotations_file_id ON visual_annotations(file_id);
-CREATE INDEX IF NOT EXISTS idx_visual_annotations_scene_id ON visual_annotations(scene_id);
-
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -138,12 +122,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
   text,
   file_id UNINDEXED,
   segment_id UNINDEXED
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS visual_fts USING fts5(
-  content,
-  file_id UNINDEXED,
-  scene_id UNINDEXED
 );
 
 CREATE TABLE IF NOT EXISTS documents (

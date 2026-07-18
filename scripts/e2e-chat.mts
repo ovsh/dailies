@@ -6,7 +6,7 @@
  */
 import { openDatabase } from "../src/main/db/database";
 import { createOpenRouterClient } from "../src/main/agents/openrouter-client";
-import { createOpenRouterEmbedder, createOpenRouterIndexer } from "../src/main/agents/openrouter";
+import { createOpenRouterEmbedder } from "../src/main/agents/openrouter";
 import { runChatTurn } from "../src/main/agents/supervisor";
 import { MODEL_PROFILES } from "../src/shared/types";
 
@@ -59,7 +59,6 @@ async function main() {
     apiKey: key,
     qualityMode: "standard",
     modelProfile: profile,
-    gemini: createOpenRouterIndexer(client, () => profile.visualIndex),
     embedder,
     episodeId: null,
     emit: (ev) => console.log(`   · ${ev.agent}: ${ev.status}`),

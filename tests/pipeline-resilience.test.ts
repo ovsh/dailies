@@ -28,7 +28,6 @@ const mocks = vi.hoisted(() => ({
   detectedScenes: [{ startS: 0, endS: 5 }],
   makeProxy: vi.fn(),
   transcribe: vi.fn(),
-  annotate: vi.fn(),
   embed: vi.fn(),
 }));
 
@@ -82,7 +81,6 @@ function setup() {
     db,
     dataDir,
     whisperModel: "tiny",
-    gemini: () => ({ annotateScene: mocks.annotate, lookAtScene: async () => "frame" }),
     embedder: () => ({ embed: mocks.embed }),
     onUpdate: () => {},
   });
@@ -117,11 +115,6 @@ beforeEach(() => {
     avgConf: 1,
     words: [],
   }]);
-  mocks.annotate.mockReset().mockResolvedValue({
-    description: "a frame",
-    objects: [],
-    model: "test",
-  });
   mocks.embed.mockReset().mockImplementation(async (texts: string[]) =>
     texts.map(() => new Float32Array(768).fill(1)));
 });
@@ -331,11 +324,8 @@ describe("pipeline prerequisite and applicability handling", () => {
     await pipeline.stop();
   });
 
-  it("makes silent video ready with an explicit empty transcript and retries a transient API failure", async () => {
+  it("makes silent video ready with an explicit empty transcript and proxy", async () => {
     const { db, pipeline } = setup();
-    mocks.annotate
-      .mockRejectedValueOnce(new Error("HTTP 429 rate limit"))
-      .mockResolvedValue({ description: "recovered frame", objects: [], model: "test" });
     const file = db.upsertFile({
       path: "/media/silent.mov",
       filename: "silent.mov",
@@ -354,7 +344,7 @@ describe("pipeline prerequisite and applicability handling", () => {
     expect(db.getFile(file.id)?.hasTranscript).toBe(true);
     expect(db.listSegments(file.id)).toEqual([]);
     expect(db.listJobs().some((job) => job.stage === "transcribe")).toBe(false);
-    expect(db.listJobs().find((job) => job.stage === "visual_index")?.attempts).toBe(1);
+    expect(db.getFile(file.id)?.proxyPath).not.toBeNull();
     await waitForDrain(db);
     await pipeline.stop();
   });
@@ -419,7 +409,13 @@ describe("pipeline prerequisite and applicability handling", () => {
     }]);
     db.markTranscribed(original.id);
     db.setFileProxy(original.id, "/cache/proxy.mp4");
-    db.markVisuallyIndexed(original.id);
+    db.replaceScenes(original.id, [{
+      startS: 0,
+      endS: 5,
+      startTc: "01:00:00:00",
+      endTc: "01:00:05:00",
+      keyframePath: "/cache/keyframe-0.jpg",
+    }]);
     // Embed the seeded segment so the file is fully processed — repairFile
     // enqueues an embed job for any unembedded segment, which would be a
     // legitimate (not spurious) job after the repoint.

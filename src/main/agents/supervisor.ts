@@ -1,6 +1,6 @@
 /**
- * Supervisor: the top-level chat agent. Orchestrates the transcript/visual
- * scouts, the frame verifier, and the clip reader as tools, then emits one
+ * Supervisor: the top-level chat agent. Orchestrates the transcript scout,
+ * document search, and clip reader as tools, then emits one
  * final structured answer for the editor.
  */
 import type {
@@ -8,18 +8,16 @@ import type {
   ChatMessageRecord,
   Confidence,
   DocumentHit,
-  GeminiIndexer,
   ModelProfile,
   QualityMode,
   TextEmbedder,
   TranscriptHit,
-  VisualHit,
 } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
 import { createOpenRouterClient } from "./openrouter-client";
 import type { ChatMessage, OpenRouterClient, ToolCall, ToolDef } from "./openrouter-client";
 import { getFileInfoTool, searchNotesTool } from "./tools";
-import { runClipReader, runFrameVerifier, runTranscriptScout, runVisualScout } from "./subagents";
+import { runClipReader, runTranscriptScout } from "./subagents";
 
 const MAX_ITERS = 16;
 
@@ -30,7 +28,6 @@ export interface ChatTurnOptions {
   apiKey: string;
   qualityMode: QualityMode; // "high" => supervisor tries the pro model first
   modelProfile: ModelProfile;
-  gemini: GeminiIndexer | null;
   embedder: TextEmbedder | null;
   episodeId: number | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
@@ -50,7 +47,7 @@ You are given a LIBRARY OVERVIEW at the start of every turn: the clips in the li
 
 **3. Overview / summary — they want to know what the footage IS.** ("what is this about", "summarize the shoot", "what happens", "who's in it") → Answer from the OVERVIEW; if you need more, call clip_reader on the 2–4 most representative clips and synthesize. Mostly prose; add a few illustrative hits only if specific moments matter.
 
-**4. Specific find/analysis — they named a concrete subject, topic, person, or moment.** ("find footage of the excavator", "where do they mention drainage", "when does she talk about the retention pond") → NOW research. transcript_scout for what is SPOKEN, visual_scout for what is SHOWN. Then final_answer with timecoded hits.
+**4. Specific find/analysis — they named a concrete subject, topic, person, or moment.** ("where do they mention drainage", "when does she talk about the retention pond", "find the interview about the excavator") → NOW research. Use transcript_scout for what is spoken and search_notes for relevant producer documents. Then final_answer with timecoded transcript hits.
 
 ## Iron rules for searching (this is where you have been going wrong)
 
@@ -61,13 +58,12 @@ You are given a LIBRARY OVERVIEW at the start of every turn: the clips in the li
 
 ## Distinctions to keep straight
 
-- Footage that VISUALLY SHOWS a subject is kind "visual"; footage where people TALK ABOUT it is kind "spoken". Never conflate them.
-- Some libraries are audio-only (interviews, VO) — there is nothing to see, so visual_scout returns nothing and every hit is "spoken". Don't apologize for the lack of visuals; just work from the audio.
+- Search is grounded in spoken transcripts and ingested producer documents. Do not claim that an unspoken subject is visible on screen.
 - Hits carry a role: "raw" = camera media (source timecode); "final" = an exported cut where the timecode is the TIMELINE TC in the finished episode — describe those as "in the final at {tc}". Use search_notes to connect producer notes/scripts to footage ONLY when the OVERVIEW says documents were ingested and the editor's request relates to them.
 
 ## Every turn ends the same way
 
-Always finish by calling final_answer exactly once. For a conversation or a clarifying question, that's a short friendly line with empty hits. For research, it's clear prose plus references to the strongest candidates returned by the scouts. A hit reference is only a source type ("segment" for SAID or "scene" for SEEN), its candidate ID, and confidence. Never write filenames, timecodes, quotes, or descriptions into a hit: the application loads those facts from its database. Only reference IDs that appeared in tool results during this turn. If you searched and found nothing, say so plainly — never pad with weak or invented hits.
+Always finish by calling final_answer exactly once. For a conversation or a clarifying question, that's a short friendly line with empty hits. For research, it's clear prose plus references to the strongest candidates returned by the transcript scout. A hit reference is only the source type "segment", its candidate ID, and confidence. Never write filenames, timecodes, quotes, or descriptions into a hit: the application loads those facts from its database. Only reference IDs that appeared in tool results during this turn. If you searched and found nothing, say so plainly — never pad with weak or invented hits.
 Write the prose as plain text: the app renders it verbatim, so markdown syntax (#, **, backticks, bullet asterisks) shows up as literal characters. Use short paragraphs and simple dashes for lists.`;
 
 const EPISODE_SCOPE_NOTICE =
@@ -144,26 +140,6 @@ const SUPERVISOR_TOOLS: ToolDef[] = [
     },
   ),
   toolDef(
-    "visual_scout",
-    "Search the visual index for scenes that visually show a subject. Returns hits and researcher notes.",
-    {
-      type: "object",
-      properties: { query: { type: "string" } },
-      required: ["query"],
-    },
-  ),
-  toolDef(
-    "frame_verifier",
-    "Verify a list of candidate visual scene IDs (from visual_scout) by inspecting their keyframes.",
-    {
-      type: "object",
-      properties: {
-        scene_ids: { type: "array", items: { type: "number" } },
-      },
-      required: ["scene_ids"],
-    },
-  ),
-  toolDef(
     "clip_reader",
     "Read the full transcript of one file and answer a question about it.",
     {
@@ -205,7 +181,7 @@ const SUPERVISOR_TOOLS: ToolDef[] = [
           items: {
             type: "object",
             properties: {
-              source: { type: "string", enum: ["segment", "scene"] },
+              source: { type: "string", enum: ["segment"] },
               id: { type: "number" },
               confidence: { type: "string", enum: ["high", "medium", "low"] },
             },
@@ -224,29 +200,25 @@ const FINAL_ANSWER_TOOL = SUPERVISOR_TOOLS.find((tool) => tool.function.name ===
 
 export interface CandidateRegistry {
   segments: Map<number, TranscriptHit>;
-  scenes: Map<number, VisualHit>;
   documents: Map<number, DocumentHit>;
-  rejectedSceneIds: Set<number>;
 }
 
 export function createCandidateRegistry(): CandidateRegistry {
   return {
     segments: new Map(),
-    scenes: new Map(),
     documents: new Map(),
-    rejectedSceneIds: new Set(),
   };
 }
 
 interface CandidateReference {
-  source: "segment" | "scene";
+  source: "segment";
   id: number;
   confidence: Confidence;
 }
 
 function coerceCandidateReference(raw: unknown): CandidateReference | null {
   if (!isRecord(raw)) return null;
-  const source = raw.source === "segment" || raw.source === "scene" ? raw.source : null;
+  const source = raw.source === "segment" ? raw.source : null;
   const numericId =
     typeof raw.id === "number"
       ? raw.id
@@ -274,8 +246,7 @@ function isValidStoredRange(startS: number, endS: number, durationS: number): bo
 
 /**
  * Converts model-selected candidate IDs into cards using only current DB rows.
- * The model never supplies any exportable fact (file, role, range, quote, or
- * visual description).
+ * The model never supplies any exportable fact (file, role, range, or quote).
  */
 export function hydrateFinalAnswer(
   args: unknown,
@@ -304,56 +275,12 @@ export function hydrateFinalAnswer(
     const key = `${ref.source}:${ref.id}`;
     if (emitted.has(key)) continue;
 
-    if (ref.source === "segment") {
-      const registered = registry.segments.get(ref.id);
-      if (!registered) {
-        drop(ref, "not returned by a scout this turn");
-        continue;
-      }
-      const row = db.getTranscriptHit(ref.id);
-      if (!row || row.fileId !== registered.fileId) {
-        drop(ref, "database row is missing or changed");
-        continue;
-      }
-      const file = db.getFile(row.fileId);
-      if (!file) {
-        drop(ref, "file is missing");
-        continue;
-      }
-      if (episodeId !== null && file.episodeId !== episodeId) {
-        drop(ref, "outside the selected episode");
-        continue;
-      }
-      if (!isValidStoredRange(row.startS, row.endS, file.durationS)) {
-        drop(ref, "stored range is outside the file duration");
-        continue;
-      }
-      hits.push({
-        fileId: file.id,
-        filename: file.clipName ?? file.filename,
-        role: file.role,
-        kind: "spoken",
-        inTc: row.startTc,
-        outTc: row.endTc,
-        inS: row.startS,
-        outS: row.endS,
-        quote: row.text,
-        confidence: ref.confidence,
-      });
-      emitted.add(key);
-      continue;
-    }
-
-    const registered = registry.scenes.get(ref.id);
+    const registered = registry.segments.get(ref.id);
     if (!registered) {
       drop(ref, "not returned by a scout this turn");
       continue;
     }
-    if (registry.rejectedSceneIds.has(ref.id)) {
-      drop(ref, "rejected by frame verification");
-      continue;
-    }
-    const row = db.getVisualHitByScene(ref.id);
+    const row = db.getTranscriptHit(ref.id);
     if (!row || row.fileId !== registered.fileId) {
       drop(ref, "database row is missing or changed");
       continue;
@@ -367,10 +294,6 @@ export function hydrateFinalAnswer(
       drop(ref, "outside the selected episode");
       continue;
     }
-    if (!file.hasVisualIndex) {
-      drop(ref, "file has no completed visual index");
-      continue;
-    }
     if (!isValidStoredRange(row.startS, row.endS, file.durationS)) {
       drop(ref, "stored range is outside the file duration");
       continue;
@@ -379,14 +302,13 @@ export function hydrateFinalAnswer(
       fileId: file.id,
       filename: file.clipName ?? file.filename,
       role: file.role,
-      kind: "visual",
+      kind: "spoken",
       inTc: row.startTc,
       outTc: row.endTc,
       inS: row.startS,
       outS: row.endS,
-      description: row.description,
+      quote: row.text,
       confidence: ref.confidence,
-      keyframePath: row.keyframePath,
     });
     emitted.add(key);
   }
@@ -487,7 +409,6 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     apiKey,
     qualityMode,
     modelProfile,
-    gemini,
     embedder,
     episodeId,
     emit,
@@ -526,35 +447,12 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       return JSON.stringify(result);
     }
 
-    if (name === "visual_scout") {
-      const query = typeof rec.query === "string" ? rec.query : "";
-      emit({ type: "activity", agent: "visual scout", status: `visual scout — searching visual matches for "${query}"` });
-      const result = await runVisualScout({ client, model: subagentModel, db, query, gemini, embedder, episodeId });
-      for (const hit of result.hits) registry.scenes.set(hit.sceneId, hit);
-      return JSON.stringify(result);
-    }
-
     if (name === "search_notes") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "search notes", status: `search notes — searching producer notes for "${query}"` });
       const hits = await searchNotesTool(db, query, [], embedder, episodeId);
       for (const hit of hits) registry.documents.set(hit.chunkId, hit);
       return JSON.stringify(hits);
-    }
-
-    if (name === "frame_verifier") {
-      const sceneIds = Array.isArray(rec.scene_ids)
-        ? rec.scene_ids.filter((x): x is number => typeof x === "number")
-        : [];
-      emit({ type: "activity", agent: "frame verifier", status: `frame verifier — checking ${sceneIds.length} candidate scene(s)` });
-      const candidates = sceneIds
-        .map((id) => registry.scenes.get(id))
-        .filter((h): h is VisualHit => h !== undefined);
-      const verdicts = await runFrameVerifier({ client, model: subagentModel, db, candidates });
-      for (const verdict of verdicts) {
-        if (verdict.verdict === "reject") registry.rejectedSceneIds.add(verdict.sceneId);
-      }
-      return JSON.stringify(verdicts);
     }
 
     if (name === "clip_reader") {
@@ -588,7 +486,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
   const generateForcedFinal = () => {
     messages.push({
       role: "user",
-      content: "You have gathered enough evidence. Stop searching and call final_answer now with your best prose and references to the strongest candidate segment or scene IDs you found.",
+      content: "You have gathered enough evidence. Stop searching and call final_answer now with your best prose and references to the strongest candidate segment IDs you found.",
     });
     return client.chat({
       model: supervisorModel,

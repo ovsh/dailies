@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { runTranscriptScout, runVisualScout } from "../src/main/agents/subagents";
+import { runTranscriptScout } from "../src/main/agents/subagents";
 import {
   createCandidateRegistry,
   hydrateFinalAnswer,
@@ -117,48 +117,6 @@ describe("final answer grounding", () => {
     db.close();
   });
 
-  it("suppresses SEEN hits without a visual index or after frame rejection", () => {
-    const db = makeDb("visual");
-    const file = addFile(db, "V001.mov", 20, null);
-    const [scene] = db.replaceScenes(file.id, [{
-      startS: 3,
-      endS: 9,
-      startTc: "ignored",
-      endTc: "ignored",
-      keyframePath: "/cache/v001.jpg",
-    }]);
-    db.upsertAnnotation(scene!.id, {
-      description: "A stored wide shot of the river.",
-      objects: ["river"],
-      model: "test",
-    });
-    const visual = db.getVisualHitByScene(scene!.id)!;
-    const registry = createCandidateRegistry();
-    registry.scenes.set(visual.sceneId, visual);
-    const args = {
-      prose: "Visual answer",
-      hits: [{ source: "scene", id: visual.sceneId, confidence: "high" }],
-    };
-
-    expect(hydrateFinalAnswer(args, db, registry, null, () => {}).hits).toEqual([]);
-
-    db.markVisuallyIndexed(file.id);
-    registry.rejectedSceneIds.add(visual.sceneId);
-    expect(hydrateFinalAnswer(args, db, registry, null, () => {}).hits).toEqual([]);
-
-    registry.rejectedSceneIds.clear();
-    expect(hydrateFinalAnswer(args, db, registry, null, () => {}).hits[0]).toMatchObject({
-      fileId: file.id,
-      filename: "V001.mov",
-      kind: "visual",
-      inS: 3,
-      outS: 9,
-      description: "A stored wide shot of the river.",
-      keyframePath: "/cache/v001.jpg",
-    });
-    db.close();
-  });
-
   it("injects the supervisor client and cannot emit an unscouted DB ID", async () => {
     const db = makeDb("supervisor-client");
     const file = addFile(db, "I001.mov", 20, null);
@@ -190,7 +148,6 @@ describe("final answer grounding", () => {
       apiKey: "unused-test-value",
       qualityMode: "standard",
       modelProfile: MODEL_PROFILES[0]!,
-      gemini: null,
       embedder: null,
       episodeId: null,
       emit: () => {},
@@ -335,57 +292,4 @@ describe("scout parsing", () => {
     db.close();
   });
 
-  it("fails closed instead of promoting cached visual candidates", async () => {
-    const db = makeDb("visual-scout");
-    const file = addFile(db, "VS001.mov", 20, null);
-    const [scene] = db.replaceScenes(file.id, [{
-      startS: 1,
-      endS: 5,
-      startTc: "ignored",
-      endTc: "ignored",
-      keyframePath: null,
-    }]);
-    db.upsertAnnotation(scene!.id, {
-      description: "A bear crosses the river.",
-      objects: ["bear", "river"],
-      model: "test",
-    });
-
-    const responses = [
-      {
-        message: {
-          content: null,
-          tool_calls: [{
-            id: "search-1",
-            type: "function" as const,
-            function: {
-              name: "search_visuals",
-              arguments: JSON.stringify({ query: "bear", extra_terms: [] }),
-            },
-          }],
-        },
-      },
-      { message: { content: "not valid scout JSON" } },
-    ];
-    const client = {
-      chat: vi.fn(async () => responses.shift()!),
-      embed: vi.fn(),
-    } as unknown as OpenRouterClient;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    const result = await runVisualScout({
-      client,
-      model: "test-model",
-      db,
-      query: "bear",
-      gemini: null,
-      embedder: null,
-      episodeId: null,
-    });
-
-    expect(result.hits).toEqual([]);
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
-    db.close();
-  });
 });

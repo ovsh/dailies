@@ -2,10 +2,8 @@
  * Pure helper functions the subagents call as "tools". Thin wrappers over
  * DailiesDB plus a couple of formatting/parsing utilities shared by agents.
  */
-import type { DocumentHit, TextEmbedder, TranscriptHit, VisualHit, VisualSearchFilters } from "../../shared/types";
+import type { DocumentHit, EmbeddingKind, TextEmbedder, TranscriptHit } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
-import type { ContentPart } from "./openrouter-client";
-import { buildImageParts } from "./openrouter";
 
 const STOPWORDS = new Set([
   "a",
@@ -74,7 +72,7 @@ function fuseRanked<T>(lists: T[][], keyOf: (item: T) => number | string, limit:
 async function semanticHydrate<T>(
   db: DailiesDB,
   embedder: TextEmbedder,
-  kind: "segment" | "scene" | "doc",
+  kind: EmbeddingKind,
   query: string,
   hydrate: (refId: number) => T | null,
   limit: number,
@@ -112,36 +110,6 @@ export async function searchTranscriptsTool(
     const scopedSemanticHits =
       episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
     return fuseRanked([ftsHits, scopedSemanticHits], (h) => h.segmentId, HYBRID_LIMIT);
-  } catch {
-    return ftsHits;
-  }
-}
-
-export async function searchVisualsTool(
-  db: DailiesDB,
-  query: string,
-  extraTerms: string[],
-  embedder: TextEmbedder | null,
-  episodeId: number | null,
-  filters?: VisualSearchFilters,
-): Promise<VisualHit[]> {
-  const scopedFilters: VisualSearchFilters | undefined =
-    episodeId === null ? filters : { ...filters, episodeId };
-  const ftsHits = db.searchVisuals([...expandTerms(query), ...extraTerms], scopedFilters);
-  if (!embedder) return ftsHits;
-
-  try {
-    const semanticHits = await semanticHydrate(
-      db,
-      embedder,
-      "scene",
-      query,
-      (refId) => db.getVisualHitByScene(refId),
-      HYBRID_LIMIT,
-    );
-    const scopedSemanticHits =
-      episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
-    return fuseRanked([ftsHits, scopedSemanticHits], (h) => h.sceneId, HYBRID_LIMIT);
   } catch {
     return ftsHits;
   }
@@ -206,12 +174,5 @@ export function getFileInfoTool(db: DailiesDB, fileId: number): object {
     startTc: file.startTc,
     status: file.status,
     hasTranscript: file.hasTranscript,
-    hasVisualIndex: file.hasVisualIndex,
   };
-}
-
-const MAX_KEYFRAME_BLOCKS = 6;
-
-export async function readKeyframesAsParts(paths: string[]): Promise<ContentPart[]> {
-  return buildImageParts(paths.slice(0, MAX_KEYFRAME_BLOCKS));
 }

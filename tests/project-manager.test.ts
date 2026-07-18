@@ -9,13 +9,14 @@ import type { AppSettingsStore } from "../src/main/app-settings";
 function fakeSettings(): AppSettingsStore {
   let key: string | null = null;
   return {
-    getApiKey: () => key,
-    setApiKey: (k: string) => ((key = k), true),
-    hasApiKey: () => key !== null,
+    getOpenRouterKey: () => key,
+    setOpenRouterKey: (k: string) => ((key = k), true),
+    hasOpenRouterKey: () => key !== null,
+    getModelProfileId: () => "balanced",
+    setModelProfileId: () => {},
     getQualityMode: () => "standard" as const,
     setQualityMode: () => {},
     getWhisperModel: () => "large-v3-turbo",
-    adoptLegacyKey: () => {},
   };
 }
 

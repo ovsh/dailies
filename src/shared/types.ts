@@ -311,26 +311,70 @@ export interface ExportResult {
 // ---------- settings ----------
 
 export type QualityMode = "standard" | "high";
-export type GeminiKeyStatus = "missing" | "connected" | "invalid" | "unavailable";
-export type ApiKeyValidationStatus = Exclude<GeminiKeyStatus, "missing">;
+export type ApiKeyStatus = "missing" | "connected" | "invalid" | "unavailable";
+export type ApiKeyValidationStatus = Exclude<ApiKeyStatus, "missing">;
 
-/** Gemini model routing. Flash is GA; Pro falls back to Flash when unavailable. */
-export const GEMINI_MODELS = {
-  supervisor: "gemini-3.5-flash",
-  supervisorHigh: "gemini-3.5-pro",
-  subagent: "gemini-3.5-flash",
-  visualIndex: "gemini-3.5-flash",
-  embedding: "gemini-embedding-001",
-} as const;
+export interface ModelProfile {
+  id: string;
+  label: string;
+  description: string;
+  supervisor: string;
+  supervisorHigh: string;
+  subagent: string;
+  visualIndex: string;
+}
 
-/** Embedding vector length (gemini-embedding-001 with outputDimensionality). */
+export const MODEL_PROFILES: ModelProfile[] = [
+  {
+    id: "balanced",
+    label: "Balanced (recommended)",
+    description: "Gemini 2.5 Flash — fast, cheap, proven",
+    supervisor: "google/gemini-2.5-flash",
+    supervisorHigh: "google/gemini-3.1-pro-preview",
+    subagent: "google/gemini-2.5-flash",
+    visualIndex: "google/gemini-2.5-flash",
+  },
+  {
+    id: "cheapest",
+    label: "Fastest & cheapest",
+    description: "Gemini 3.1 Flash-Lite",
+    supervisor: "google/gemini-3.1-flash-lite",
+    supervisorHigh: "google/gemini-3.5-flash",
+    subagent: "google/gemini-3.1-flash-lite",
+    visualIndex: "google/gemini-3.1-flash-lite",
+  },
+  {
+    id: "best",
+    label: "Best quality",
+    description: "Gemini 3.5 Flash (may hit capacity limits)",
+    supervisor: "google/gemini-3.5-flash",
+    supervisorHigh: "google/gemini-3.1-pro-preview",
+    subagent: "google/gemini-3.5-flash",
+    visualIndex: "google/gemini-3.5-flash",
+  },
+  {
+    id: "alt-provider",
+    label: "Grok (capacity hedge)",
+    description: "xAI Grok 4.3 — different provider when Google is saturated",
+    supervisor: "x-ai/grok-4.3",
+    supervisorHigh: "x-ai/grok-4.3",
+    subagent: "x-ai/grok-4.3",
+    visualIndex: "x-ai/grok-4.3",
+  },
+];
+
+export const DEFAULT_MODEL_PROFILE_ID = "balanced";
+export const EMBEDDING_MODEL = "google/gemini-embedding-001";
+
+/** Embedding vector length (google/gemini-embedding-001 with dimensions). */
 export const EMBEDDING_DIM = 768;
 
 /** Global (cross-project) settings. Folders/episodes live on ProjectState. */
 export interface AppSettings {
-  geminiKeySet: boolean;
-  /** Only "connected" means the stored key passed a Gemini API request. */
-  geminiKeyStatus: GeminiKeyStatus;
+  apiKeySet: boolean;
+  /** Only "connected" means the stored key passed an OpenRouter API request. */
+  apiKeyStatus: ApiKeyStatus;
+  modelProfileId: string;
   qualityMode: QualityMode;
   whisperModel: string;
   whisperAvailable: boolean;

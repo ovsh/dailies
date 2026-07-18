@@ -2,12 +2,10 @@
  * Pure helper functions the subagents call as "tools". Thin wrappers over
  * DailiesDB plus a couple of formatting/parsing utilities shared by agents.
  */
-import { readFile } from "node:fs/promises";
-
-import type { Part } from "@google/genai";
-
 import type { DocumentHit, TextEmbedder, TranscriptHit, VisualHit, VisualSearchFilters } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
+import type { ContentPart } from "./openrouter-client";
+import { buildImageParts } from "./openrouter";
 
 const STOPWORDS = new Set([
   "a",
@@ -214,16 +212,6 @@ export function getFileInfoTool(db: DailiesDB, fileId: number): object {
 
 const MAX_KEYFRAME_BLOCKS = 6;
 
-export async function readKeyframesAsParts(paths: string[]): Promise<Part[]> {
-  const parts: Part[] = [];
-  for (const path of paths) {
-    if (parts.length >= MAX_KEYFRAME_BLOCKS) break;
-    try {
-      const buf = await readFile(path);
-      parts.push({ inlineData: { mimeType: "image/jpeg", data: buf.toString("base64") } });
-    } catch {
-      // skip missing/unreadable keyframe
-    }
-  }
-  return parts;
+export async function readKeyframesAsParts(paths: string[]): Promise<ContentPart[]> {
+  return buildImageParts(paths.slice(0, MAX_KEYFRAME_BLOCKS));
 }

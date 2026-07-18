@@ -98,6 +98,11 @@ export interface DailiesDB {
   listUnembeddedDocChunks(limit?: number): Array<{ refId: number; text: string }>;
   /** Brute-force cosine over stored vectors; relevant hits only, with absolute cosine scores. */
   semanticSearch(kind: EmbeddingKind, query: Float32Array, limit?: number): Array<{ refId: number; score: number }>;
+  deleteAllEmbeddings(): void;
+
+  // project metadata (stored in the existing key-value table)
+  getMeta(key: string): string | null;
+  setMeta(key: string, value: string): void;
 
   // job queue
   enqueueJob(fileId: number, stage: JobStage): void;

@@ -1,24 +1,28 @@
 /**
  * Chat-layer e2e: over an already-transcribed DB, run embeddings then a real
- * "ask your footage" turn through the actual supervisor/scout agents on Gemini.
+ * "ask your footage" turn through the actual supervisor/scout agents on OpenRouter.
  *
- * Usage: GEMINI_API_KEY=... npx tsx scripts/e2e-chat.mts <db-path> "<question>"
+ * Usage: OPENROUTER_API_KEY=... npx tsx scripts/e2e-chat.mts <db-path> "<question>"
  */
 import { openDatabase } from "../src/main/db/database";
-import { createGeminiEmbedder, createGeminiIndexer } from "../src/main/agents/gemini";
+import { createOpenRouterClient } from "../src/main/agents/openrouter-client";
+import { createOpenRouterEmbedder, createOpenRouterIndexer } from "../src/main/agents/openrouter";
 import { runChatTurn } from "../src/main/agents/supervisor";
+import { MODEL_PROFILES } from "../src/shared/types";
 
 const dbPath = process.argv[2] ?? "";
 const question = process.argv[3] ?? "What do people talk about? Give me a few moments with timecodes.";
-const key = process.env["GEMINI_API_KEY"] ?? "";
+const key = process.env["OPENROUTER_API_KEY"] ?? "";
 
 if (!dbPath || !key) {
-  console.error("need <db-path> and GEMINI_API_KEY");
+  console.error("need <db-path> and OPENROUTER_API_KEY");
   process.exit(1);
 }
 
 const db = openDatabase(dbPath);
-const embedder = createGeminiEmbedder(() => key);
+const profile = MODEL_PROFILES[0]!;
+const client = createOpenRouterClient(() => key);
+const embedder = createOpenRouterEmbedder(client);
 
 async function embedAll() {
   const files = db.listFiles();
@@ -52,12 +56,14 @@ async function main() {
     db,
     history: [],
     userText: question,
-    geminiKey: key,
+    apiKey: key,
     qualityMode: "standard",
-    gemini: createGeminiIndexer(() => key),
+    modelProfile: profile,
+    gemini: createOpenRouterIndexer(client, () => profile.visualIndex),
     embedder,
     episodeId: null,
     emit: (ev) => console.log(`   · ${ev.agent}: ${ev.status}`),
+    client,
   });
 
   console.log(`\n===== ANSWER =====\n${answer.prose}\n`);

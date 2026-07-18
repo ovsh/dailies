@@ -35,7 +35,8 @@ const api: DailiesAPI = {
     ipcRenderer.on(IPC.modelProgress, listener);
     return () => ipcRenderer.removeListener(IPC.modelProgress, listener);
   },
-  setApiKey: (provider: "gemini", key: string) => ipcRenderer.invoke(IPC.setApiKey, provider, key),
+  setApiKey: (provider: "openrouter", key: string) => ipcRenderer.invoke(IPC.setApiKey, provider, key),
+  setModelProfile: (id: string) => ipcRenderer.invoke(IPC.setModelProfile, id),
   setQualityMode: (mode: QualityMode) => ipcRenderer.invoke(IPC.setQualityMode, mode),
 
   // chat

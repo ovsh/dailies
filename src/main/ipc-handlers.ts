@@ -1,25 +1,27 @@
 import { app, dialog, ipcMain, shell, type BrowserWindow } from "electron";
-import { GoogleGenAI } from "@google/genai";
 import fs from "node:fs";
 import path from "node:path";
 import { downloadWhisperModel } from "./model-download";
 import { IPC } from "../shared/ipc";
 import type {
   AppSettings,
+  ApiKeyStatus,
   ChatEvent,
   ExportItem,
   ExportKind,
   FileDetail,
-  GeminiKeyStatus,
   MediaRole,
+  ModelProfile,
   QualityMode,
 } from "../shared/types";
+import { MODEL_PROFILES } from "../shared/types";
 import type { ProjectManager } from "./project-manager";
 import type { AppSettingsStore } from "./app-settings";
 import { checkAvailability, findWhisperModel } from "./pipeline/binaries";
 import { DOC_EXTENSIONS } from "./pipeline/docs";
 import { runChatTurn } from "./agents/supervisor";
-import { createGeminiEmbedder, createGeminiIndexer } from "./agents/gemini";
+import { createOpenRouterClient, validateOpenRouterKey } from "./agents/openrouter-client";
+import { createOpenRouterEmbedder, createOpenRouterIndexer } from "./agents/openrouter";
 import { writeExport } from "./export";
 import { resolvePlaybackPath } from "./playback-path";
 
@@ -39,32 +41,18 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   const emitProjectUpdate = () => {
     ctx.getWindow()?.webContents.send(IPC.projectUpdate);
   };
-  let cachedGeminiKeyStatus: GeminiKeyStatus | null = null;
+  let cachedApiKeyStatus: ApiKeyStatus | null = null;
 
-  async function validateGeminiKey(key: string): Promise<Exclude<GeminiKeyStatus, "missing">> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
-    try {
-      const client = new GoogleGenAI({ apiKey: key });
-      await client.models.list({ config: { pageSize: 1, abortSignal: controller.signal } });
-      return "connected";
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (/\b(?:400|401|403)\b|api.?key|permission.?denied|unauthenticated|invalid/i.test(message)) {
-        return "invalid";
-      }
-      return "unavailable";
-    } finally {
-      clearTimeout(timeout);
-    }
+  function activeProfile(): ModelProfile {
+    return MODEL_PROFILES.find((profile) => profile.id === settings.getModelProfileId()) ?? MODEL_PROFILES[0]!;
   }
 
-  async function getGeminiKeyStatus(): Promise<GeminiKeyStatus> {
-    const key = settings.getApiKey();
+  async function getApiKeyStatus(): Promise<ApiKeyStatus> {
+    const key = settings.getOpenRouterKey();
     if (!key) return "missing";
-    if (cachedGeminiKeyStatus) return cachedGeminiKeyStatus;
-    const status = await validateGeminiKey(key);
-    if (status !== "unavailable") cachedGeminiKeyStatus = status;
+    if (cachedApiKeyStatus) return cachedApiKeyStatus;
+    const status = await validateOpenRouterKey(key);
+    if (status !== "unavailable") cachedApiKeyStatus = status;
     return status;
   }
 
@@ -211,10 +199,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC.getSettings, async (): Promise<AppSettings> => {
     const avail = checkAvailability();
     const model = settings.getWhisperModel();
-    const geminiKeyStatus = await getGeminiKeyStatus();
+    const apiKeyStatus = await getApiKeyStatus();
     return {
-      geminiKeySet: geminiKeyStatus !== "missing",
-      geminiKeyStatus,
+      apiKeySet: apiKeyStatus !== "missing",
+      apiKeyStatus,
+      modelProfileId: settings.getModelProfileId(),
       qualityMode: settings.getQualityMode(),
       whisperModel: model,
       whisperAvailable: avail.whisper,
@@ -235,15 +224,19 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     });
   });
 
-  ipcMain.handle(IPC.setApiKey, async (_e, _provider: "gemini", key: string) => {
+  ipcMain.handle(IPC.setApiKey, async (_e, _provider: "openrouter", key: string) => {
     const trimmed = key.trim();
     if (!trimmed) return "invalid";
-    const status = await validateGeminiKey(trimmed);
+    const status = await validateOpenRouterKey(trimmed);
     if (status !== "connected") return status;
-    const saved = settings.setApiKey(trimmed);
-    cachedGeminiKeyStatus = saved ? "connected" : null;
-    if (saved) void manager.current()?.pipeline.refreshPrerequisites("gemini");
+    const saved = settings.setOpenRouterKey(trimmed);
+    cachedApiKeyStatus = saved ? "connected" : null;
+    if (saved) void manager.current()?.pipeline.refreshPrerequisites("gemini"); // openrouter
     return saved ? "connected" : "invalid";
+  });
+  ipcMain.handle(IPC.setModelProfile, (_e, id: string) => {
+    settings.setModelProfileId(id);
+    emitProjectUpdate();
   });
   ipcMain.handle(IPC.setQualityMode, (_e, mode: QualityMode) => settings.setQualityMode(mode));
 
@@ -264,28 +257,32 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       c.db.addChatMessage(id, "user", text);
 
       void (async () => {
-        const geminiKey = settings.getApiKey();
-        if (!geminiKey) {
+        const apiKey = settings.getOpenRouterKey();
+        if (!apiKey) {
           emitChatEvent({
             type: "error",
             chatId: id,
             turnId,
-            message: "Add your Gemini API key in Settings to start chatting.",
+            message: "Add your OpenRouter API key in Settings to start chatting.",
           });
           emitChatEvent({ type: "done", chatId: id, turnId });
           return;
         }
         try {
+          const modelProfile = activeProfile();
+          const client = createOpenRouterClient(() => apiKey);
           const answer = await runChatTurn({
             db: c.db,
             history: c.db.getChatMessages(id).slice(0, -1),
             userText: text,
-            geminiKey,
+            apiKey,
             qualityMode: settings.getQualityMode(),
-            gemini: createGeminiIndexer(() => geminiKey),
-            embedder: createGeminiEmbedder(() => geminiKey),
+            modelProfile,
+            gemini: createOpenRouterIndexer(client, () => activeProfile().visualIndex),
+            embedder: createOpenRouterEmbedder(client),
             episodeId,
             emit: (ev) => emitChatEvent({ ...ev, chatId: id, turnId }),
+            client,
           });
           c.db.addChatMessage(id, "assistant", answer.prose, answer.hits);
           emitChatEvent({ type: "answer", chatId: id, turnId, answer });

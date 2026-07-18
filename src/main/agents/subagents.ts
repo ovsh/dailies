@@ -1,11 +1,8 @@
 /**
  * Subagents invoked by the supervisor: transcript scout, visual scout,
- * frame verifier, and clip reader. Each wraps a focused Gemini call (or a
+ * frame verifier, and clip reader. Each wraps a focused provider call (or a
  * manual function-calling loop) over the DailiesDB search surface.
  */
-import type { Content, FunctionDeclaration, GoogleGenAI, Part } from "@google/genai";
-import { Type } from "@google/genai";
-
 import type {
   GeminiIndexer,
   SceneAnnotationRequest,
@@ -14,6 +11,7 @@ import type {
   VisualHit,
 } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
+import type { ChatMessage, ContentPart, OpenRouterClient, ToolCall, ToolDef } from "./openrouter-client";
 import {
   expandTerms,
   getFullTranscriptTool,
@@ -26,55 +24,73 @@ import {
 // ---------- shared function-calling loop ----------
 
 interface RunToolLoopOptions {
-  ai: GoogleGenAI;
+  client: OpenRouterClient;
   model: string;
   systemInstruction: string;
-  functionDeclarations: FunctionDeclaration[];
+  tools: ToolDef[];
   userText: string;
   executeTool: (name: string, args: unknown) => Promise<string>;
   maxIters: number;
 }
 
 async function runToolLoop(opts: RunToolLoopOptions): Promise<string> {
-  const { ai, model, systemInstruction, functionDeclarations, userText, executeTool, maxIters } = opts;
-  const contents: Content[] = [{ role: "user", parts: [{ text: userText }] }];
+  const { client, model, systemInstruction, tools, userText, executeTool, maxIters } = opts;
+  const messages: ChatMessage[] = [
+    { role: "system", content: systemInstruction },
+    { role: "user", content: userText },
+  ];
 
-  let res = await ai.models.generateContent({
+  let response = await client.chat({
     model,
-    contents,
-    config: { systemInstruction, tools: [{ functionDeclarations }] },
+    messages,
+    tools,
   });
 
   let iters = 0;
-  let calls = res.functionCalls ?? [];
+  let calls = response.message.tool_calls ?? [];
   while (calls.length > 0 && iters < maxIters) {
     iters += 1;
+    messages.push({
+      role: "assistant",
+      content: response.message.content,
+      tool_calls: calls,
+    });
 
-    const modelContent = res.candidates?.[0]?.content;
-    contents.push(modelContent ?? { role: "model", parts: [] });
-
-    const responseParts: Part[] = [];
     for (const call of calls) {
-      const name = call.name ?? "";
+      const name = call.function.name;
+      const args = parseToolArguments(call);
       let resultText: string;
       try {
-        resultText = await executeTool(name, call.args);
+        resultText = await executeTool(name, args);
       } catch (err) {
         resultText = `error: ${err instanceof Error ? err.message : String(err)}`;
       }
-      responseParts.push({ functionResponse: { name, response: { result: resultText } } });
+      messages.push({ role: "tool", tool_call_id: call.id, content: resultText });
     }
-    contents.push({ role: "user", parts: responseParts });
 
-    res = await ai.models.generateContent({
+    response = await client.chat({
       model,
-      contents,
-      config: { systemInstruction, tools: [{ functionDeclarations }] },
+      messages,
+      tools,
     });
-    calls = res.functionCalls ?? [];
+    calls = response.message.tool_calls ?? [];
   }
 
-  return res.text ?? "";
+  return response.message.content ?? "";
+}
+
+function parseToolArguments(call: ToolCall): unknown {
+  try {
+    const parsed: unknown = JSON.parse(call.function.arguments);
+    return parsed !== null && typeof parsed === "object" ? parsed : {};
+  } catch {
+    console.warn(`[agents] could not parse arguments for tool ${call.function.name}; using {}`);
+    return {};
+  }
+}
+
+function toolDef(name: string, description: string, parameters: object): ToolDef {
+  return { type: "function", function: { name, description, parameters } };
 }
 
 function stripFences(raw: string): string {
@@ -166,7 +182,7 @@ function rawTextExcerpt(raw: string): string {
 // ---------- transcript scout ----------
 
 export interface TranscriptScoutOptions {
-  ai: GoogleGenAI;
+  client: OpenRouterClient;
   model: string;
   db: DailiesDB;
   query: string;
@@ -180,41 +196,41 @@ Use the tools to search transcripts and pull surrounding context windows before 
 When you are done, reply with ONLY a JSON object (no prose, no markdown fences) of the exact shape:
 {"keep": [segmentId, segmentId, ...], "notes": "short summary of what you found and why"}`;
 
-const TRANSCRIPT_SCOUT_DECLARATIONS: FunctionDeclaration[] = [
-  {
-    name: "search_transcripts",
-    description: "Full-text search over spoken transcripts. Provide the main query plus extra synonym/related terms.",
-    parameters: {
-      type: Type.OBJECT,
+const TRANSCRIPT_SCOUT_TOOLS: ToolDef[] = [
+  toolDef(
+    "search_transcripts",
+    "Full-text search over spoken transcripts. Provide the main query plus extra synonym/related terms.",
+    {
+      type: "object",
       properties: {
-        query: { type: Type.STRING, description: "Primary search query" },
+        query: { type: "string", description: "Primary search query" },
         extra_terms: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
+          type: "array",
+          items: { type: "string" },
           description: "Additional synonym/related terms",
         },
       },
       required: ["query", "extra_terms"],
     },
-  },
-  {
-    name: "get_transcript_window",
-    description: "Get transcript text around a given timestamp in a file, for extra context.",
-    parameters: {
-      type: Type.OBJECT,
+  ),
+  toolDef(
+    "get_transcript_window",
+    "Get transcript text around a given timestamp in a file, for extra context.",
+    {
+      type: "object",
       properties: {
-        file_id: { type: Type.NUMBER },
-        center_s: { type: Type.NUMBER },
+        file_id: { type: "number" },
+        center_s: { type: "number" },
       },
       required: ["file_id", "center_s"],
     },
-  },
+  ),
 ];
 
 export async function runTranscriptScout(
   opts: TranscriptScoutOptions,
 ): Promise<{ hits: TranscriptHit[]; notes: string }> {
-  const { ai, model, db, query, embedder, episodeId } = opts;
+  const { client, model, db, query, embedder, episodeId } = opts;
   const cache = new Map<number, TranscriptHit>();
 
   const executeTool = async (name: string, args: unknown): Promise<string> => {
@@ -238,10 +254,10 @@ export async function runTranscriptScout(
   };
 
   const finalText = await runToolLoop({
-    ai,
+    client,
     model,
     systemInstruction: TRANSCRIPT_SCOUT_SYSTEM,
-    functionDeclarations: TRANSCRIPT_SCOUT_DECLARATIONS,
+    tools: TRANSCRIPT_SCOUT_TOOLS,
     userText: `Find footage where people talk about: ${query}`,
     executeTool,
     maxIters: 8,
@@ -265,7 +281,7 @@ export async function runTranscriptScout(
 // ---------- visual scout ----------
 
 export interface VisualScoutOptions {
-  ai: GoogleGenAI;
+  client: OpenRouterClient;
   model: string;
   db: DailiesDB;
   query: string;
@@ -280,46 +296,46 @@ If a candidate scene's description is ambiguous, use gemini_look to ask a clarif
 When you are done, reply with ONLY a JSON object (no prose, no markdown fences) of the exact shape:
 {"keep": [sceneId, sceneId, ...], "notes": "short summary of what you found and why"}`;
 
-function buildVisualScoutDeclarations(geminiEnabled: boolean): FunctionDeclaration[] {
-  const declarations: FunctionDeclaration[] = [
-    {
-      name: "search_visuals",
-      description: "Search visual scene annotations. Optionally filter by shot_type or time_of_day.",
-      parameters: {
-        type: Type.OBJECT,
+function buildVisualScoutTools(geminiEnabled: boolean): ToolDef[] {
+  const tools: ToolDef[] = [
+    toolDef(
+      "search_visuals",
+      "Search visual scene annotations. Optionally filter by shot_type or time_of_day.",
+      {
+        type: "object",
         properties: {
-          query: { type: Type.STRING, description: "Primary search query" },
+          query: { type: "string", description: "Primary search query" },
           extra_terms: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
+            type: "array",
+            items: { type: "string" },
             description: "Additional synonym/related terms",
           },
-          shot_type: { type: Type.STRING, description: "Optional shot type filter: WS|MS|CU|ECU|aerial|insert" },
-          time_of_day: { type: Type.STRING, description: "Optional time of day filter: dawn|day|dusk|night" },
+          shot_type: { type: "string", description: "Optional shot type filter: WS|MS|CU|ECU|aerial|insert" },
+          time_of_day: { type: "string", description: "Optional time of day filter: dawn|day|dusk|night" },
         },
         required: ["query", "extra_terms"],
       },
-    },
+    ),
   ];
   if (geminiEnabled) {
-    declarations.push({
-      name: "gemini_look",
-      description: "Ask Gemini a free-form visual question about a specific scene's keyframe(s).",
-      parameters: {
-        type: Type.OBJECT,
+    tools.push(toolDef(
+      "gemini_look",
+      "Ask the visual provider a free-form question about a specific scene's keyframe(s).",
+      {
+        type: "object",
         properties: {
-          scene_id: { type: Type.NUMBER },
-          question: { type: Type.STRING },
+          scene_id: { type: "number" },
+          question: { type: "string" },
         },
         required: ["scene_id", "question"],
       },
-    });
+    ));
   }
-  return declarations;
+  return tools;
 }
 
 export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: VisualHit[]; notes: string }> {
-  const { ai, model, db, query, gemini, embedder, episodeId } = opts;
+  const { client, model, db, query, gemini, embedder, episodeId } = opts;
   const cache = new Map<number, VisualHit>();
 
   const executeTool = async (name: string, args: unknown): Promise<string> => {
@@ -361,10 +377,10 @@ export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: 
   };
 
   const finalText = await runToolLoop({
-    ai,
+    client,
     model,
     systemInstruction: VISUAL_SCOUT_SYSTEM,
-    functionDeclarations: buildVisualScoutDeclarations(gemini !== null),
+    tools: buildVisualScoutTools(gemini !== null),
     userText: `Find footage that visually shows: ${query}`,
     executeTool,
     maxIters: 8,
@@ -388,7 +404,7 @@ export async function runVisualScout(opts: VisualScoutOptions): Promise<{ hits: 
 // ---------- frame verifier ----------
 
 export interface FrameVerifierOptions {
-  ai: GoogleGenAI;
+  client: OpenRouterClient;
   model: string;
   db: DailiesDB;
   candidates: VisualHit[];
@@ -411,7 +427,7 @@ function isVerdict(v: string): v is FrameVerdict["verdict"] {
   return v === "confirm" || v === "reject" || v === "unsure";
 }
 
-async function verifyBatch(ai: GoogleGenAI, model: string, batch: VisualHit[]): Promise<FrameVerdict[]> {
+async function verifyBatch(client: OpenRouterClient, model: string, batch: VisualHit[]): Promise<FrameVerdict[]> {
   const withKeyframe = batch.filter((c) => c.keyframePath !== null);
   const withoutKeyframe = batch.filter((c) => c.keyframePath === null);
 
@@ -423,18 +439,20 @@ async function verifyBatch(ai: GoogleGenAI, model: string, batch: VisualHit[]): 
 
   if (withKeyframe.length === 0) return withoutResults;
 
-  const imageParts: Part[] = await readKeyframesAsParts(withKeyframe.map((c) => c.keyframePath as string));
+  const imageParts: ContentPart[] = await readKeyframesAsParts(withKeyframe.map((c) => c.keyframePath as string));
   const listText = withKeyframe
     .map((c, i) => `Image ${i + 1}: sceneId=${c.sceneId}, claimed: ${c.description}`)
     .join("\n");
 
-  const res = await ai.models.generateContent({
+  const response = await client.chat({
     model,
-    contents: [{ role: "user", parts: [...imageParts, { text: listText }] }],
-    config: { systemInstruction: FRAME_VERIFIER_SYSTEM, responseMimeType: "application/json" },
+    messages: [
+      { role: "system", content: FRAME_VERIFIER_SYSTEM },
+      { role: "user", content: [...imageParts, { type: "text", text: listText }] },
+    ],
   });
 
-  const text = res.text ?? "";
+  const text = response.message.content ?? "";
 
   try {
     const parsed: unknown = JSON.parse(stripFences(text));
@@ -463,11 +481,11 @@ async function verifyBatch(ai: GoogleGenAI, model: string, batch: VisualHit[]): 
 }
 
 export async function runFrameVerifier(opts: FrameVerifierOptions): Promise<FrameVerdict[]> {
-  const { ai, model, candidates } = opts;
+  const { client, model, candidates } = opts;
   const results: FrameVerdict[] = [];
   for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
     const batch = candidates.slice(i, i + BATCH_SIZE);
-    const batchResults = await verifyBatch(ai, model, batch);
+    const batchResults = await verifyBatch(client, model, batch);
     results.push(...batchResults);
   }
   return results;
@@ -476,7 +494,7 @@ export async function runFrameVerifier(opts: FrameVerifierOptions): Promise<Fram
 // ---------- clip reader ----------
 
 export interface ClipReaderOptions {
-  ai: GoogleGenAI;
+  client: OpenRouterClient;
   model: string;
   db: DailiesDB;
   fileId: number;
@@ -484,18 +502,18 @@ export interface ClipReaderOptions {
 }
 
 export async function runClipReader(opts: ClipReaderOptions): Promise<string> {
-  const { ai, model, db, fileId, question } = opts;
+  const { client, model, db, fileId, question } = opts;
   const transcript = getFullTranscriptTool(db, fileId);
-  const res = await ai.models.generateContent({
+  const response = await client.chat({
     model,
-    contents: [
+    messages: [
       {
         role: "user",
-        parts: [{ text: `Here is the full transcript for file ${fileId}:\n\n${transcript}\n\nQuestion: ${question}` }],
+        content: `Here is the full transcript for file ${fileId}:\n\n${transcript}\n\nQuestion: ${question}`,
       },
     ],
   });
-  return res.text ?? "";
+  return response.message.content ?? "";
 }
 
 // re-export for supervisor.ts convenience

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
   ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder, QualityMode } from "../../shared/types";
+import { MODEL_PROFILES } from "../../shared/types";
 import { InlineError } from "../components/InlineError";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { runIpc } from "../lib/async";
@@ -34,7 +35,7 @@ function formatScanTime(iso: string): string {
 function waitingMessage(job: Job): string {
   if (job.stage === "transcribe") return "Waiting for speech model — download it below.";
   if (job.stage === "visual_index" || job.stage === "embed") {
-    return "Waiting for a connected Gemini API key — check it below.";
+    return "Waiting for a connected OpenRouter API key — check it below.";
   }
   return job.error ?? "Waiting for a required setup step.";
 }
@@ -49,8 +50,8 @@ interface JobsSettingsScreenProps {
 export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRefresh }: JobsSettingsScreenProps) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [geminiKey, setGeminiKey] = useState("");
-  const [savingProvider, setSavingProvider] = useState<"gemini" | null>(null);
+  const [openRouterKey, setOpenRouterKey] = useState("");
+  const [savingProvider, setSavingProvider] = useState<"openrouter" | null>(null);
   const [modelProgress, setModelProgress] = useState<ModelDownloadProgress | null>(null);
   const [newEpisodeCode, setNewEpisodeCode] = useState("");
   const [addingEpisode, setAddingEpisode] = useState(false);
@@ -130,8 +131,8 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
     }
   }
 
-  async function handleSaveKey(provider: "gemini") {
-    const key = geminiKey;
+  async function handleSaveKey(provider: "openrouter") {
+    const key = openRouterKey;
     if (!key.trim()) return;
     setRetryAction(() => () => void handleSaveKey(provider));
     const result = await runIpc(
@@ -146,15 +147,15 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
     );
     if (!result.ok) return;
     if (result.value === "invalid") {
-      setActionError("Gemini rejected that API key. Check it and try again.");
+      setActionError("OpenRouter rejected that API key. Check it and try again.");
       return;
     }
     if (result.value === "unavailable") {
-      setActionError("Gemini could not be reached to validate the key. Check your connection and retry.");
+      setActionError("OpenRouter could not be reached to validate the key. Check your connection and retry.");
       return;
     }
     onSettingsChanged?.();
-    setGeminiKey("");
+    setOpenRouterKey("");
     setRetryAction(null);
   }
 
@@ -168,6 +169,21 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
       { setPending: setActionPending, setError: setActionError, fallback: "Could not change quality mode." },
     );
     if (result.ok) setRetryAction(null);
+  }
+
+  async function handleModelProfileChange(id: string) {
+    setRetryAction(() => () => void handleModelProfileChange(id));
+    const result = await runIpc(
+      async () => {
+        await api.setModelProfile(id);
+        setSettings(await api.getSettings());
+      },
+      { setPending: setActionPending, setError: setActionError, fallback: "Could not change model profile." },
+    );
+    if (result.ok) {
+      setRetryAction(null);
+      onSettingsChanged?.();
+    }
   }
 
   async function handleDownloadModel() {
@@ -345,13 +361,35 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
             </div>
 
             <ApiKeyField
-              label="Gemini API key"
-              connected={settings?.geminiKeyStatus === "connected"}
-              value={geminiKey}
-              onChange={setGeminiKey}
-              onSave={() => handleSaveKey("gemini")}
-              saving={savingProvider === "gemini"}
+              label="OpenRouter API key"
+              connected={settings?.apiKeyStatus === "connected"}
+              value={openRouterKey}
+              onChange={setOpenRouterKey}
+              onSave={() => handleSaveKey("openrouter")}
+              saving={savingProvider === "openrouter"}
             />
+          </section>
+
+          <section className="jobs-section">
+            <div className="section-head">
+              <span className="label">Models</span>
+            </div>
+            <select
+              className="model-select"
+              value={settings?.modelProfileId ?? MODEL_PROFILES[0]!.id}
+              onChange={(event) => void handleModelProfileChange(event.target.value)}
+              disabled={actionPending}
+            >
+              {MODEL_PROFILES.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.label} — {profile.description}
+                </option>
+              ))}
+            </select>
+            <p className="model-description mono">
+              {MODEL_PROFILES.find((profile) => profile.id === settings?.modelProfileId)?.description ??
+                MODEL_PROFILES[0]!.description}
+            </p>
           </section>
 
           <section className="jobs-section">
@@ -604,6 +642,24 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
           border-radius: 7px;
           overflow: hidden;
         }
+        .model-select {
+          width: 100%;
+          background: var(--ground-raised);
+          border: 1px solid var(--hairline);
+          border-radius: 6px;
+          padding: 10px 12px;
+          color: var(--ink);
+          font-family: var(--font-body);
+          font-size: 12.5px;
+        }
+        .model-select:focus-visible {
+          border-color: var(--accent-dim);
+        }
+        .model-description {
+          margin: 10px 0 0;
+          color: var(--ink-faint);
+          font-size: 10.5px;
+        }
         .quality-btn {
           background: transparent;
           border: none;
@@ -688,7 +744,7 @@ function ApiKeyField({ label, connected, value, onChange, onSave, saving }: ApiK
         <input
           type="password"
           className="api-key-input mono"
-          placeholder={connected ? "•••••••••••••••••••• (replace)" : "AIza…"}
+          placeholder={connected ? "•••••••••••••••••••• (replace)" : "sk-or-v1-…"}
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />

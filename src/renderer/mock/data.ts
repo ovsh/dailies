@@ -416,7 +416,7 @@ function anno(id: number, sceneId: number, fileId: number, description: string, 
     timeOfDay,
     peopleCount,
     actions,
-    model: "gemini-3.5-flash",
+    model: "google/gemini-3.5-flash",
     indexedAt: new Date(Date.UTC(2026, 6, 20, 14, 0)).toISOString(),
   };
 }
@@ -469,7 +469,7 @@ export const MOCK_JOBS: Job[] = [
   { id: 1, fileId: 8, filename: "A003_C027_0718_camp_broll_evening.mov", stage: "proxy", status: "running", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 20, 15, 2)).toISOString() },
   { id: 2, fileId: 8, filename: "A003_C027_0718_camp_broll_evening.mov", stage: "transcribe", status: "queued", attempts: 0, error: null, updatedAt: new Date(Date.UTC(2026, 6, 20, 15, 2)).toISOString() },
   { id: 3, fileId: 8, filename: "A003_C027_0718_camp_broll_evening.mov", stage: "visual_index", status: "queued", attempts: 0, error: null, updatedAt: new Date(Date.UTC(2026, 6, 20, 15, 2)).toISOString() },
-  { id: 4, fileId: 9, filename: "A004_C002_0719_guide_interview_night.mov", stage: "visual_index", status: "error", attempts: 3, error: "Gemini API request timed out after 3 attempts.", updatedAt: new Date(Date.UTC(2026, 6, 20, 11, 41)).toISOString() },
+  { id: 4, fileId: 9, filename: "A004_C002_0719_guide_interview_night.mov", stage: "visual_index", status: "error", attempts: 3, error: "OpenRouter API request timed out after 3 attempts.", updatedAt: new Date(Date.UTC(2026, 6, 20, 11, 41)).toISOString() },
   { id: 5, fileId: 10, filename: "A004_C018_0719_bear_river_salmon_run.mov", stage: "transcribe", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 19, 18, 12)).toISOString() },
   { id: 6, fileId: 6, filename: "EP102_v08_FINAL.mov", stage: "scenes", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 19, 9, 30)).toISOString() },
   { id: 7, fileId: 1, filename: "A001_C012_0715_bear_river.mov", stage: "visual_index", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 18, 20, 5)).toISOString() },
@@ -478,8 +478,9 @@ export const MOCK_JOBS: Job[] = [
 // ---------- settings ----------
 
 export const MOCK_SETTINGS: AppSettings = {
-  geminiKeySet: true,
-  geminiKeyStatus: "connected",
+  apiKeySet: true,
+  apiKeyStatus: "connected",
+  modelProfileId: "balanced",
   qualityMode: "high",
   whisperModel: "large-v3",
   whisperAvailable: true,

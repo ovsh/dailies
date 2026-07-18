@@ -1,15 +1,11 @@
 /**
- * Gemini-backed visual indexer. Annotates scenes from keyframe images and
- * answers free-form "look again" questions about a scene.
+ * OpenRouter-backed visual indexer and text embedder.
  */
 import { readFile } from "node:fs/promises";
 
-import { GoogleGenAI } from "@google/genai";
-
 import type { GeminiIndexer, SceneAnnotationRequest, TextEmbedder, VisualAnnotationInput } from "../../shared/types";
-import { EMBEDDING_DIM, GEMINI_MODELS } from "../../shared/types";
-
-const MODEL = "gemini-2.5-flash";
+import { EMBEDDING_DIM, EMBEDDING_MODEL } from "../../shared/types";
+import type { ContentPart, OpenRouterClient } from "./openrouter-client";
 
 const ANNOTATE_PROMPT = `You are annotating a scene from raw documentary/production footage.
 Look at the provided keyframe image(s) and respond with STRICT JSON only (no markdown fences, no commentary), matching exactly this shape:
@@ -41,8 +37,8 @@ interface RawAnnotation {
 const SHOT_TYPES = new Set(["WS", "MS", "CU", "ECU", "aerial", "insert"]);
 const TIMES_OF_DAY = new Set(["dawn", "day", "dusk", "night"]);
 
-function toStringArray(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function parseAnnotation(rawText: string, model: string): VisualAnnotationInput {
@@ -74,12 +70,15 @@ function parseAnnotation(rawText: string, model: string): VisualAnnotationInput 
   }
 }
 
-async function buildImageParts(keyframePaths: string[]): Promise<Array<{ inlineData: { mimeType: string; data: string } }>> {
-  const parts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
-  for (const path of keyframePaths) {
+export async function buildImageParts(keyframePaths: string[]): Promise<ContentPart[]> {
+  const parts: ContentPart[] = [];
+  for (const keyframePath of keyframePaths) {
     try {
-      const buf = await readFile(path);
-      parts.push({ inlineData: { mimeType: "image/jpeg", data: buf.toString("base64") } });
+      const buf = await readFile(keyframePath);
+      parts.push({
+        type: "image_url",
+        image_url: { url: `data:image/jpeg;base64,${buf.toString("base64")}` },
+      });
     } catch {
       // skip unreadable/missing keyframe
     }
@@ -87,78 +86,71 @@ async function buildImageParts(keyframePaths: string[]): Promise<Array<{ inlineD
   return parts;
 }
 
-export function createGeminiIndexer(getKey: () => string | null): GeminiIndexer {
-  function getClient(): GoogleGenAI {
-    const key = getKey();
-    if (!key) throw new Error("Gemini API key not set");
-    return new GoogleGenAI({ apiKey: key });
-  }
-
+export function createOpenRouterIndexer(
+  client: OpenRouterClient,
+  getModel: () => string,
+): GeminiIndexer {
   return {
     async annotateScene(req: SceneAnnotationRequest): Promise<VisualAnnotationInput> {
-      const client = getClient();
+      const model = getModel();
       const imageParts = await buildImageParts(req.keyframePaths);
-      const response = await client.models.generateContent({
-        model: MODEL,
-        contents: [{ role: "user", parts: [...imageParts, { text: ANNOTATE_PROMPT }] }],
-        config: { responseMimeType: "application/json" },
+      const response = await client.chat({
+        model,
+        messages: [{
+          role: "user",
+          content: [...imageParts, { type: "text", text: ANNOTATE_PROMPT }],
+        }],
+        response_format: { type: "json_object" },
       });
-      const rawText = response.text ?? "";
-      return parseAnnotation(rawText, MODEL);
+      return parseAnnotation(response.message.content ?? "", model);
     },
 
     async lookAtScene(req: SceneAnnotationRequest, question: string): Promise<string> {
-      const client = getClient();
+      const model = getModel();
       const imageParts = await buildImageParts(req.keyframePaths);
-      const response = await client.models.generateContent({
-        model: MODEL,
-        contents: [{ role: "user", parts: [...imageParts, { text: question }] }],
+      const response = await client.chat({
+        model,
+        messages: [{
+          role: "user",
+          content: [...imageParts, { type: "text", text: question }],
+        }],
       });
-      return response.text ?? "";
+      return response.message.content ?? "";
     },
   };
 }
 
-// ---------- text embedder ----------
-
-/** embedContent accepts at most this many strings per call. */
 const EMBED_BATCH_SIZE = 100;
 
 function l2Normalize(values: number[]): Float32Array {
   let sumSq = 0;
-  for (const v of values) sumSq += v * v;
+  for (const value of values) sumSq += value * value;
   const norm = Math.sqrt(sumSq);
   const out = new Float32Array(values.length);
   if (norm === 0) return out;
-  for (let i = 0; i < values.length; i++) out[i] = values[i] / norm;
+  for (let i = 0; i < values.length; i += 1) out[i] = values[i] / norm;
   return out;
 }
 
-export function createGeminiEmbedder(getKey: () => string | null): TextEmbedder {
-  function getClient(): GoogleGenAI {
-    const key = getKey();
-    if (!key) throw new Error("Gemini API key not set");
-    return new GoogleGenAI({ apiKey: key });
-  }
-
+export function createOpenRouterEmbedder(client: OpenRouterClient): TextEmbedder {
   return {
     async embed(texts: string[]): Promise<Float32Array[]> {
-      const client = getClient();
       const vectors: Float32Array[] = [];
-
       for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
         const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
-        const response = await client.models.embedContent({
-          model: GEMINI_MODELS.embedding,
-          contents: batch,
-          config: { outputDimensionality: EMBEDDING_DIM },
-        });
-        const embeddings = response.embeddings ?? [];
+        const embeddings = await client.embed(EMBEDDING_MODEL, batch, EMBEDDING_DIM);
+        if (embeddings.length !== batch.length) {
+          throw new Error(`OpenRouter returned ${embeddings.length} embeddings for ${batch.length} inputs`);
+        }
         for (const embedding of embeddings) {
-          vectors.push(l2Normalize(embedding.values ?? []));
+          if (embedding.length !== EMBEDDING_DIM) {
+            throw new Error(
+              `OpenRouter returned embedding dimension ${embedding.length}; expected ${EMBEDDING_DIM}`,
+            );
+          }
+          vectors.push(l2Normalize(embedding));
         }
       }
-
       return vectors;
     },
   };

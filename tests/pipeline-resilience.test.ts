@@ -263,6 +263,15 @@ describe("pipeline prerequisite and applicability handling", () => {
     await vi.waitFor(() => expect(db.getFile(file.id)?.status).toBe("error"));
     expect(db.listJobsForFile(file.id).find((job) => job.stage === "probe")?.status).toBe("error");
     await pipeline.stop();
+
+    // A restart must not re-attempt the deterministically failing probe —
+    // reopening a terminal error is Retry's job, not the startup sweep's.
+    const jobCountBefore = db.listJobsForFile(file.id).length;
+    pipeline.start();
+    await pipeline.refreshPrerequisites("all");
+    expect(db.listJobsForFile(file.id).length).toBe(jobCountBefore);
+    expect(db.getFile(file.id)?.status).toBe("error");
+    await pipeline.stop();
   });
 
   it("backfills and preserves an unreadable legacy stub on startup", async () => {

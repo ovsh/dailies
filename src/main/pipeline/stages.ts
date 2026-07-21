@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { setFileStatusInternal } from "../db/database";
 import type { DailiesDB } from "../db/types";
-import type { Job, MediaFile, TextEmbedder } from "../../shared/types";
+import type { Job, JobStage, MediaFile, TextEmbedder } from "../../shared/types";
 import { formatElapsedOffset, tcAddSeconds } from "../../shared/timecode";
 import { findFfprobeBinary, findWhisperBinary, findWhisperModel } from "./binaries";
 import { analyzeMxf } from "./opatom";
@@ -307,19 +307,31 @@ export function createStages(opts: StageOptions): Stages {
     const file = db.getFile(fileId);
     if (!file || file.discoveryFailed) return;
 
+    const latestJobs = latestJobsByStage(db.listJobsForFile(file.id));
+    // Local stages fail deterministically — a terminal error stays terminal
+    // until an explicit Retry (or key-save for embed) reopens it. Without this
+    // guard every app open would re-run known-failing ffmpeg/whisper work.
+    const schedulable = (stage: JobStage): boolean =>
+      latestJobs.get(stage)?.status !== "error";
+
     if (db.listUnembeddedSegments(file.id).length > 0) {
       db.enqueueJob(file.id, "embed");
     }
 
     if (file.hasVideo === null) {
-      db.enqueueJob(file.id, "probe");
+      if (schedulable("probe")) db.enqueueJob(file.id, "probe");
       reconcile(file.id);
       return;
     }
 
     if (!file.hasTranscript) {
       if (file.audioChannels > 0) {
-        if (!db.hasActiveJob(file.id, "transcribe")) db.enqueueJob(file.id, "audio");
+        if (
+          !db.hasActiveJob(file.id, "transcribe") &&
+          schedulable("audio") && schedulable("transcribe")
+        ) {
+          db.enqueueJob(file.id, "audio");
+        }
       } else {
         db.replaceTranscript(file.id, []);
         db.markTranscribed(file.id);
@@ -327,11 +339,12 @@ export function createStages(opts: StageOptions): Stages {
     }
 
     if (file.hasVideo && !file.videoUnplayable) {
-      if (!file.proxyPath) db.enqueueJob(file.id, "proxy");
+      if (!file.proxyPath && schedulable("proxy")) db.enqueueJob(file.id, "proxy");
       const scenes = db.listScenes(file.id);
-      const scenesJob = latestJobsByStage(db.listJobsForFile(file.id)).get("scenes");
+      const scenesJob = latestJobs.get("scenes");
       if (
         scenesJob?.status !== "done" &&
+        schedulable("scenes") &&
         !scenes.some((scene) => scene.keyframePath !== null)
       ) {
         db.enqueueJob(file.id, "scenes");

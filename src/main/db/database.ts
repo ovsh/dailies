@@ -879,6 +879,29 @@ export function openDatabase(dbPath: string): DailiesDB {
     return withFilename ? mapJob(withFilename) : null;
   });
 
+  const reopenErroredJobsTx = db.transaction((
+    fileId: number | undefined,
+    stages: JobStage[] | undefined,
+  ): number => {
+    if (stages?.length === 0) return 0;
+    const filters = ["status = 'error'"];
+    const params: Array<string | number> = [new Date().toISOString()];
+    if (fileId !== undefined) {
+      filters.push("file_id = ?");
+      params.push(fileId);
+    }
+    if (stages !== undefined) {
+      filters.push(`stage IN (${stages.map(() => "?").join(", ")})`);
+      params.push(...stages);
+    }
+    const statement = db.prepare(
+      `UPDATE jobs
+       SET status = 'queued', attempts = 0, error = NULL, updated_at = ?
+       WHERE ${filters.join(" AND ")}`,
+    );
+    return statement.run(...params).changes;
+  });
+
   const clearDerivedStateTx = db.transaction((fileId: number): void => {
     stmtDeleteSegmentEmbeddingsForFile.run(fileId);
     stmtDeleteTranscriptFts.run(fileId);
@@ -1327,6 +1350,10 @@ export function openDatabase(dbPath: string): DailiesDB {
         changed += stmtRequeueWaitingStage.run(now, stage).changes;
       }
       return changed;
+    },
+
+    reopenErroredJobs(fileId?: number, stages?: JobStage[]): number {
+      return reopenErroredJobsTx(fileId, stages);
     },
 
     retryJob(jobId: number, error: string): void {

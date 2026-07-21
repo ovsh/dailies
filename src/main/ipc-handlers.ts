@@ -193,6 +193,8 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
   ipcMain.handle(IPC.getWords, (_e, segmentId: number) => requireProject().db.getWords(segmentId));
   ipcMain.handle(IPC.listJobs, () => requireProject().db.listJobs());
+  ipcMain.handle(IPC.retryFile, (_e, fileId: number): Promise<void> =>
+    requireProject().pipeline.retryFile(fileId));
 
   // ---- settings (global) ----
   ipcMain.handle(IPC.getSettings, async (): Promise<AppSettings> => {

@@ -196,6 +196,55 @@ describe("optional embed job failures", () => {
     await pipeline.stop();
   });
 
+  it("reopens existing embed failures when Gemini becomes available", async () => {
+    const { db, pipeline } = setup();
+    const firstFileId = seedTranscribedFile(db, {
+      filename: "first-embed-retry.wav",
+      status: "ready",
+    });
+    const secondFileId = seedTranscribedFile(db, {
+      filename: "second-embed-retry.wav",
+      status: "ready",
+    });
+
+    db.enqueueJob(firstFileId, "embed");
+    const firstEmbedJob = db.claimNextJob()!;
+    db.retryJob(firstEmbedJob.id, "transient embed failure");
+    expect(db.claimNextJob()?.id).toBe(firstEmbedJob.id);
+    db.failJob(firstEmbedJob.id, "terminal first embed failure");
+
+    db.enqueueJob(secondFileId, "embed");
+    const secondEmbedJob = db.claimNextJob()!;
+    db.failJob(secondEmbedJob.id, "terminal second embed failure");
+
+    db.enqueueJob(firstFileId, "transcribe");
+    const transcribeJob = db.claimNextJob()!;
+    db.failJob(transcribeJob.id, "non-embed failure");
+    const jobIdsBeforeRefresh = db.listJobs().map((job) => job.id).sort((a, b) => a - b);
+
+    await pipeline.refreshPrerequisites("gemini");
+
+    const jobs = db.listJobs();
+    expect(jobs.map((job) => job.id).sort((a, b) => a - b)).toEqual(jobIdsBeforeRefresh);
+    expect(jobs.find((job) => job.id === firstEmbedJob.id)).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      error: null,
+    });
+    expect(jobs.find((job) => job.id === secondEmbedJob.id)).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      error: null,
+    });
+    expect(jobs.find((job) => job.id === transcribeJob.id)).toMatchObject({
+      status: "error",
+      attempts: 1,
+      error: "non-embed failure",
+    });
+    expect(jobs.filter((job) => job.stage === "embed")).toHaveLength(2);
+    await pipeline.stop();
+  });
+
   it("leaves video processing while its proxy is still pending", async () => {
     let finishProxy: ((path: string) => void) | null = null;
     mocks.makeProxy.mockImplementation(() => new Promise<string>((resolve) => {

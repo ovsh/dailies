@@ -62,6 +62,7 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
+  const [retryingFileIds, setRetryingFileIds] = useState<Set<number>>(() => new Set());
 
   const refreshJobs = useCallback(async () => {
     const result = await runIpc(api.listJobs, {
@@ -213,6 +214,27 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
     if (result.ok) setRetryAction(null);
   }
 
+  async function handleRetryFile(fileId: number) {
+    setRetryAction(() => () => void handleRetryFile(fileId));
+    const result = await runIpc(
+      async () => {
+        await api.retryFile(fileId);
+        await Promise.all([refreshJobs(), onRefresh()]);
+      },
+      {
+        setPending: (pending) => setRetryingFileIds((current) => {
+          const next = new Set(current);
+          if (pending) next.add(fileId);
+          else next.delete(fileId);
+          return next;
+        }),
+        setError: setActionError,
+        fallback: "Could not retry failed jobs.",
+      },
+    );
+    if (result.ok) setRetryAction(null);
+  }
+
   const waitingCount = jobs?.filter((job) => job.status === "waiting").length ?? 0;
 
   return (
@@ -226,7 +248,7 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
             <InlineError
               message={actionError}
               onRetry={retryAction ?? undefined}
-              retrying={actionPending || addingEpisode || savingProvider !== null}
+              retrying={actionPending || addingEpisode || savingProvider !== null || retryingFileIds.size > 0}
             />
           )}
           <section className="jobs-section">
@@ -269,7 +291,17 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                     </td>
                     <td>{job.attempts}</td>
                     <td className={`job-detail${job.status === "waiting" ? " waiting" : job.status === "error" ? " error" : ""}`}>
-                      {job.status === "waiting" ? waitingMessage(job) : job.error ?? "—"}
+                      <span>{job.status === "waiting" ? waitingMessage(job) : job.error ?? "—"}</span>
+                      {job.status === "error" && (
+                        <button
+                          type="button"
+                          className="job-retry label"
+                          onClick={() => void handleRetryFile(job.fileId)}
+                          disabled={retryingFileIds.has(job.fileId)}
+                        >
+                          {retryingFileIds.has(job.fileId) ? "Retrying…" : "Retry failed jobs"}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -579,6 +611,25 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         }
         .job-detail {
           max-width: 290px;
+        }
+        .job-retry {
+          display: block;
+          margin-top: 6px;
+          background: transparent;
+          border: 1px solid var(--hairline-strong);
+          color: var(--ink-dim);
+          padding: 3px 7px;
+          border-radius: 4px;
+          font-size: 9px;
+          transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+        }
+        .job-retry:hover:not(:disabled) {
+          border-color: var(--accent-dim);
+          color: var(--accent);
+        }
+        .job-retry:disabled {
+          color: var(--ink-faint);
+          cursor: default;
         }
         .job-detail.error {
           color: var(--status-error);

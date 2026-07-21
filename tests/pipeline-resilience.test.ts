@@ -208,6 +208,42 @@ describe("pipeline prerequisite and applicability handling", () => {
     await pipeline.stop();
   });
 
+  it("retries the same terminal transcription job while stopped", async () => {
+    const { db, pipeline } = setup();
+    const file = db.upsertFile({
+      path: "/media/retry-audio.wav",
+      filename: "retry-audio.wav",
+      durationS: 5,
+      fps: 0,
+      dropFrame: false,
+      startTc: "00:00:00:00",
+      codec: "pcm",
+      audioChannels: 1,
+      fileHash: "retry-audio",
+    });
+    db.setFileStatus(file.id, "error");
+    db.enqueueJob(file.id, "transcribe");
+    const failedJob = db.claimNextJob()!;
+    db.retryJob(failedJob.id, "transient transcription failure");
+    expect(db.claimNextJob()?.id).toBe(failedJob.id);
+    db.failJob(failedJob.id, "terminal transcription failure");
+
+    await pipeline.retryFile(file.id);
+
+    expect(db.listJobs().filter((job) =>
+      job.fileId === file.id && job.stage === "transcribe"
+    )).toEqual([
+      expect.objectContaining({
+        id: failedJob.id,
+        status: "queued",
+        attempts: 0,
+        error: null,
+      }),
+    ]);
+    expect(db.getFile(file.id)?.status).toBe("processing");
+    await pipeline.stop();
+  });
+
   it("degrades a video with an undecodable proxy to ready audio-only media", async () => {
     const { db, pipeline } = setup();
     mocks.makeProxy.mockRejectedValue(

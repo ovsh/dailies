@@ -57,6 +57,8 @@ export interface Pipeline {
    * allowed — upsertDocument replaces the prior record.
    */
   ingestDocument(path: string, episodeId: number | null): Promise<boolean>;
+  /** Retry every terminal job failure for one known file. */
+  retryFile(fileId: number): Promise<void>;
   /** Requeue prerequisite-blocked and otherwise missing derived stages. */
   refreshPrerequisites(kind: "whisper" | "gemini" | "all"): Promise<void>;
   start(): void;
@@ -701,6 +703,9 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     if (kind === "whisper" || kind === "all") {
       db.requeueWaitingJobs(["transcribe"]);
     }
+    if (kind === "gemini") {
+      db.reopenErroredJobs(undefined, ["embed"]);
+    }
     if (kind === "gemini" || kind === "all") {
       db.requeueWaitingJobs(["embed"]);
     }
@@ -708,6 +713,21 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       if (file.status === "error" && file.durationS === 0) continue;
       await repairFile(file);
     }
+    scheduleUpdate();
+    kick();
+  }
+
+  async function retryFile(fileId: number): Promise<void> {
+    const file = db.getFile(fileId);
+    if (!file) throw new Error(`Unknown file ${fileId}`);
+    const reopened = db.reopenErroredJobs(fileId);
+    if (reopened === 0) return;
+
+    if (file.videoUnplayable) db.setVideoUnplayable(fileId, false);
+    const retryableFile = file.videoUnplayable
+      ? { ...file, videoUnplayable: false }
+      : file;
+    await repairFile(retryableFile);
     scheduleUpdate();
     kick();
   }
@@ -867,6 +887,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     unwatchFolder,
     scanFolder,
     ingestDocument,
+    retryFile,
     refreshPrerequisites,
     start,
     stop,

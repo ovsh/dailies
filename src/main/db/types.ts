@@ -101,6 +101,8 @@ export interface DailiesDB {
   waitJob(jobId: number, reason: string): void;
   /** Requeue waiting jobs for the supplied stages. */
   requeueWaitingJobs(stages: JobStage[]): number;
+  /** Reopen terminal failures, optionally scoped to one file or a set of stages. */
+  reopenErroredJobs(fileId?: number, stages?: JobStage[]): number;
   /** Bounded transient retry; increments attempts and returns the job to the queue. */
   retryJob(jobId: number, error: string): void;
   failJob(jobId: number, error: string): void;

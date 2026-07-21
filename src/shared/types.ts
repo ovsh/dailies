@@ -6,7 +6,7 @@
 
 // ---------- media & index ----------
 
-export type FileStatus = "pending" | "processing" | "ready" | "offline" | "error";
+export type FileStatus = "pending" | "processing" | "ready" | "error";
 
 /** raw = camera media / dailies; final = exported cuts (timecode is timeline TC). */
 export type MediaRole = "raw" | "final";
@@ -66,6 +66,8 @@ export interface MediaFile {
   status: FileStatus;
   addedAt: string;
   hasTranscript: boolean;
+  /** Persisted probe result. Null means a legacy row has not been backfilled. */
+  hasVideo: boolean | null;
   proxyPath: string | null;
   episodeId: number | null;
   role: MediaRole;
@@ -78,6 +80,8 @@ export interface MediaFile {
   clipKey: string | null;
   /** Video decode failed permanently; process and render the clip as audio-only. */
   videoUnplayable: boolean;
+  /** Discovery could not read this file before a probe job could be created. */
+  discoveryFailed: boolean;
 }
 
 export interface Scene {
@@ -118,6 +122,8 @@ export interface FileInput {
   codec: string;
   audioChannels: number;
   fileHash: string;
+  /** Present for newly probed media; omitted only by legacy or test callers. */
+  hasVideo?: boolean;
   role?: MediaRole;
   episodeId?: number | null;
   clipName?: string | null;
@@ -271,7 +277,6 @@ export interface ModelProfile {
   description: string;
   supervisor: string;
   supervisorHigh: string;
-  subagent: string;
 }
 
 /**
@@ -283,10 +288,9 @@ export const MODEL_PROFILES: ModelProfile[] = [
   {
     id: "balanced",
     label: "Balanced (recommended)",
-    description: "Gemini 2.5 Flash — proven with Dailies, cheap",
+    description: "Fast, proven with Dailies, inexpensive",
     supervisor: "google/gemini-2.5-flash",
     supervisorHigh: "meta/muse-spark-1.1",
-    subagent: "google/gemini-2.5-flash",
   },
   {
     id: "value",
@@ -294,23 +298,20 @@ export const MODEL_PROFILES: ModelProfile[] = [
     description: "Qwen 3.7 Plus — top arena rank per dollar, non-Google",
     supervisor: "qwen/qwen3.7-plus",
     supervisorHigh: "meta/muse-spark-1.1",
-    subagent: "qwen/qwen3.7-plus",
   },
   {
     id: "best",
     label: "Best quality",
-    description: "Gemini 3.5 Flash — top-10 vision arena (can hit capacity)",
+    description: "Higher-ranked chat model (can hit capacity)",
     supervisor: "google/gemini-3.5-flash",
     supervisorHigh: "meta/muse-spark-1.1",
-    subagent: "google/gemini-3.5-flash",
   },
   {
     id: "budget",
-    label: "Budget bulk indexing",
-    description: "Xiaomi MiMo V2.5 — most-used model on OpenRouter, ~10× cheaper",
+    label: "Budget chat",
+    description: "Lower-cost chat model on OpenRouter",
     supervisor: "xiaomi/mimo-v2.5",
     supervisorHigh: "qwen/qwen3.7-plus",
-    subagent: "xiaomi/mimo-v2.5",
   },
 ];
 

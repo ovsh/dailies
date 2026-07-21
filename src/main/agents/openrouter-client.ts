@@ -62,10 +62,17 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-function apiError(status: number, body: unknown): Error {
+export class OpenRouterApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "OpenRouterApiError";
+  }
+}
+
+function apiError(status: number, body: unknown): OpenRouterApiError {
   const error = isRecord(body) && isRecord(body.error) ? body.error : null;
   const detail = error && typeof error.message === "string" ? `: ${error.message}` : "";
-  return new Error(`OpenRouter API error ${status}${detail}`);
+  return new OpenRouterApiError(`OpenRouter API error ${status}${detail}`, status);
 }
 
 export function createOpenRouterClient(getKey: () => string | null): OpenRouterClient {

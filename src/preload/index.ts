@@ -26,6 +26,7 @@ const api: DailiesAPI = {
   getFileDetail: (fileId: number) => ipcRenderer.invoke(IPC.getFileDetail, fileId),
   getWords: (segmentId: number) => ipcRenderer.invoke(IPC.getWords, segmentId),
   listJobs: () => ipcRenderer.invoke(IPC.listJobs),
+  retryFile: (fileId: number) => ipcRenderer.invoke(IPC.retryFile, fileId),
 
   // settings
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),

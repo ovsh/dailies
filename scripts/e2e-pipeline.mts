@@ -79,7 +79,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 5000));
     const files = db.listFiles();
     for (const f of files.slice(maxClips)) {
-      db.setFileStatus(f.id, "ready"); // park extras so they don't run
+      db.deleteFilesUnderPath(f.path);
     }
     console.log(`[e2e] capped to ${Math.min(maxClips, files.length)} clips`);
   }

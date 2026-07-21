@@ -43,6 +43,89 @@ describe("db end-to-end smoke", () => {
     db.close();
   });
 
+  it("reopens only matching errored jobs and is idempotent", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-reopen-errors-"));
+    const db = openDatabase(path.join(dir, "reopen-errors.db"));
+    const input = {
+      path: "/footage/retry.wav",
+      filename: "retry.wav",
+      durationS: 10,
+      fps: 0,
+      dropFrame: false,
+      startTc: "00:00:00:00",
+      codec: "pcm",
+      audioChannels: 1,
+      fileHash: "retry-file",
+    };
+    const file = db.upsertFile(input);
+    const otherFile = db.upsertFile({
+      ...input,
+      path: "/footage/other.wav",
+      filename: "other.wav",
+      fileHash: "other-file",
+    });
+
+    db.enqueueJob(file.id, "transcribe");
+    const firstError = db.claimNextJob()!;
+    db.retryJob(firstError.id, "first attempt failed");
+    expect(db.claimNextJob()?.id).toBe(firstError.id);
+    db.failJob(firstError.id, "terminal transcribe failure");
+
+    db.enqueueJob(file.id, "transcribe");
+    const secondError = db.claimNextJob()!;
+    db.failJob(secondError.id, "second terminal transcribe failure");
+
+    db.enqueueJob(file.id, "embed");
+    const otherStageError = db.claimNextJob()!;
+    db.failJob(otherStageError.id, "embed failure");
+
+    db.enqueueJob(otherFile.id, "transcribe");
+    const otherFileError = db.claimNextJob()!;
+    db.failJob(otherFileError.id, "other file failure");
+
+    db.enqueueJob(file.id, "scenes");
+    const doneJob = db.claimNextJob()!;
+    db.completeJob(doneJob.id);
+
+    db.enqueueJob(file.id, "proxy");
+    const waitingJob = db.claimNextJob()!;
+    db.waitJob(waitingJob.id, "waiting for dependency");
+
+    db.enqueueJob(file.id, "audio");
+    const runningJob = db.claimNextJob()!;
+    db.enqueueJob(file.id, "probe");
+    const queuedJob = db.listJobs().find((job) => job.stage === "probe")!;
+
+    const unchangedIds = new Set([
+      queuedJob.id,
+      runningJob.id,
+      waitingJob.id,
+      doneJob.id,
+      otherStageError.id,
+      otherFileError.id,
+    ]);
+    const unchangedBefore = db.listJobs().filter((job) => unchangedIds.has(job.id));
+
+    expect(db.reopenErroredJobs(file.id, ["transcribe"])).toBe(2);
+    expect(db.listJobs().find((job) => job.id === firstError.id)).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      error: null,
+    });
+    expect(db.listJobs().find((job) => job.id === secondError.id)).toMatchObject({
+      status: "queued",
+      attempts: 0,
+      error: null,
+    });
+    expect(db.listJobs().filter((job) => unchangedIds.has(job.id))).toEqual(unchangedBefore);
+
+    const afterFirstReopen = db.listJobs();
+    expect(db.reopenErroredJobs(file.id, ["transcribe"])).toBe(0);
+    expect(db.listJobs()).toEqual(afterFirstReopen);
+
+    db.close();
+  });
+
   it("indexes, searches, and queues against a real SQLite file", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-"));
     const db = openDatabase(path.join(dir, "smoke.db"));

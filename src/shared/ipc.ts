@@ -57,6 +57,7 @@ export interface DailiesAPI {
   getFileDetail(fileId: number): Promise<FileDetail>;
   getWords(segmentId: number): Promise<WordTiming[]>;
   listJobs(): Promise<Job[]>;
+  retryFile(fileId: number): Promise<void>;
 
   // settings (global)
   getSettings(): Promise<AppSettings>;
@@ -110,6 +111,7 @@ export const IPC = {
   getFileDetail: "dailies:getFileDetail",
   getWords: "dailies:getWords",
   listJobs: "dailies:listJobs",
+  retryFile: "dailies:retryFile",
   getSettings: "dailies:getSettings",
   downloadWhisperModel: "dailies:downloadWhisperModel",
   modelProgress: "dailies:modelProgress",

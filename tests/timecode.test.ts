@@ -175,6 +175,7 @@ const fileA: MediaFile = {
   status: "ready",
   addedAt: "2026-01-01T00:00:00.000Z",
   hasTranscript: false,
+  hasVideo: true,
   proxyPath: null,
   episodeId: null,
   role: "raw" as const,
@@ -183,6 +184,7 @@ const fileA: MediaFile = {
   memberPaths: null,
   clipKey: null,
   videoUnplayable: false,
+  discoveryFailed: false,
 };
 
 const fileB: MediaFile = {
@@ -199,6 +201,7 @@ const fileB: MediaFile = {
   status: "ready",
   addedAt: "2026-01-01T00:00:00.000Z",
   hasTranscript: false,
+  hasVideo: true,
   proxyPath: null,
   episodeId: null,
   role: "raw" as const,
@@ -207,6 +210,7 @@ const fileB: MediaFile = {
   memberPaths: null,
   clipKey: null,
   videoUnplayable: false,
+  discoveryFailed: false,
 };
 
 function getFile(id: number): MediaFile | null {

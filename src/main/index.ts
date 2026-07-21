@@ -74,7 +74,7 @@ function createWindow(): BrowserWindow {
   return w;
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   // media:// — serves local media (proxies, keyframes, originals) with real
   // 200/206/416 Range semantics so <video>/<audio> can buffer and seek.
   protocol.handle("media", (request) => {
@@ -120,7 +120,7 @@ void app.whenReady().then(() => {
 
   // Re-open the last project (adopts a pre-projects install on first boot).
   try {
-    manager.openLastProject();
+    await manager.openLastProject();
   } catch (err) {
     console.error("Failed to open last project:", err);
   }

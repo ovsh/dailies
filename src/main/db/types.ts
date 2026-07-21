@@ -12,7 +12,6 @@ import type {
   DocumentRecord,
   EmbeddingKind,
   FileInput,
-  FileStatus,
   Job,
   JobStage,
   MediaFile,
@@ -41,7 +40,10 @@ export interface DailiesDB {
   deleteFilesUnderPath(pathPrefix: string): MediaFile[];
   /** All files, or one episode's when episodeId is given. */
   listFiles(episodeId?: number): MediaFile[];
-  setFileStatus(id: number, status: FileStatus): void;
+  setFileHasVideo(id: number, hasVideo: boolean | null): void;
+  setDiscoveryFailed(id: number, failed: boolean): void;
+  /** Backfill legacy unreadable stubs. Returns the number of changed rows. */
+  backfillDiscoveryFailures(): number;
   setFileProxy(id: number, proxyPath: string): void;
   clearDerivedState(fileId: number): void;
   setVideoUnplayable(id: number, value: boolean): void;
@@ -101,12 +103,18 @@ export interface DailiesDB {
   waitJob(jobId: number, reason: string): void;
   /** Requeue waiting jobs for the supplied stages. */
   requeueWaitingJobs(stages: JobStage[]): number;
+  /** Reopen terminal failures, optionally scoped to one file or a set of stages. */
+  reopenErroredJobs(fileId?: number, stages?: JobStage[]): number;
   /** Bounded transient retry; increments attempts and returns the job to the queue. */
   retryJob(jobId: number, error: string): void;
   failJob(jobId: number, error: string): void;
+  /** Return one claimed but unstarted job to the queue without consuming an attempt. */
+  releaseClaimedJob(jobId: number): void;
   /** Called on boot: any 'running' job becomes 'queued' again. */
   resetRunningJobs(): void;
   listJobs(limit?: number): Job[];
+  /** Complete uncapped history for one file, newest first. */
+  listJobsForFile(fileId: number): Job[];
 
   // chats
   createChat(title: string): ChatSummary;

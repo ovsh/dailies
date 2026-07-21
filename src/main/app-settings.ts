@@ -11,14 +11,36 @@ import type { QualityMode } from "../shared/types";
 import { DEFAULT_MODEL_PROFILE_ID, MODEL_PROFILES } from "../shared/types";
 
 interface AppSettingsFile {
-  /** Retained only so older settings files round-trip without losing fields. */
-  geminiKeyEnc?: string;
-  geminiKeyIsPlain?: boolean;
   openrouterKeyEnc?: string;
   openrouterKeyIsPlain?: boolean;
   modelProfileId?: string;
   qualityMode?: QualityMode;
   whisperModel?: string;
+}
+
+function parseAppSettings(value: unknown): AppSettingsFile {
+  if (typeof value !== "object" || value === null) return {};
+
+  const settings: AppSettingsFile = {};
+  if ("openrouterKeyEnc" in value && typeof value.openrouterKeyEnc === "string") {
+    settings.openrouterKeyEnc = value.openrouterKeyEnc;
+  }
+  if ("openrouterKeyIsPlain" in value && typeof value.openrouterKeyIsPlain === "boolean") {
+    settings.openrouterKeyIsPlain = value.openrouterKeyIsPlain;
+  }
+  if ("modelProfileId" in value && typeof value.modelProfileId === "string") {
+    settings.modelProfileId = value.modelProfileId;
+  }
+  if (
+    "qualityMode" in value &&
+    (value.qualityMode === "standard" || value.qualityMode === "high")
+  ) {
+    settings.qualityMode = value.qualityMode;
+  }
+  if ("whisperModel" in value && typeof value.whisperModel === "string") {
+    settings.whisperModel = value.whisperModel;
+  }
+  return settings;
 }
 
 export interface AppSettingsStore {
@@ -37,7 +59,8 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
 
   function read(): AppSettingsFile {
     try {
-      return JSON.parse(fs.readFileSync(file, "utf8")) as AppSettingsFile;
+      const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+      return parseAppSettings(parsed);
     } catch {
       return {};
     }

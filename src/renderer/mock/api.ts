@@ -202,6 +202,24 @@ export function createMockApi(): DailiesAPI {
       return MOCK_JOBS;
     },
 
+    async retryFile(fileId: number) {
+      const file = MOCK_FILES.find((candidate) => candidate.id === fileId);
+      if (!file) throw new Error(`Unknown file ${fileId}`);
+      const failedJobs = MOCK_JOBS.filter((job) =>
+        job.fileId === fileId && job.status === "error"
+      );
+      if (failedJobs.length === 0) return;
+      const updatedAt = new Date().toISOString();
+      for (const job of failedJobs) {
+        job.status = "queued";
+        job.attempts = 0;
+        job.error = null;
+        job.updatedAt = updatedAt;
+      }
+      if (file.status === "error") file.status = "processing";
+      notifyIndexUpdate();
+    },
+
     // ---------- settings ----------
 
     async downloadWhisperModel(): Promise<void> {

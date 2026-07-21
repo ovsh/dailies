@@ -38,8 +38,8 @@ export interface ProjectContext {
 export interface ProjectManager {
   listProjects(): Project[];
   createProject(name: string): Project;
-  openProject(id: string): ProjectState;
-  openLastProject(): ProjectState | null;
+  openProject(id: string): Promise<ProjectState>;
+  openLastProject(): Promise<ProjectState | null>;
   currentState(): ProjectState | null;
   current(): ProjectContext | null;
   closeCurrent(): Promise<void>;
@@ -52,6 +52,16 @@ export function createProjectManager(opts: {
 }): ProjectManager {
   const registryFile = path.join(opts.dataDir, "projects.json");
   let ctx: ProjectContext | null = null;
+  let contextChangeTail: Promise<void> = Promise.resolve();
+
+  function serializeContextChange<T>(change: () => Promise<T>): Promise<T> {
+    const result = contextChangeTail.then(change, change);
+    contextChangeTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
 
   function readRegistry(): Registry {
     try {
@@ -96,12 +106,12 @@ export function createProjectManager(opts: {
     };
   }
 
-  function openRecord(record: ProjectRecord): ProjectState {
-    // Close whatever is open first (fire-and-forget stop; db closes synchronously).
+  async function openRecord(record: ProjectRecord): Promise<ProjectState> {
+    // Close whatever is open before replacing its database connection.
     if (ctx) {
       const old = ctx;
       ctx = null;
-      void old.pipeline.stop();
+      await old.pipeline.stop();
       old.db.close();
     }
 
@@ -182,16 +192,20 @@ export function createProjectManager(opts: {
     },
 
     openProject(id: string) {
-      const record = readRegistry().projects.find((p) => p.id === id);
-      if (!record) throw new Error(`Unknown project ${id}`);
-      return openRecord(record);
+      return serializeContextChange(async () => {
+        const record = readRegistry().projects.find((p) => p.id === id);
+        if (!record) throw new Error(`Unknown project ${id}`);
+        return await openRecord(record);
+      });
     },
 
     openLastProject() {
-      const reg = readRegistry();
-      const record =
-        reg.projects.find((p) => p.id === reg.lastOpenedId) ?? reg.projects[0] ?? null;
-      return record ? openRecord(record) : null;
+      return serializeContextChange(async () => {
+        const reg = readRegistry();
+        const record =
+          reg.projects.find((p) => p.id === reg.lastOpenedId) ?? reg.projects[0] ?? null;
+        return record ? await openRecord(record) : null;
+      });
     },
 
     currentState() {
@@ -202,12 +216,14 @@ export function createProjectManager(opts: {
       return ctx;
     },
 
-    async closeCurrent() {
-      if (!ctx) return;
-      const old = ctx;
-      ctx = null;
-      await old.pipeline.stop();
-      old.db.close();
+    closeCurrent() {
+      return serializeContextChange(async () => {
+        if (!ctx) return;
+        const old = ctx;
+        ctx = null;
+        await old.pipeline.stop();
+        old.db.close();
+      });
     },
   };
 }

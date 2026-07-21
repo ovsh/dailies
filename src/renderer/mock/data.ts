@@ -287,6 +287,7 @@ export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => ({
   status: s.status,
   addedAt: new Date(Date.UTC(2026, 6, 15 + (s.id % 5), 9, 30)).toISOString(),
   hasTranscript: s.hasTranscript,
+  hasVideo: true,
   proxyPath: s.status === "ready" ? `/Volumes/DAILIES_01/proxies/${s.filename.replace(".mov", "_proxy.mp4")}` : null,
   episodeId: s.episodeId ?? null,
   role: s.role ?? "raw",
@@ -295,6 +296,7 @@ export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => ({
   memberPaths: null,
   clipKey: null,
   videoUnplayable: false,
+  discoveryFailed: false,
 }));
 
 // ---------- scenes ----------

@@ -31,15 +31,15 @@ CREATE TABLE IF NOT EXISTS files (
   status TEXT NOT NULL DEFAULT 'pending',
   added_at TEXT NOT NULL,
   has_transcript INTEGER NOT NULL DEFAULT 0,
-  -- legacy, unused
-  has_visual_index INTEGER NOT NULL DEFAULT 0,
   proxy_path TEXT,
   role TEXT NOT NULL DEFAULT 'raw',
   clip_name TEXT,
   media_kind TEXT NOT NULL DEFAULT 'standard',
   member_paths TEXT,
   clip_key TEXT,
+  has_video INTEGER,
   video_unplayable INTEGER NOT NULL DEFAULT 0,
+  discovery_failed INTEGER NOT NULL DEFAULT 0,
   episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
 );
 

@@ -48,6 +48,7 @@ export function LibraryScreen({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
+  const [retryingFileIds, setRetryingFileIds] = useState<Set<number>>(() => new Set());
   const [toast, setToast] = useState<string | null>(null);
   const keyframesRef = useRef<Record<number, string | null>>({});
   const detailSignaturesRef = useRef<Record<number, string>>({});
@@ -135,6 +136,27 @@ export function LibraryScreen({
     if (result.ok) setRetryAction(null);
   }
 
+  async function handleRetryFile(fileId: number) {
+    setRetryAction(() => () => void handleRetryFile(fileId));
+    const result = await runIpc(
+      async () => {
+        await api.retryFile(fileId);
+        await Promise.all([load(), onRefresh()]);
+      },
+      {
+        setPending: (pending) => setRetryingFileIds((current) => {
+          const next = new Set(current);
+          if (pending) next.add(fileId);
+          else next.delete(fileId);
+          return next;
+        }),
+        setError: setActionError,
+        fallback: "Could not retry failed jobs.",
+      },
+    );
+    if (result.ok) setRetryAction(null);
+  }
+
   const isEmpty = files !== null && files.length === 0;
   const visibleFiles = files?.filter((f) => roleFilter === "all" || f.role === roleFilter) ?? null;
 
@@ -197,7 +219,11 @@ export function LibraryScreen({
           </button>
         </p>
         {actionError && (
-          <InlineError message={actionError} onRetry={retryAction ?? undefined} retrying={importing || scanning || addingFolder} />
+          <InlineError
+            message={actionError}
+            onRetry={retryAction ?? undefined}
+            retrying={importing || scanning || addingFolder || retryingFileIds.size > 0}
+          />
         )}
       </header>
 
@@ -231,6 +257,8 @@ export function LibraryScreen({
                 file={f}
                 keyframe={mediaUrl(keyframes[f.id]) ?? null}
                 onOpen={() => onOpenClip(f.id)}
+                onRetry={() => void handleRetryFile(f.id)}
+                retrying={retryingFileIds.has(f.id)}
               />
             ))}
           </div>

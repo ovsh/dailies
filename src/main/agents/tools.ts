@@ -1,8 +1,12 @@
-/**
- * Pure helper functions the subagents call as "tools". Thin wrappers over
- * DailiesDB plus a couple of formatting/parsing utilities shared by agents.
- */
-import type { DocumentHit, EmbeddingKind, TextEmbedder, TranscriptHit } from "../../shared/types";
+/** Direct retrieval tools exposed by the chat agent. */
+import { parseTc } from "../../shared/timecode";
+import type {
+  DocumentHit,
+  EmbeddingKind,
+  TextEmbedder,
+  TranscriptHit,
+  TranscriptSegment,
+} from "../../shared/types";
 import type { DailiesDB } from "../db/types";
 
 const STOPWORDS = new Set([
@@ -43,6 +47,16 @@ export function expandTerms(query: string): string[] {
 
 const HYBRID_LIMIT = 40;
 const RRF_K = 60;
+const TRANSCRIPT_WINDOW_SECONDS = 30;
+const TRANSCRIPT_WINDOW_SEGMENT_LIMIT = 24;
+
+export interface TranscriptToolHit extends TranscriptHit {
+  speaker: string | null;
+}
+
+export type TranscriptWindowCenter =
+  | { kind: "seconds"; value: number }
+  | { kind: "source_timecode"; value: string };
 
 /**
  * Reciprocal-rank fusion of two ranked hit lists, deduped by key, scores
@@ -94,25 +108,29 @@ export async function searchTranscriptsTool(
   extraTerms: string[],
   embedder: TextEmbedder | null,
   episodeId: number | null,
-): Promise<TranscriptHit[]> {
+): Promise<TranscriptToolHit[]> {
   const ftsHits = db.searchTranscripts([...expandTerms(query), ...extraTerms], undefined, episodeId ?? undefined);
-  if (!embedder) return ftsHits;
+  let hits = ftsHits;
 
-  try {
-    const semanticHits = await semanticHydrate(
-      db,
-      embedder,
-      "segment",
-      query,
-      (refId) => db.getTranscriptHit(refId),
-      HYBRID_LIMIT,
-    );
-    const scopedSemanticHits =
-      episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
-    return fuseRanked([ftsHits, scopedSemanticHits], (h) => h.segmentId, HYBRID_LIMIT);
-  } catch {
-    return ftsHits;
+  if (embedder) {
+    try {
+      const semanticHits = await semanticHydrate(
+        db,
+        embedder,
+        "segment",
+        query,
+        (refId) => db.getTranscriptHit(refId),
+        HYBRID_LIMIT,
+      );
+      const scopedSemanticHits =
+        episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
+      hits = fuseRanked([ftsHits, scopedSemanticHits], (h) => h.segmentId, HYBRID_LIMIT);
+    } catch {
+      hits = ftsHits;
+    }
   }
+
+  return addSpeakers(db, hits);
 }
 
 export async function searchNotesTool(
@@ -142,24 +160,63 @@ export async function searchNotesTool(
   }
 }
 
-function fmtMmSs(totalS: number): string {
-  const s = Math.max(0, Math.floor(totalS));
-  const mm = Math.floor(s / 60);
-  const ss = s % 60;
-  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+function addSpeakers(db: DailiesDB, hits: TranscriptHit[]): TranscriptToolHit[] {
+  const segmentsByFile = new Map<number, Map<number, TranscriptSegment>>();
+  return hits.map((hit) => {
+    let segments = segmentsByFile.get(hit.fileId);
+    if (!segments) {
+      segments = new Map(db.listSegments(hit.fileId).map((segment) => [segment.id, segment]));
+      segmentsByFile.set(hit.fileId, segments);
+    }
+    return { ...hit, speaker: segments.get(hit.segmentId)?.speaker ?? null };
+  });
 }
 
-export function getTranscriptWindowTool(db: DailiesDB, fileId: number, centerS: number, windowS: number): string {
-  const segments = db.getTranscriptWindow(fileId, centerS, windowS);
-  return segments.map((seg) => `[${fmtMmSs(seg.startS)}] ${seg.text}`).join("\n");
+function centerSeconds(
+  file: NonNullable<ReturnType<DailiesDB["getFile"]>>,
+  center: TranscriptWindowCenter,
+): number {
+  if (center.kind === "seconds") return center.value;
+  if (file.fps <= 0) throw new Error(`file ${file.id} has no edit rate for source timecode lookup`);
+  return (
+    parseTc(center.value, file.fps, file.dropFrame) -
+    parseTc(file.startTc, file.fps, file.dropFrame)
+  ) / file.fps;
 }
 
-const FULL_TRANSCRIPT_CAP = 30000;
+export function getTranscriptWindowTool(
+  db: DailiesDB,
+  fileId: number,
+  center: TranscriptWindowCenter,
+  episodeId: number | null,
+): TranscriptToolHit[] {
+  const file = db.getFile(fileId);
+  if (!file) throw new Error(`file ${fileId} not found`);
+  if (episodeId !== null && file.episodeId !== episodeId) {
+    throw new Error(`file ${fileId} is outside the selected episode`);
+  }
 
-export function getFullTranscriptTool(db: DailiesDB, fileId: number): string {
-  const segments = db.listSegments(fileId);
-  const joined = segments.map((seg) => `[${fmtMmSs(seg.startS)}] ${seg.text}`).join("\n");
-  return joined.length > FULL_TRANSCRIPT_CAP ? joined.slice(0, FULL_TRANSCRIPT_CAP) : joined;
+  const centerS = centerSeconds(file, center);
+  if (!Number.isFinite(centerS) || centerS < 0 || centerS > file.durationS) {
+    throw new Error(`transcript window center is outside file ${fileId}`);
+  }
+
+  const segments = db
+    .getTranscriptWindow(fileId, centerS, TRANSCRIPT_WINDOW_SECONDS)
+    .sort((a, b) => {
+      const aDistance = Math.abs((a.startS + a.endS) / 2 - centerS);
+      const bDistance = Math.abs((b.startS + b.endS) / 2 - centerS);
+      return aDistance - bDistance || a.startS - b.startS;
+    })
+    .slice(0, TRANSCRIPT_WINDOW_SEGMENT_LIMIT)
+    .sort((a, b) => a.startS - b.startS);
+
+  const hits: TranscriptToolHit[] = [];
+  for (const segment of segments) {
+    const hit = db.getTranscriptHit(segment.id);
+    if (hit && hit.fileId === fileId) hits.push({ ...hit, speaker: segment.speaker });
+  }
+  return hits;
 }
 
 export function getFileInfoTool(db: DailiesDB, fileId: number): object {

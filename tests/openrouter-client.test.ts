@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createOpenRouterClient,
+  OpenRouterApiError,
   type ToolCall,
 } from "../src/main/agents/openrouter-client";
 import { createOpenRouterEmbedder } from "../src/main/agents/openrouter";
@@ -94,13 +95,36 @@ describe("OpenRouter client", () => {
     expect(response.message.tool_calls).toEqual([toolCall]);
   });
 
-  it("includes the HTTP status in API errors", async () => {
+  it("preserves the HTTP status in chat API errors", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
       error: { message: "Provider is at capacity" },
     }, 429)));
 
     const client = createOpenRouterClient(() => "test-key");
-    await expect(client.chat({ model: "test-model", messages: [] })).rejects.toThrow("429");
+    const error: unknown = await client.chat({ model: "test-model", messages: [] })
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(OpenRouterApiError);
+    expect(error).toMatchObject({
+      status: 429,
+      message: "OpenRouter API error 429: Provider is at capacity",
+    });
+  });
+
+  it("preserves the HTTP status in embedding API errors", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
+      error: { message: "Invalid embedding input" },
+    }, 422)));
+
+    const client = createOpenRouterClient(() => "test-key");
+    const error: unknown = await client.embed("test-model", ["bad input"])
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(OpenRouterApiError);
+    expect(error).toMatchObject({
+      status: 422,
+      message: "OpenRouter API error 422: Invalid embedding input",
+    });
   });
 
   it("batches embeddings at 100, sends dimensions, and normalizes vectors", async () => {

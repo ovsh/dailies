@@ -46,8 +46,7 @@ function isNearDropFrameRate(fps: number): boolean {
 const PARTIAL_HASH_CHUNK_BYTES = 1024 * 1024; // 1MB
 
 /** Fast partial hash: sha1 of (file size + first 1MB + last 1MB). */
-async function computeFileHash(path: string): Promise<string> {
-  const { size } = await stat(path);
+async function computeFileHash(path: string, size: number): Promise<string> {
   const hash = createHash("sha1");
   hash.update(String(size));
 
@@ -75,7 +74,24 @@ async function computeFileHash(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-export async function probeFile(path: string): Promise<FileInput> {
+export interface FileIdentity {
+  path: string;
+  filename: string;
+  fileHash: string;
+  size: number;
+}
+
+export async function computeFileIdentity(path: string): Promise<FileIdentity> {
+  const { size } = await stat(path);
+  return {
+    path,
+    filename: basename(path),
+    fileHash: await computeFileHash(path, size),
+    size,
+  };
+}
+
+export async function probeFile(path: string, knownFileHash?: string): Promise<FileInput> {
   const ffprobeBin = findFfprobeBinary();
   const args = [
     "-v",
@@ -118,7 +134,7 @@ export async function probeFile(path: string): Promise<FileInput> {
 
   const dropFrame = startTc.includes(";") || (isNearDropFrameRate(fps) && startTc.includes(";"));
 
-  const fileHash = await computeFileHash(path);
+  const fileHash = knownFileHash ?? (await computeFileIdentity(path)).fileHash;
 
   return {
     path,
@@ -130,5 +146,6 @@ export async function probeFile(path: string): Promise<FileInput> {
     codec,
     audioChannels,
     fileHash,
+    hasVideo: videoStream !== undefined,
   };
 }

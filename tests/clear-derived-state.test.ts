@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../src/main/db/database";
@@ -16,19 +17,20 @@ function fileInput(filePath: string, hash: string) {
     codec: "prores",
     audioChannels: 2,
     fileHash: hash,
+    hasVideo: true,
   };
 }
 
 describe("clearDerivedState", () => {
-  it("clears one file's derived state without touching other files", () => {
+  it("clears one file's derived facts without writing status", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-clear-derived-"));
-    const db = openDatabase(path.join(dir, "clear-derived.db"));
+    const dbPath = path.join(dir, "clear-derived.db");
+    const db = openDatabase(dbPath);
     const cleared = db.upsertFile(fileInput("/media/cleared.mov", "cleared-hash"));
     const preserved = db.upsertFile(fileInput("/media/preserved.mov", "preserved-hash"));
 
     for (const file of [cleared, preserved]) {
       const token = file.id === cleared.id ? "clearedtoken" : "preservedtoken";
-      db.setFileStatus(file.id, "ready");
       db.setFileProxy(file.id, `/cache/${file.id}/proxy.mp4`);
       db.replaceTranscript(file.id, [{
         startS: 1,
@@ -52,10 +54,14 @@ describe("clearDerivedState", () => {
       db.enqueueJob(file.id, "embed");
     }
 
+    const raw = new Database(dbPath);
+    raw.prepare("UPDATE files SET status = 'ready'").run();
+    raw.close();
+
     db.clearDerivedState(cleared.id);
 
     expect(db.getFile(cleared.id)).toMatchObject({
-      status: "pending",
+      status: "ready",
       hasTranscript: false,
       proxyPath: null,
     });

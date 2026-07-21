@@ -193,6 +193,8 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
   ipcMain.handle(IPC.getWords, (_e, segmentId: number) => requireProject().db.getWords(segmentId));
   ipcMain.handle(IPC.listJobs, () => requireProject().db.listJobs());
+  ipcMain.handle(IPC.retryFile, (_e, fileId: number): Promise<void> =>
+    requireProject().pipeline.retryFile(fileId));
 
   // ---- settings (global) ----
   ipcMain.handle(IPC.getSettings, async (): Promise<AppSettings> => {
@@ -230,7 +232,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     if (status !== "connected") return status;
     const saved = settings.setOpenRouterKey(trimmed);
     cachedApiKeyStatus = saved ? "connected" : null;
-    if (saved) void manager.current()?.pipeline.refreshPrerequisites("gemini"); // openrouter
+    if (saved) void manager.current()?.pipeline.refreshPrerequisites("openrouter");
     return saved ? "connected" : "invalid";
   });
   ipcMain.handle(IPC.setModelProfile, (_e, id: string) => {

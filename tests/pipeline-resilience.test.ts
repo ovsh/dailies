@@ -7,10 +7,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   whisperReady: false,
+  probeFile: vi.fn(),
   probeInput: null as null | Record<string, unknown>,
   probeByPath: new Map<string, Record<string, unknown>>(),
   mxfAtoms: new Map<string, {
@@ -26,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   }>(),
   watcherOnFileFound: null as ((path: string) => void) | null,
   detectedScenes: [{ startS: 0, endS: 5 }],
+  detectScenes: vi.fn(),
   makeProxy: vi.fn(),
   transcribe: vi.fn(),
   embed: vi.fn(),
@@ -37,8 +40,7 @@ vi.mock("../src/main/pipeline/binaries", () => ({
   findWhisperModel: () => (mocks.whisperReady ? "/fake/model.bin" : null),
 }));
 vi.mock("../src/main/pipeline/probe", () => ({
-  probeFile: vi.fn(async (filePath: string) =>
-    mocks.probeByPath.get(filePath) ?? mocks.probeInput),
+  probeFile: mocks.probeFile,
 }));
 vi.mock("../src/main/pipeline/opatom", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/main/pipeline/opatom")>();
@@ -54,7 +56,7 @@ vi.mock("../src/main/pipeline/proxy", () => ({
   makeProxy: mocks.makeProxy,
 }));
 vi.mock("../src/main/pipeline/scenes", () => ({
-  detectScenes: vi.fn(async () => mocks.detectedScenes),
+  detectScenes: mocks.detectScenes,
 }));
 vi.mock("../src/main/pipeline/transcribe", () => ({
   transcribeAudio: mocks.transcribe,
@@ -98,13 +100,22 @@ function makeStable(filePath: string): void {
   utimesSync(filePath, old, old);
 }
 
+function setLegacyFileStatus(dataDir: string, fileId: number, status: string): void {
+  const raw = new Database(path.join(dataDir, "test.db"));
+  raw.prepare("UPDATE files SET status = ? WHERE id = ?").run(status, fileId);
+  raw.close();
+}
+
 beforeEach(() => {
   mocks.whisperReady = false;
+  mocks.probeFile.mockReset().mockImplementation(async (filePath: string) =>
+    mocks.probeByPath.get(filePath) ?? mocks.probeInput);
   mocks.probeInput = null;
   mocks.probeByPath.clear();
   mocks.mxfAtoms.clear();
   mocks.watcherOnFileFound = null;
   mocks.detectedScenes = [{ startS: 0, endS: 5 }];
+  mocks.detectScenes.mockReset().mockImplementation(async () => mocks.detectedScenes);
   mocks.makeProxy.mockReset().mockImplementation(
     async (_path: string, outDir: string) => path.join(outDir, "proxy.mp4"),
   );
@@ -138,8 +149,8 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "pcm",
       audioChannels: 1,
       fileHash: "waiting-audio",
+      hasVideo: false,
     });
-    db.setFileStatus(file.id, "processing");
     db.enqueueJob(file.id, "transcribe");
     const waitingJob = db.claimNextJob();
     db.waitJob(waitingJob!.id, "model missing while project was closed");
@@ -167,8 +178,8 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "pcm",
       audioChannels: 1,
       fileHash: "audio",
+      hasVideo: false,
     });
-    db.setFileStatus(file.id, "processing");
     db.enqueueJob(file.id, "transcribe");
     pipeline.start();
 
@@ -198,13 +209,90 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "pcm",
       audioChannels: 1,
       fileHash: "bad-audio",
+      hasVideo: false,
     });
-    db.setFileStatus(file.id, "processing");
     db.enqueueJob(file.id, "transcribe");
     pipeline.start();
 
     await vi.waitFor(() => expect(db.getFile(file.id)?.status).toBe("error"));
     expect(db.listJobs().find((job) => job.stage === "transcribe")?.status).toBe("error");
+    await pipeline.stop();
+  });
+
+  it("backfills and preserves an unreadable legacy stub on startup", async () => {
+    const { dataDir, db, pipeline } = setup();
+    const file = db.upsertFile({
+      path: "/media/unreadable.mov",
+      filename: "unreadable.mov",
+      durationS: 0,
+      fps: 0,
+      dropFrame: false,
+      startTc: "00:00:00:00",
+      codec: "unknown",
+      audioChannels: 0,
+      fileHash: "unreadable:/media/unreadable.mov",
+    });
+    setLegacyFileStatus(dataDir, file.id, "error");
+
+    pipeline.start();
+
+    await vi.waitFor(() => {
+      expect(db.getFile(file.id)).toMatchObject({
+        status: "error",
+        discoveryFailed: true,
+      });
+    });
+    expect(db.listJobsForFile(file.id)).toEqual([]);
+    await pipeline.stop();
+  });
+
+  it("queues and persists one probe for legacy unknown video", async () => {
+    const { db, pipeline } = setup();
+    const file = db.upsertFile({
+      path: "/media/legacy-video.mov",
+      filename: "legacy-video.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 0,
+      fileHash: "legacy-video",
+    });
+    db.replaceTranscript(file.id, []);
+    db.markTranscribed(file.id);
+
+    await pipeline.refreshPrerequisites("all");
+
+    expect(db.getFile(file.id)).toMatchObject({
+      hasVideo: null,
+      status: "processing",
+    });
+    expect(db.listJobsForFile(file.id)).toEqual([
+      expect.objectContaining({ stage: "probe", status: "queued" }),
+    ]);
+    expect(mocks.probeFile).not.toHaveBeenCalled();
+
+    mocks.probeInput = {
+      path: file.path,
+      filename: file.filename,
+      durationS: file.durationS,
+      fps: file.fps,
+      dropFrame: file.dropFrame,
+      startTc: file.startTc,
+      codec: file.codec,
+      audioChannels: file.audioChannels,
+      fileHash: file.fileHash,
+      hasVideo: true,
+    };
+    pipeline.start();
+
+    await vi.waitFor(() => expect(db.getFile(file.id)?.hasVideo).toBe(true));
+    await waitForDrain(db);
+    expect(mocks.probeFile).toHaveBeenCalledTimes(1);
+
+    await pipeline.refreshPrerequisites("all");
+    expect(mocks.probeFile).toHaveBeenCalledTimes(1);
     await pipeline.stop();
   });
 
@@ -220,8 +308,8 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "pcm",
       audioChannels: 1,
       fileHash: "retry-audio",
+      hasVideo: false,
     });
-    db.setFileStatus(file.id, "error");
     db.enqueueJob(file.id, "transcribe");
     const failedJob = db.claimNextJob()!;
     db.retryJob(failedJob.id, "transient transcription failure");
@@ -259,8 +347,8 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "exotic",
       audioChannels: 2,
       fileHash: "undecodable",
+      hasVideo: true,
     });
-    db.setFileStatus(file.id, "processing");
     db.replaceTranscript(file.id, []);
     db.markTranscribed(file.id);
     db.enqueueJob(file.id, "proxy");
@@ -289,8 +377,8 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "rate-limited",
+      hasVideo: true,
     });
-    db.setFileStatus(file.id, "processing");
     db.replaceTranscript(file.id, []);
     db.markTranscribed(file.id);
     db.enqueueJob(file.id, "proxy");
@@ -304,6 +392,39 @@ describe("pipeline prerequisite and applicability handling", () => {
     expect(db.getFile(file.id)?.status).toBe("ready");
     expect(mocks.makeProxy).toHaveBeenCalledTimes(4);
     await waitForDrain(db);
+    await pipeline.stop();
+  });
+
+  it("keeps a scenes failure job-only without degrading playable video", async () => {
+    const { db, pipeline } = setup();
+    mocks.detectScenes.mockRejectedValue(new Error("scene detection failed"));
+    const file = db.upsertFile({
+      path: "/media/scene-failure.mov",
+      filename: "scene-failure.mov",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 0,
+      fileHash: "scene-failure",
+      hasVideo: true,
+    });
+    db.replaceTranscript(file.id, []);
+    db.markTranscribed(file.id);
+    db.setFileProxy(file.id, "/cache/proxy.mp4");
+    db.enqueueJob(file.id, "scenes");
+
+    pipeline.start();
+
+    await vi.waitFor(() => {
+      expect(db.listJobsForFile(file.id).find((job) => job.stage === "scenes")?.status)
+        .toBe("error");
+    });
+    expect(db.getFile(file.id)).toMatchObject({
+      status: "ready",
+      videoUnplayable: false,
+    });
     await pipeline.stop();
   });
 
@@ -325,8 +446,8 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "hung",
+      hasVideo: true,
     });
-    db.setFileStatus(hung.id, "processing");
     db.replaceTranscript(hung.id, []);
     db.markTranscribed(hung.id);
     db.enqueueJob(hung.id, "proxy");
@@ -348,6 +469,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 0,
       fileHash: "unrelated",
+      hasVideo: true,
     });
     db.enqueueJob(unrelated.id, "probe");
 
@@ -372,6 +494,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 0,
       fileHash: "silent",
+      hasVideo: true,
     });
     db.enqueueJob(file.id, "probe");
     pipeline.start();
@@ -400,6 +523,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "same-hash",
+      hasVideo: true,
     };
     db.upsertFile(mocks.probeInput as never);
 
@@ -435,6 +559,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "moved-hash",
+      hasVideo: true,
     });
     db.replaceTranscript(original.id, [{
       startS: 0,
@@ -452,12 +577,9 @@ describe("pipeline prerequisite and applicability handling", () => {
       endTc: "01:00:05:00",
       keyframePath: "/cache/keyframe-0.jpg",
     }]);
-    // Embed the seeded segment so the file is fully processed — repairFile
-    // enqueues an embed job for any unembedded segment, which would be a
-    // legitimate (not spurious) job after the repoint.
+    // Prevent ensureWork from treating the preserved transcript as missing embed work.
     const segmentId = db.listSegments(original.id)[0]!.id;
     db.upsertEmbedding("segment", segmentId, new Float32Array(768));
-    db.setFileStatus(original.id, "ready");
     mocks.probeByPath.set(newPath, {
       ...original,
       path: newPath,
@@ -506,6 +628,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "duplicate-hash",
+      hasVideo: true,
     });
     mocks.probeByPath.set(newPath, {
       path: newPath,
@@ -517,6 +640,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "duplicate-hash",
+      hasVideo: true,
     });
 
     await pipeline.scanFolder({
@@ -620,6 +744,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "partial-hash",
+      hasVideo: true,
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -659,6 +784,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "settled-hash",
+      hasVideo: true,
     });
 
     await pipeline.scanFolder({
@@ -689,6 +815,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       codec: "prores",
       audioChannels: 0,
       fileHash: "df-scene",
+      hasVideo: true,
     });
     db.replaceTranscript(file.id, []);
     db.markTranscribed(file.id);

@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -37,13 +38,11 @@ import { OpenRouterApiError } from "../src/main/agents/openrouter-client";
 import { openDatabase } from "../src/main/db/database";
 import type { DailiesDB } from "../src/main/db/types";
 import { createPipeline } from "../src/main/pipeline";
-import type { FileStatus } from "../src/shared/types";
 
 const openDbs: DailiesDB[] = [];
 
 interface SeedFileOptions {
   filename: string;
-  status: Extract<FileStatus, "processing" | "ready" | "error">;
   video?: boolean;
 }
 
@@ -58,7 +57,7 @@ function setup() {
     embedder: () => (mocks.hasEmbedder ? { embed: mocks.embed } : null),
     onUpdate: () => {},
   });
-  return { db, pipeline };
+  return { dataDir, db, pipeline };
 }
 
 function seedTranscribedFile(db: DailiesDB, opts: SeedFileOptions): number {
@@ -72,6 +71,7 @@ function seedTranscribedFile(db: DailiesDB, opts: SeedFileOptions): number {
     codec: opts.video ? "prores" : "pcm",
     audioChannels: 1,
     fileHash: `hash-${opts.filename}`,
+    hasVideo: opts.video ?? false,
   });
   db.replaceTranscript(file.id, [{
     startS: 0,
@@ -81,8 +81,13 @@ function seedTranscribedFile(db: DailiesDB, opts: SeedFileOptions): number {
     words: [],
   }]);
   db.markTranscribed(file.id);
-  db.setFileStatus(file.id, opts.status);
   return file.id;
+}
+
+function setLegacyFileStatus(dataDir: string, fileId: number, status: string): void {
+  const raw = new Database(path.join(dataDir, "test.db"));
+  raw.prepare("UPDATE files SET status = ? WHERE id = ?").run(status, fileId);
+  raw.close();
 }
 
 async function waitForJobStatus(
@@ -120,7 +125,6 @@ describe("optional embed job failures", () => {
     const { db, pipeline } = setup();
     const fileId = seedTranscribedFile(db, {
       filename: "bad-request.wav",
-      status: "ready",
     });
     mocks.embed.mockRejectedValue(new OpenRouterApiError("bad request", 400));
     db.enqueueJob(fileId, "embed");
@@ -139,7 +143,6 @@ describe("optional embed job failures", () => {
     const { db, pipeline } = setup();
     const fileId = seedTranscribedFile(db, {
       filename: "rate-limited.wav",
-      status: "ready",
     });
     mocks.embed.mockRejectedValue(new OpenRouterApiError("provider busy", 429));
     db.enqueueJob(fileId, "embed");
@@ -159,7 +162,6 @@ describe("optional embed job failures", () => {
     const { db, pipeline } = setup();
     const fileId = seedTranscribedFile(db, {
       filename: "missing-key.wav",
-      status: "ready",
     });
     db.enqueueJob(fileId, "embed");
 
@@ -174,24 +176,26 @@ describe("optional embed job failures", () => {
   });
 
   it("repairs a legacy file poisoned by a terminal embed failure", async () => {
-    const { db, pipeline } = setup();
+    const { dataDir, db, pipeline } = setup();
     const fileId = seedTranscribedFile(db, {
       filename: "legacy-poisoned.wav",
-      status: "error",
     });
+    setLegacyFileStatus(dataDir, fileId, "error");
     db.enqueueJob(fileId, "embed");
     const legacyJob = db.claimNextJob();
     expect(legacyJob?.stage).toBe("embed");
     db.failJob(legacyJob!.id, "legacy OpenRouter failure");
 
-    await pipeline.refreshPrerequisites("all");
+    mocks.hasEmbedder = false;
+    pipeline.start();
 
-    expect(db.getFile(fileId)?.status).toBe("ready");
+    await vi.waitFor(() => expect(db.getFile(fileId)?.status).toBe("ready"));
+    await waitForJobStatus(db, fileId, "waiting");
     expect(db.listJobs().find((job) => job.id === legacyJob!.id)?.status).toBe("error");
     expect(db.listJobs()).toContainEqual(expect.objectContaining({
       fileId,
       stage: "embed",
-      status: "queued",
+      status: "waiting",
     }));
     await pipeline.stop();
   });
@@ -200,11 +204,9 @@ describe("optional embed job failures", () => {
     const { db, pipeline } = setup();
     const firstFileId = seedTranscribedFile(db, {
       filename: "first-embed-retry.wav",
-      status: "ready",
     });
     const secondFileId = seedTranscribedFile(db, {
       filename: "second-embed-retry.wav",
-      status: "ready",
     });
 
     db.enqueueJob(firstFileId, "embed");
@@ -253,7 +255,6 @@ describe("optional embed job failures", () => {
     const { db, pipeline } = setup();
     const fileId = seedTranscribedFile(db, {
       filename: "pending-proxy.mov",
-      status: "processing",
       video: true,
     });
     db.replaceScenes(fileId, [{

@@ -33,6 +33,22 @@ import type {
 import { sourceTcAtOffset } from "../../shared/timecode";
 import type { DailiesDB } from "./types";
 
+const fileStatusWriters = new WeakMap<
+  DailiesDB,
+  (id: number, status: FileStatus) => void
+>();
+
+/** Status is derived by pipeline reconciliation. No other caller may write it. */
+export function setFileStatusInternal(
+  db: DailiesDB,
+  id: number,
+  status: FileStatus,
+): void {
+  const writeStatus = fileStatusWriters.get(db);
+  if (!writeStatus) throw new Error("Unknown DailiesDB instance");
+  writeStatus(id, status);
+}
+
 // ---------- raw row shapes (snake_case, as returned by better-sqlite3) ----------
 
 interface FileRow {
@@ -49,6 +65,7 @@ interface FileRow {
   status: string;
   added_at: string;
   has_transcript: number;
+  has_video: number | null;
   proxy_path: string | null;
   role: string;
   clip_name: string | null;
@@ -56,6 +73,7 @@ interface FileRow {
   member_paths: string | null;
   clip_key: string | null;
   video_unplayable: number;
+  discovery_failed: number;
   episode_id: number | null;
 }
 
@@ -191,6 +209,7 @@ function mapFile(row: FileRow): MediaFile {
     status: row.status as FileStatus,
     addedAt: row.added_at,
     hasTranscript: row.has_transcript === 1,
+    hasVideo: row.has_video === null ? null : row.has_video === 1,
     proxyPath: row.proxy_path,
     role: row.role as MediaRole,
     clipName: row.clip_name,
@@ -198,6 +217,7 @@ function mapFile(row: FileRow): MediaFile {
     memberPaths: row.member_paths ? (JSON.parse(row.member_paths) as string[]) : null,
     clipKey: row.clip_key,
     videoUnplayable: row.video_unplayable === 1,
+    discoveryFailed: row.discovery_failed === 1,
     episodeId: row.episode_id,
   };
 }
@@ -416,7 +436,9 @@ function migrate(db: BetterSqlite3Database): void {
     ["media_kind", "TEXT NOT NULL DEFAULT 'standard'"],
     ["member_paths", "TEXT"],
     ["clip_key", "TEXT"],
+    ["has_video", "INTEGER"],
     ["video_unplayable", "INTEGER NOT NULL DEFAULT 0"],
+    ["discovery_failed", "INTEGER NOT NULL DEFAULT 0"],
     ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
   ]);
   addMissingColumns(db, "documents", [
@@ -482,14 +504,15 @@ export function openDatabase(dbPath: string): DailiesDB {
       string | null,
       string | null,
       number | null,
+      number | null,
     ],
     FileRow
   >(
     `INSERT INTO files (
        path, filename, duration_s, fps, drop_frame, start_tc, codec, audio_channels, file_hash,
-       status, added_at, role, clip_name, media_kind, member_paths, clip_key, episode_id
+       status, added_at, role, clip_name, media_kind, member_paths, clip_key, has_video, episode_id
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
      RETURNING *`,
   );
   const stmtUpdateFile = db.prepare<
@@ -509,12 +532,14 @@ export function openDatabase(dbPath: string): DailiesDB {
       string | null,
       string | null,
       number | null,
+      number | null,
       number,
     ],
     FileRow
   >(
     `UPDATE files SET path = ?, filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?,
-       role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?, episode_id = ?
+       role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?, has_video = ?,
+       discovery_failed = 0, episode_id = ?
      WHERE id = ?
      RETURNING *`,
   );
@@ -527,13 +552,26 @@ export function openDatabase(dbPath: string): DailiesDB {
     "SELECT * FROM files WHERE episode_id = ? ORDER BY added_at DESC",
   );
   const stmtSetFileStatus = db.prepare<[string, number]>("UPDATE files SET status = ? WHERE id = ?");
+  const stmtSetFileHasVideo = db.prepare<[number, number]>(
+    "UPDATE files SET has_video = ? WHERE id = ?",
+  );
+  const stmtSetDiscoveryFailed = db.prepare<[number, number]>(
+    "UPDATE files SET discovery_failed = ? WHERE id = ?",
+  );
+  const stmtBackfillDiscoveryFailures = db.prepare(
+    `UPDATE files SET discovery_failed = 1
+     WHERE discovery_failed = 0
+       AND status = 'error'
+       AND duration_s = 0
+       AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.file_id = files.id)`,
+  );
   const stmtSetFileProxy = db.prepare<[string, number]>("UPDATE files SET proxy_path = ? WHERE id = ?");
   const stmtSetVideoUnplayable = db.prepare<[number, number]>(
     "UPDATE files SET video_unplayable = ? WHERE id = ?",
   );
   const stmtClearDerivedFileState = db.prepare<[number]>(
-    `UPDATE files SET status = 'pending', has_transcript = 0,
-       proxy_path = NULL, video_unplayable = 0 WHERE id = ?`,
+    `UPDATE files SET has_transcript = 0, proxy_path = NULL,
+       video_unplayable = 0 WHERE id = ?`,
   );
   const stmtMarkTranscribed = db.prepare<[number]>("UPDATE files SET has_transcript = 1 WHERE id = ?");
 
@@ -755,6 +793,12 @@ export function openDatabase(dbPath: string): DailiesDB {
      ORDER BY jobs.id DESC
      LIMIT ?`,
   );
+  const stmtListJobsForFile = db.prepare<[number], JobRow>(
+    `SELECT jobs.id, jobs.file_id, files.filename, jobs.stage, jobs.status, jobs.attempts, jobs.error, jobs.updated_at
+     FROM jobs JOIN files ON files.id = jobs.file_id
+     WHERE jobs.file_id = ?
+     ORDER BY jobs.id DESC`,
+  );
 
   const stmtInsertChat = db.prepare<[string, string], ChatRow>(
     "INSERT INTO chats (title, created_at) VALUES (?, ?) RETURNING *",
@@ -927,6 +971,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       input.mediaKind ?? "standard",
       input.memberPaths ? JSON.stringify(input.memberPaths) : null,
       input.clipKey ?? null,
+      input.hasVideo === undefined ? existing.has_video : input.hasVideo ? 1 : 0,
       input.episodeId ?? null,
       existing.id,
     );
@@ -970,6 +1015,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       mediaKind,
       memberPaths,
       clipKey,
+      input.hasVideo === undefined ? null : input.hasVideo ? 1 : 0,
       episodeId,
     );
     if (!row) throw new Error("upsertFile: insert failed");
@@ -1032,7 +1078,7 @@ export function openDatabase(dbPath: string): DailiesDB {
 
   // ---------- DailiesDB implementation ----------
 
-  return {
+  const api: DailiesDB = {
     // files
     upsertFile(input: FileInput): MediaFile {
       return upsertFileTx(input);
@@ -1079,8 +1125,16 @@ export function openDatabase(dbPath: string): DailiesDB {
       return stmtListFilesByEpisode.all(episodeId).map(mapFile);
     },
 
-    setFileStatus(id: number, status: FileStatus): void {
-      stmtSetFileStatus.run(status, id);
+    setFileHasVideo(id: number, hasVideo: boolean): void {
+      stmtSetFileHasVideo.run(hasVideo ? 1 : 0, id);
+    },
+
+    setDiscoveryFailed(id: number, failed: boolean): void {
+      stmtSetDiscoveryFailed.run(failed ? 1 : 0, id);
+    },
+
+    backfillDiscoveryFailures(): number {
+      return stmtBackfillDiscoveryFailures.run().changes;
     },
 
     setFileProxy(id: number, proxyPath: string): void {
@@ -1372,6 +1426,10 @@ export function openDatabase(dbPath: string): DailiesDB {
       return stmtListJobs.all(limit).map(mapJob);
     },
 
+    listJobsForFile(fileId: number): Job[] {
+      return stmtListJobsForFile.all(fileId).map(mapJob);
+    },
+
     // chats
     createChat(title: string): ChatSummary {
       const row = stmtInsertChat.get(title, new Date().toISOString());
@@ -1418,4 +1476,8 @@ export function openDatabase(dbPath: string): DailiesDB {
       db.close();
     },
   };
+  fileStatusWriters.set(api, (id, status) => {
+    stmtSetFileStatus.run(status, id);
+  });
+  return api;
 }

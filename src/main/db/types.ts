@@ -12,7 +12,6 @@ import type {
   DocumentRecord,
   EmbeddingKind,
   FileInput,
-  FileStatus,
   Job,
   JobStage,
   MediaFile,
@@ -41,7 +40,10 @@ export interface DailiesDB {
   deleteFilesUnderPath(pathPrefix: string): MediaFile[];
   /** All files, or one episode's when episodeId is given. */
   listFiles(episodeId?: number): MediaFile[];
-  setFileStatus(id: number, status: FileStatus): void;
+  setFileHasVideo(id: number, hasVideo: boolean): void;
+  setDiscoveryFailed(id: number, failed: boolean): void;
+  /** Backfill legacy unreadable stubs. Returns the number of changed rows. */
+  backfillDiscoveryFailures(): number;
   setFileProxy(id: number, proxyPath: string): void;
   clearDerivedState(fileId: number): void;
   setVideoUnplayable(id: number, value: boolean): void;
@@ -109,6 +111,8 @@ export interface DailiesDB {
   /** Called on boot: any 'running' job becomes 'queued' again. */
   resetRunningJobs(): void;
   listJobs(limit?: number): Job[];
+  /** Complete uncapped history for one file, newest first. */
+  listJobsForFile(fileId: number): Job[];
 
   // chats
   createChat(title: string): ChatSummary;

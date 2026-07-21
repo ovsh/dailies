@@ -66,6 +66,8 @@ export interface MediaFile {
   status: FileStatus;
   addedAt: string;
   hasTranscript: boolean;
+  /** Persisted probe result. Null means a legacy row has not been backfilled. */
+  hasVideo: boolean | null;
   proxyPath: string | null;
   episodeId: number | null;
   role: MediaRole;
@@ -78,6 +80,8 @@ export interface MediaFile {
   clipKey: string | null;
   /** Video decode failed permanently; process and render the clip as audio-only. */
   videoUnplayable: boolean;
+  /** Discovery could not read this file before a probe job could be created. */
+  discoveryFailed: boolean;
 }
 
 export interface Scene {
@@ -118,6 +122,8 @@ export interface FileInput {
   codec: string;
   audioChannels: number;
   fileHash: string;
+  /** Present for newly probed media; omitted only by legacy or test callers. */
+  hasVideo?: boolean;
   role?: MediaRole;
   episodeId?: number | null;
   clipName?: string | null;

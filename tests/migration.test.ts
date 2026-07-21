@@ -77,6 +77,8 @@ describe("legacy database migration", () => {
     expect(files[0].filename).toBe("old.mov");
     expect(files[0].role).toBe("raw"); // new column defaulted
     expect(files[0].mediaKind).toBe("standard");
+    expect(files[0].hasVideo).toBeNull();
+    expect(files[0].discoveryFailed).toBe(false);
 
     // New tables exist and the new query surface works.
     expect(db.searchTranscripts(["anything"])).toEqual([]);
@@ -88,7 +90,11 @@ describe("legacy database migration", () => {
 
     db.close();
     const verify = new Database(dbPath);
+    const columns = verify.pragma("table_info(files)") as Array<{ name: string }>;
     const indexes = verify.pragma("index_list(files)") as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["has_video", "discovery_failed"]),
+    );
     expect(indexes.map((index) => index.name)).toContain("idx_files_file_hash");
     verify.close();
   });

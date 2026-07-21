@@ -10,10 +10,12 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 import { OpenRouterApiError } from "../agents/openrouter-client";
+import { setFileStatusInternal } from "../db/database";
 import type { DailiesDB } from "../db/types";
 import type {
   FileInput,
   Job,
+  MediaFile,
   MediaRole,
   ProjectFolder,
   TextEmbedder,
@@ -25,6 +27,7 @@ import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo, type OpAtomClip } from "./
 import { extractAudio, extractKeyframe, makeProxy } from "./proxy";
 import { probeFile } from "./probe";
 import { detectScenes } from "./scenes";
+import { computeFileStatus, latestJobsByStage, STAGE_POLICY } from "./status";
 import {
   audioExtractTimeoutMs,
   KEYFRAME_TIMEOUT_MS,
@@ -144,6 +147,23 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     }, UPDATE_DEBOUNCE_MS);
   }
 
+  function reconcile(fileId: number): void {
+    const file = db.getFile(fileId);
+    if (!file) return;
+    const status = computeFileStatus({
+      hasVideo: file.hasVideo,
+      hasTranscript: file.hasTranscript,
+      proxyPath: file.proxyPath,
+      videoUnplayable: file.videoUnplayable,
+      discoveryFailed: file.discoveryFailed,
+      probed: !file.discoveryFailed &&
+        file.fileHash.length > 0 &&
+        !file.fileHash.startsWith("unreadable:"),
+      latestJobs: latestJobsByStage(db.listJobsForFile(fileId)),
+    });
+    if (status !== file.status) setFileStatusInternal(db, fileId, status);
+  }
+
   /** Longest-prefix-matching watched folder for `path`, if any. */
   function folderForPath(path: string): ProjectFolder | null {
     let best: ProjectFolder | null = null;
@@ -254,7 +274,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       existing.memberPaths.every((path, index) => path === memberPaths[index]) &&
       existing.fileHash === fileHash
     ) {
-      await repairFile(existing);
+      reconcile(existing.id);
+      ensureWork(existing.id);
       return;
     }
 
@@ -274,19 +295,22 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       mediaKind: "opatom",
       memberPaths,
       clipKey: clip.clipKey,
+      hasVideo: videoAtoms.length > 0,
     };
 
     if (existing && isUnchangedSuperset(existing.fileHash, newHashMap)) {
       // Member set grew (e.g. video atom finally landed) but every
       // previously-known atom is byte-identical — preserve finished work.
       const updated = db.updateOpAtomMembers(existing.id, input);
-      await repairFile(updated);
+      reconcile(updated.id);
+      ensureWork(updated.id);
       scheduleUpdate();
       return;
     }
 
     const file = db.upsertFile(input);
     db.enqueueJob(file.id, "probe");
+    reconcile(file.id);
     scheduleUpdate();
   }
 
@@ -334,8 +358,9 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       // VISIBLE as an error rather than silently disappearing — otherwise the
       // clip count doesn't match what the editor put in the folder and it
       // looks like the app "lost" a file. Record a stub in error state.
-      if (!existing) {
-        const stub = db.upsertFile({
+      let unreadable = existing;
+      if (!unreadable) {
+        unreadable = db.upsertFile({
           path,
           filename: basenameOf(path),
           durationS: 0,
@@ -348,14 +373,16 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
           role: roleForPath(path),
           episodeId: episodeIdForPath(path),
         });
-        db.setFileStatus(stub.id, "error");
-        scheduleUpdate();
       }
+      db.setDiscoveryFailed(unreadable.id, true);
+      reconcile(unreadable.id);
+      scheduleUpdate();
       console.warn(`onFileFound: unreadable media ${path}:`, err);
       return;
     }
     probed.role = roleForPath(path);
     probed.episodeId = episodeIdForPath(path);
+    if (existing?.discoveryFailed) db.setDiscoveryFailed(existing.id, false);
 
     if (!existing) {
       const byHash = db.getFileByHash(probed.fileHash);
@@ -367,7 +394,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
         // A remounted drive or renamed folder changes the absolute path but
         // not the content hash, so keep the existing clip's derived state.
         const repointed = db.repointFilePath(byHash.id, path, probed.filename);
-        await repairFile(repointed);
+        reconcile(repointed.id);
+        ensureWork(repointed.id);
         scheduleUpdate();
         return;
       }
@@ -375,12 +403,14 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
 
     if (existing && existing.fileHash === probed.fileHash) {
       // File identity is unchanged, but derived processing may be incomplete.
-      await repairFile(existing);
+      reconcile(existing.id);
+      ensureWork(existing.id);
       return;
     }
 
     const file = db.upsertFile(probed);
     db.enqueueJob(file.id, "probe");
+    reconcile(file.id);
     scheduleUpdate();
   }
 
@@ -450,27 +480,9 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     const file = db.getFile(job.fileId);
     if (!file) throw new Error(`Job ${job.id}: file ${job.fileId} not found`);
 
-    // The file row (including its hash) was already written by onFileFound;
-    // this stage just transitions status and fans out the next stages.
-    // OP-Atom clips are already in their final shape (merged from atoms at
-    // discovery time) — never re-probe them into standard shape.
-    db.setFileStatus(file.id, "processing");
-
-    if (file.audioChannels > 0) {
-      db.enqueueJob(file.id, "audio");
-    } else {
-      // A silent clip has a complete, explicitly empty transcript stage.
-      db.replaceTranscript(file.id, []);
-      db.markTranscribed(file.id);
-    }
-
-    if (await hasVideoAtom(file)) {
-      db.enqueueJob(file.id, "proxy");
-      db.enqueueJob(file.id, "scenes");
-    }
-
+    await hasVideoAtom(file);
     db.completeJob(job.id);
-    await maybeMarkReady(file.id);
+    ensureWork(file.id);
   }
 
   async function handleAudio(job: Job): Promise<void> {
@@ -506,30 +518,29 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     db.completeJob(job.id);
   }
 
-  /**
-   * True when the file has a video essence to work from: always true for
-   * standard media; for opatom clips, true iff the primary path (always
-   * memberPaths[0], since memberPaths is ordered [videoAtoms..., audioAtoms...])
-   * is itself a video atom.
-   */
-  async function hasVideoAtom(file: {
-    mediaKind: string;
-    path: string;
-    fps: number;
-    videoUnplayable: boolean;
-  }): Promise<boolean> {
-    if (file.videoUnplayable) return false;
-    if (file.mediaKind !== "opatom") return file.fps > 0;
-    const ffprobeBin = findFfprobeBinary();
-    const info = await analyzeMxf(ffprobeBin, file.path);
-    return info?.essence === "video";
+  async function hasVideoAtom(
+    file: Pick<MediaFile, "id" | "hasVideo" | "mediaKind" | "path">,
+  ): Promise<boolean> {
+    if (file.hasVideo !== null) return file.hasVideo;
+
+    let hasVideo: boolean;
+    if (file.mediaKind === "opatom") {
+      const info = await analyzeMxf(findFfprobeBinary(), file.path);
+      hasVideo = info?.essence === "video";
+    } else {
+      const probed = await probeFile(file.path);
+      hasVideo = probed.hasVideo ?? probed.fps > 0;
+    }
+    db.setFileHasVideo(file.id, hasVideo);
+    reconcile(file.id);
+    return hasVideo;
   }
 
   async function handleProxy(job: Job): Promise<void> {
     const file = db.getFile(job.fileId);
     if (!file) throw new Error(`Job ${job.id}: file ${job.fileId} not found`);
 
-    if (!(await hasVideoAtom(file))) {
+    if (file.videoUnplayable || !(await hasVideoAtom(file))) {
       // Audio-only opatom clip — nothing to make a proxy from.
       db.completeJob(job.id);
       return;
@@ -542,14 +553,13 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     db.setFileProxy(file.id, proxyPath);
 
     db.completeJob(job.id);
-    await maybeMarkReady(file.id);
   }
 
   async function handleScenes(job: Job): Promise<void> {
     const file = db.getFile(job.fileId);
     if (!file) throw new Error(`Job ${job.id}: file ${job.fileId} not found`);
 
-    if (!(await hasVideoAtom(file))) {
+    if (file.videoUnplayable || !(await hasVideoAtom(file))) {
       // Audio-only opatom clip — no video to scene-detect.
       db.completeJob(job.id);
       return;
@@ -598,7 +608,6 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
 
     db.replaceScenes(file.id, scenesWithKeyframes);
     db.completeJob(job.id);
-    await maybeMarkReady(file.id);
   }
 
   async function handleTranscribe(job: Job): Promise<void> {
@@ -628,21 +637,10 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     );
     db.replaceTranscript(file.id, segments);
     db.markTranscribed(file.id);
-    await maybeMarkReady(file.id);
 
     db.enqueueJob(file.id, "embed");
 
     db.completeJob(job.id);
-  }
-
-  async function maybeMarkReady(fileId: number): Promise<void> {
-    const file = db.getFile(fileId);
-    if (!file) return;
-    const videoComplete = !(await hasVideoAtom(file)) ||
-      file.proxyPath !== null;
-    if (file.hasTranscript && videoComplete) {
-      db.setFileStatus(fileId, "ready");
-    }
   }
 
   async function handleEmbed(job: Job): Promise<void> {
@@ -666,12 +664,21 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     db.completeJob(job.id);
   }
 
-  async function repairFile(file: NonNullable<ReturnType<DailiesDB["getFile"]>>): Promise<void> {
-    const hasVideo = await hasVideoAtom(file);
-    let incomplete = false;
+  function ensureWork(fileId: number): void {
+    const file = db.getFile(fileId);
+    if (!file || file.discoveryFailed) return;
+
+    if (db.listUnembeddedSegments(file.id).length > 0) {
+      db.enqueueJob(file.id, "embed");
+    }
+
+    if (file.hasVideo === null) {
+      db.enqueueJob(file.id, "probe");
+      reconcile(file.id);
+      return;
+    }
 
     if (!file.hasTranscript) {
-      incomplete = true;
       if (file.audioChannels > 0) {
         if (!db.hasActiveJob(file.id, "transcribe")) db.enqueueJob(file.id, "audio");
       } else {
@@ -680,23 +687,22 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       }
     }
 
-    if (hasVideo) {
-      if (!file.proxyPath) {
-        incomplete = true;
-        db.enqueueJob(file.id, "proxy");
-      }
+    if (file.hasVideo && !file.videoUnplayable) {
+      if (!file.proxyPath) db.enqueueJob(file.id, "proxy");
       const scenes = db.listScenes(file.id);
       if (!scenes.some((scene) => scene.keyframePath !== null)) {
         db.enqueueJob(file.id, "scenes");
       }
     }
 
-    if (db.listUnembeddedSegments(file.id).length > 0) {
-      db.enqueueJob(file.id, "embed");
-    }
+    reconcile(file.id);
+  }
 
-    if (incomplete) db.setFileStatus(file.id, "processing");
-    await maybeMarkReady(file.id);
+  function reconcileAndEnsureAllFiles(): void {
+    db.backfillDiscoveryFailures();
+    const files = db.listFiles();
+    for (const file of files) reconcile(file.id);
+    for (const file of files) ensureWork(file.id);
   }
 
   async function refreshPrerequisites(kind: "whisper" | "gemini" | "all"): Promise<void> {
@@ -709,10 +715,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     if (kind === "gemini" || kind === "all") {
       db.requeueWaitingJobs(["embed"]);
     }
-    for (const file of db.listFiles()) {
-      if (file.status === "error" && file.durationS === 0) continue;
-      await repairFile(file);
-    }
+    reconcileAndEnsureAllFiles();
     scheduleUpdate();
     kick();
   }
@@ -724,10 +727,8 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     if (reopened === 0) return;
 
     if (file.videoUnplayable) db.setVideoUnplayable(fileId, false);
-    const retryableFile = file.videoUnplayable
-      ? { ...file, videoUnplayable: false }
-      : file;
-    await repairFile(retryableFile);
+    reconcile(fileId);
+    ensureWork(fileId);
     scheduleUpdate();
     kick();
   }
@@ -773,6 +774,10 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
         case "embed":
           await handleEmbed(job);
           break;
+        default: {
+          const unhandledStage: never = job.stage;
+          throw new Error(`Unhandled job stage: ${String(unhandledStage)}`);
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -782,24 +787,18 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       if (transient && job.attempts < MAX_TRANSIENT_RETRIES) {
         await delay(RETRY_BASE_MS * 2 ** job.attempts);
         db.retryJob(job.id, message);
-      } else if (job.stage === "embed") {
-        db.failJob(job.id, message);
-      } else if (job.stage === "proxy" || job.stage === "scenes") {
-        // Video-stage give-up: degrade to audio-only instead of dead-ending the
-        // file — a good transcript can still make it 'ready'. The failed job
-        // stays visible in Settings.
-        db.failJob(job.id, message);
-        db.setVideoUnplayable(job.fileId, true);
-        await maybeMarkReady(job.fileId);
       } else {
         db.failJob(job.id, message);
-        db.setFileStatus(job.fileId, "error");
+        if (STAGE_POLICY[job.stage].failureImpact === "degrade-video") {
+          db.setVideoUnplayable(job.fileId, true);
+        }
       }
     } finally {
       inFlightCount -= 1;
       if (job.stage === "transcribe") {
         transcribeInFlight -= 1;
       }
+      reconcile(job.fileId);
       scheduleUpdate();
       kick();
     }
@@ -865,7 +864,6 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     // downloaded with another/no project open, key added, app restarted) —
     // requeue waiting jobs now; handlers re-park them if still unmet.
     void refreshPrerequisites("all");
-    kick();
   }
 
   async function stop(): Promise<void> {

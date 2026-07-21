@@ -130,5 +130,6 @@ export async function probeFile(path: string): Promise<FileInput> {
     codec,
     audioChannels,
     fileHash,
+    hasVideo: videoStream !== undefined,
   };
 }

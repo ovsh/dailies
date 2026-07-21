@@ -277,7 +277,6 @@ export interface ModelProfile {
   description: string;
   supervisor: string;
   supervisorHigh: string;
-  subagent: string;
 }
 
 /**
@@ -292,7 +291,6 @@ export const MODEL_PROFILES: ModelProfile[] = [
     description: "Fast, proven with Dailies, inexpensive",
     supervisor: "google/gemini-2.5-flash",
     supervisorHigh: "meta/muse-spark-1.1",
-    subagent: "google/gemini-2.5-flash",
   },
   {
     id: "value",
@@ -300,7 +298,6 @@ export const MODEL_PROFILES: ModelProfile[] = [
     description: "Qwen 3.7 Plus — top arena rank per dollar, non-Google",
     supervisor: "qwen/qwen3.7-plus",
     supervisorHigh: "meta/muse-spark-1.1",
-    subagent: "qwen/qwen3.7-plus",
   },
   {
     id: "best",
@@ -308,7 +305,6 @@ export const MODEL_PROFILES: ModelProfile[] = [
     description: "Higher-ranked chat model (can hit capacity)",
     supervisor: "google/gemini-3.5-flash",
     supervisorHigh: "meta/muse-spark-1.1",
-    subagent: "google/gemini-3.5-flash",
   },
   {
     id: "budget",
@@ -316,7 +312,6 @@ export const MODEL_PROFILES: ModelProfile[] = [
     description: "Lower-cost chat model on OpenRouter",
     supervisor: "xiaomi/mimo-v2.5",
     supervisorHigh: "qwen/qwen3.7-plus",
-    subagent: "xiaomi/mimo-v2.5",
   },
 ];
 

@@ -1,13 +1,8 @@
-/**
- * Supervisor: the top-level chat agent. Orchestrates the transcript scout,
- * document search, and clip reader as tools, then emits one
- * final structured answer for the editor.
- */
+/** One-loop chat agent with direct, bounded retrieval tools. */
 import type {
   AgentAnswer,
   ChatMessageRecord,
   Confidence,
-  DocumentHit,
   ModelProfile,
   QualityMode,
   TextEmbedder,
@@ -16,8 +11,13 @@ import type {
 import type { DailiesDB } from "../db/types";
 import { createOpenRouterClient } from "./openrouter-client";
 import type { ChatMessage, OpenRouterClient, ToolCall, ToolDef } from "./openrouter-client";
-import { getFileInfoTool, searchNotesTool } from "./tools";
-import { runClipReader, runTranscriptScout } from "./subagents";
+import {
+  getFileInfoTool,
+  getTranscriptWindowTool,
+  searchNotesTool,
+  searchTranscriptsTool,
+} from "./tools";
+import type { TranscriptWindowCenter } from "./tools";
 
 const MAX_ITERS = 16;
 
@@ -45,14 +45,14 @@ You are given a LIBRARY OVERVIEW at the start of every turn: the clips in the li
 
 **2. Vague or underspecified — they want something but haven't said what.** ("find me something good", "what should I use", "got anything interesting") → Don't guess and don't search. Ask ONE clarifying question — what subject, moment, or topic are they after? Call final_answer with that question as prose, empty hits, no other tools.
 
-**3. Overview / summary — they want to know what the footage IS.** ("what is this about", "summarize the shoot", "what happens", "who's in it") → Answer from the OVERVIEW; if you need more, call clip_reader on the 2–4 most representative clips and synthesize. Mostly prose; add a few illustrative hits only if specific moments matter.
+**3. Overview / summary — they want to know what the footage IS.** ("what is this about", "summarize the shoot", "what happens", "who's in it") → Answer from the OVERVIEW; if you need more, use get_file_info and one or two bounded get_transcript_window calls on the most representative clips. Mostly prose; add a few illustrative hits only if specific moments matter.
 
-**4. Specific find/analysis — they named a concrete subject, topic, person, or moment.** ("where do they mention drainage", "when does she talk about the retention pond", "find the interview about the excavator") → NOW research. Use transcript_scout for what is spoken and search_notes for relevant producer documents. Then final_answer with timecoded transcript hits.
+**4. Specific find/analysis — they named a concrete subject, topic, person, or moment.** ("where do they mention drainage", "when does she talk about the retention pond", "find the interview about the excavator") → NOW research. Use search_transcripts for what is spoken, get_transcript_window for surrounding context, and search_notes for relevant producer documents. Then final_answer with timecoded transcript hits.
 
 ## Iron rules for searching (this is where you have been going wrong)
 
 - Search ONLY for concrete subjects the editor EXPLICITLY named in THIS turn. If they didn't name a subject, you have nothing to search for — you are in case 1, 2, or 3, not case 4.
-- NEVER brainstorm or invent candidate terms. Do not fire off searches for words like "editor", "landscaper", "man", "lawn", "truck", a filename, or a date just because they might be in the footage. If you're guessing, stop and ask instead.
+- Expand the editor's concrete subject with alternate phrasings, synonyms, slang, and closely related terms in extra_terms. Do not invent a new subject. Do not fire off searches for words like "editor", "landscaper", "man", "lawn", "truck", a filename, or a date just because they might be in the footage.
 - NEVER search stopwords or generic words ("the", "hello", "footage", "video", "clip", "thing").
 - One precise query for the thing they asked about beats five speculative ones. Usually one or two tool calls is the whole job.
 
@@ -60,10 +60,11 @@ You are given a LIBRARY OVERVIEW at the start of every turn: the clips in the li
 
 - Search is grounded in spoken transcripts and ingested producer documents. Do not claim that an unspoken subject is visible on screen.
 - Hits carry a role: "raw" = camera media (source timecode); "final" = an exported cut where the timecode is the TIMELINE TC in the finished episode — describe those as "in the final at {tc}". Use search_notes to connect producer notes/scripts to footage ONLY when the OVERVIEW says documents were ingested and the editor's request relates to them.
+- Transcript windows are fixed, bounded reads around elapsed seconds or a source timecode. They return segment IDs and speaker labels. Use those IDs as candidates when a window contains the strongest answer.
 
 ## Every turn ends the same way
 
-Always finish by calling final_answer exactly once. For a conversation or a clarifying question, that's a short friendly line with empty hits. For research, it's clear prose plus references to the strongest candidates returned by the transcript scout. A hit reference is only the source type "segment", its candidate ID, and confidence. Never write filenames, timecodes, quotes, or descriptions into a hit: the application loads those facts from its database. Only reference IDs that appeared in tool results during this turn. If you searched and found nothing, say so plainly — never pad with weak or invented hits.
+Always finish by calling final_answer exactly once. For a conversation or a clarifying question, that's a short friendly line with empty hits. For research, it's clear prose plus references to the strongest candidates returned by search_transcripts or get_transcript_window. A hit reference is only the source type "segment", its candidate ID, and confidence. Never write filenames, timecodes, quotes, or descriptions into a hit: the application loads those facts from its database. Only reference IDs that appeared in tool results during this turn. If you searched and found nothing, say so plainly — never pad with weak or invented hits.
 Write the prose as plain text: the app renders it verbatim, so markdown syntax (#, **, backticks, bullet asterisks) shows up as literal characters. Use short paragraphs and simple dashes for lists.`;
 
 const EPISODE_SCOPE_NOTICE =
@@ -131,24 +132,32 @@ function toolDef(name: string, description: string, parameters: object): ToolDef
 
 const SUPERVISOR_TOOLS: ToolDef[] = [
   toolDef(
-    "transcript_scout",
-    "Search the transcripts for spoken references to a topic. Returns hits and researcher notes.",
+    "search_transcripts",
+    "Hybrid keyword and semantic search over spoken transcripts. Expand only the editor's named subject with useful synonyms and alternate phrasings in extra_terms.",
     {
       type: "object",
-      properties: { query: { type: "string" } },
-      required: ["query"],
+      properties: {
+        query: { type: "string", description: "Precise query for the editor's named subject" },
+        extra_terms: {
+          type: "array",
+          items: { type: "string" },
+          description: "Synonyms, slang, and alternate phrasings for the same subject",
+        },
+      },
+      required: ["query", "extra_terms"],
     },
   ),
   toolDef(
-    "clip_reader",
-    "Read the full transcript of one file and answer a question about it.",
+    "get_transcript_window",
+    "Read at most 24 transcript segments within 30 seconds of a point in one file. Provide center_s from clip start or source_timecode.",
     {
       type: "object",
       properties: {
         file_id: { type: "number" },
-        question: { type: "string" },
+        center_s: { type: "number", description: "Elapsed seconds from clip start" },
+        source_timecode: { type: "string", description: "SMPTE source timecode such as 01:00:20:00" },
       },
-      required: ["file_id", "question"],
+      required: ["file_id"],
     },
   ),
   toolDef(
@@ -162,11 +171,14 @@ const SUPERVISOR_TOOLS: ToolDef[] = [
   ),
   toolDef(
     "search_notes",
-    "Search the producer notes / scripts / documents that were dropped into watched folders.",
+    "Hybrid keyword and semantic search over producer notes, scripts, and other ingested documents.",
     {
       type: "object",
-      properties: { query: { type: "string" } },
-      required: ["query"],
+      properties: {
+        query: { type: "string" },
+        extra_terms: { type: "array", items: { type: "string" } },
+      },
+      required: ["query", "extra_terms"],
     },
   ),
   toolDef(
@@ -200,13 +212,11 @@ const FINAL_ANSWER_TOOL = SUPERVISOR_TOOLS.find((tool) => tool.function.name ===
 
 export interface CandidateRegistry {
   segments: Map<number, TranscriptHit>;
-  documents: Map<number, DocumentHit>;
 }
 
 export function createCandidateRegistry(): CandidateRegistry {
   return {
     segments: new Map(),
-    documents: new Map(),
   };
 }
 
@@ -277,7 +287,7 @@ export function hydrateFinalAnswer(
 
     const registered = registry.segments.get(ref.id);
     if (!registered) {
-      drop(ref, "not returned by a scout this turn");
+      drop(ref, "not returned by a transcript tool this turn");
       continue;
     }
     const row = db.getTranscriptHit(ref.id);
@@ -399,6 +409,20 @@ function parseToolArguments(call: ToolCall): unknown {
   }
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function transcriptWindowCenter(rec: Record<string, unknown>): TranscriptWindowCenter | null {
+  if (typeof rec.center_s === "number" && Number.isFinite(rec.center_s)) {
+    return { kind: "seconds", value: rec.center_s };
+  }
+  if (typeof rec.source_timecode === "string" && rec.source_timecode.trim().length > 0) {
+    return { kind: "source_timecode", value: rec.source_timecode.trim() };
+  }
+  return null;
+}
+
 // ---------- main entry ----------
 
 export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
@@ -414,7 +438,6 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     emit,
   } = opts;
   const client = opts.client ?? createOpenRouterClient(() => apiKey);
-  const subagentModel = modelProfile.subagent;
 
   let supervisorModel = qualityMode === "high" ? modelProfile.supervisorHigh : modelProfile.supervisor;
   const systemInstruction =
@@ -433,33 +456,35 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     { role: "user", content: `${digest}\n\n---\n\nEditor's question: ${userText}` },
   ];
 
-  // Turn-local proof that a final reference came from a scout in this turn.
+  // Turn-local proof that a final reference came from a transcript tool in this turn.
   const registry = createCandidateRegistry();
 
   const executeTool = async (name: string, args: unknown): Promise<string> => {
     const rec = isRecord(args) ? args : {};
 
-    if (name === "transcript_scout") {
+    if (name === "search_transcripts") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "transcript scout", status: `transcript scout — searching spoken references for "${query}"` });
-      const result = await runTranscriptScout({ client, model: subagentModel, db, query, embedder, episodeId });
-      for (const hit of result.hits) registry.segments.set(hit.segmentId, hit);
-      return JSON.stringify(result);
+      const hits = await searchTranscriptsTool(db, query, stringArray(rec.extra_terms), embedder, episodeId);
+      for (const hit of hits) registry.segments.set(hit.segmentId, hit);
+      return JSON.stringify(hits);
     }
 
     if (name === "search_notes") {
       const query = typeof rec.query === "string" ? rec.query : "";
       emit({ type: "activity", agent: "search notes", status: `search notes — searching producer notes for "${query}"` });
-      const hits = await searchNotesTool(db, query, [], embedder, episodeId);
-      for (const hit of hits) registry.documents.set(hit.chunkId, hit);
+      const hits = await searchNotesTool(db, query, stringArray(rec.extra_terms), embedder, episodeId);
       return JSON.stringify(hits);
     }
 
-    if (name === "clip_reader") {
+    if (name === "get_transcript_window") {
       const fileId = typeof rec.file_id === "number" ? rec.file_id : 0;
-      const question = typeof rec.question === "string" ? rec.question : "";
       emit({ type: "activity", agent: "clip reader", status: `clip reader — reading file ${fileId}` });
-      return runClipReader({ client, model: subagentModel, db, fileId, question });
+      const center = transcriptWindowCenter(rec);
+      if (!center) return "error: provide center_s or source_timecode";
+      const hits = getTranscriptWindowTool(db, fileId, center, episodeId);
+      for (const hit of hits) registry.segments.set(hit.segmentId, hit);
+      return JSON.stringify(hits);
     }
 
     if (name === "get_file_info") {

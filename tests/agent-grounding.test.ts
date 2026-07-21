@@ -4,7 +4,6 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { runTranscriptScout } from "../src/main/agents/subagents";
 import {
   createCandidateRegistry,
   hydrateFinalAnswer,
@@ -12,6 +11,7 @@ import {
 } from "../src/main/agents/supervisor";
 import { openDatabase } from "../src/main/db/database";
 import type { OpenRouterClient } from "../src/main/agents/openrouter-client";
+import { expandTerms, getTranscriptWindowTool } from "../src/main/agents/tools";
 import { MODEL_PROFILES } from "../src/shared/types";
 
 function makeDb(name: string) {
@@ -111,19 +111,19 @@ describe("final answer grounding", () => {
       confidence: "high",
     }]);
     expect(warnings).toHaveLength(3);
-    expect(warnings.join("\n")).toContain("not returned by a scout");
+    expect(warnings.join("\n")).toContain("not returned by a transcript tool");
     expect(warnings.join("\n")).toContain("outside the selected episode");
     expect(warnings.join("\n")).toContain("outside the file duration");
     db.close();
   });
 
-  it("injects the supervisor client and cannot emit an unscouted DB ID", async () => {
+  it("injects the supervisor client and cannot emit an unregistered DB ID", async () => {
     const db = makeDb("supervisor-client");
     const file = addFile(db, "I001.mov", 20, null);
     db.replaceTranscript(file.id, [{
       startS: 1,
       endS: 2,
-      text: "Existing but never returned by a scout.",
+      text: "Existing but never returned by a transcript tool.",
       avgConf: 1,
       words: [],
     }]);
@@ -156,20 +156,135 @@ describe("final answer grounding", () => {
 
     expect(answer).toEqual({ prose: "Model prose", hits: [] });
     expect(client.chat).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("not returned by a scout"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("not returned by a transcript tool"));
     warn.mockRestore();
+    db.close();
+  });
+
+  it("preserves oldest-first history, the scoped digest, and the current question", async () => {
+    const db = makeDb("turn-inputs");
+    const selected = db.createEpisode("301");
+    const other = db.createEpisode("302");
+    const selectedFile = addFile(db, "selected.mov", 30, selected.id);
+    addFile(db, "outside.mov", 30, other.id);
+    db.replaceTranscript(selectedFile.id, [{
+      startS: 1,
+      endS: 3,
+      text: "Selected episode excerpt.",
+      avgConf: 1,
+      words: [],
+    }]);
+    db.markTranscribed(selectedFile.id);
+    const chat = db.createChat("history");
+    db.addChatMessage(chat.id, "user", "Earlier question");
+    db.addChatMessage(chat.id, "assistant", "Earlier answer");
+    const client: OpenRouterClient = {
+      chat: vi.fn(async () => ({
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "final-1",
+            type: "function" as const,
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({ prose: "Current answer", hits: [] }),
+            },
+          }],
+        },
+      })),
+      embed: vi.fn(async () => []),
+    };
+
+    await runChatTurn({
+      db,
+      history: db.getChatMessages(chat.id),
+      userText: "Current question",
+      apiKey: "unused-test-value",
+      qualityMode: "standard",
+      modelProfile: MODEL_PROFILES[0]!,
+      embedder: null,
+      episodeId: selected.id,
+      emit: () => {},
+      client,
+    });
+
+    const request = vi.mocked(client.chat).mock.calls[0]?.[0];
+    expect(request?.messages.slice(1, 3).map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "user", content: "Earlier question" },
+      { role: "assistant", content: "Earlier answer" },
+    ]);
+    expect(request?.messages[0]?.content).toContain("scoped this conversation to a single episode");
+    expect(request?.messages.at(-1)?.content).toContain("selected.mov");
+    expect(request?.messages.at(-1)?.content).not.toContain("outside.mov");
+    expect(request?.messages.at(-1)?.content).toContain("Editor's question: Current question");
     db.close();
   });
 });
 
-describe("scout parsing", () => {
-  async function runTranscriptSelection(finalText: (segmentId: number) => string) {
-    const db = makeDb("scout-selection");
-    const file = addFile(db, "S001.mov", 20, null);
+describe("flat agent loop", () => {
+  it("hard-caps bounded transcript windows", () => {
+    const db = makeDb("bounded-window");
+    const file = addFile(db, "C001.mov", 90, null);
+    db.replaceTranscript(
+      file.id,
+      Array.from({ length: 40 }, (_, index) => ({
+        startS: index,
+        endS: index + 0.5,
+        text: `Segment ${index}`,
+        speaker: index % 2 === 0 ? "Maya" : "Luis",
+        avgConf: 1,
+        words: [],
+      })),
+    );
+
+    const hits = getTranscriptWindowTool(db, file.id, { kind: "seconds", value: 20 }, null);
+
+    expect(hits).toHaveLength(24);
+    expect(hits.every((hit) => hit.startS >= 8 && hit.startS <= 31)).toBe(true);
+    db.close();
+  });
+
+  it.each([
+    {
+      label: "prose-wrapped final JSON",
+      content: 'Research complete.\n{"prose":"Wrapped answer","hits":[]}\nDone.',
+    },
+    {
+      label: "fenced final JSON",
+      content: '```json\n{"prose":"Wrapped answer","hits":[]}\n```',
+    },
+  ])("accepts $label", async ({ content }) => {
+    const db = makeDb("final-json");
+    const client: OpenRouterClient = {
+      chat: vi.fn(async () => ({ message: { content } })),
+      embed: vi.fn(async () => []),
+    };
+
+    const answer = await runChatTurn({
+      db,
+      history: [],
+      userText: "Summarize this",
+      apiKey: "unused-test-value",
+      qualityMode: "standard",
+      modelProfile: MODEL_PROFILES[0]!,
+      embedder: null,
+      episodeId: null,
+      emit: () => {},
+      client,
+    });
+
+    expect(answer).toEqual({ prose: "Wrapped answer", hits: [] });
+    db.close();
+  });
+
+  it("registers direct search results and passes model-expanded terms", async () => {
+    const db = makeDb("direct-search");
+    const file = addFile(db, "S001.mov", 30, null);
     db.replaceTranscript(file.id, [{
-      startS: 1,
-      endS: 2,
-      text: "A bear crosses the river.",
+      startS: 4,
+      endS: 8,
+      text: "We check the retention pond after every storm.",
+      speaker: "Maya",
       avgConf: 1,
       words: [],
     }]);
@@ -183,74 +298,79 @@ describe("scout parsing", () => {
             type: "function" as const,
             function: {
               name: "search_transcripts",
-              arguments: JSON.stringify({ query: "bear", extra_terms: [] }),
+              arguments: JSON.stringify({ query: "water control", extra_terms: ["retention pond"] }),
             },
           }],
         },
       },
-      { message: { content: finalText(segmentId) } },
+      {
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "final-1",
+            type: "function" as const,
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                prose: "Maya discusses the retention pond.",
+                hits: [{ source: "segment", id: segmentId, confidence: "high" }],
+              }),
+            },
+          }],
+        },
+      },
     ];
-    const client = {
+    const client: OpenRouterClient = {
       chat: vi.fn(async () => responses.shift()!),
-      embed: vi.fn(),
-    } as unknown as OpenRouterClient;
+      embed: vi.fn(async () => []),
+    };
+    const events: Array<{ type: "activity"; agent: string; status: string }> = [];
 
-    const result = await runTranscriptScout({
-      client,
-      model: "test-model",
+    const answer = await runChatTurn({
       db,
-      query: "bear",
+      history: [],
+      userText: "Where do they discuss water control?",
+      apiKey: "unused-test-value",
+      qualityMode: "standard",
+      modelProfile: MODEL_PROFILES[0]!,
       embedder: null,
       episodeId: null,
+      emit: (event) => events.push(event),
+      client,
     });
+
+    expect(answer.hits).toHaveLength(1);
+    expect(answer.hits[0]?.quote).toBe("We check the retention pond after every storm.");
+    expect(events).toEqual([{
+      type: "activity",
+      agent: "transcript scout",
+      status: 'transcript scout — searching spoken references for "water control"',
+    }]);
+    const secondRequest = vi.mocked(client.chat).mock.calls[1]?.[0];
+    const toolContent = secondRequest?.messages.find((message) => message.role === "tool")?.content;
+    expect(toolContent).toContain(`"segmentId":${segmentId}`);
+    expect(toolContent).toContain('"speaker":"Maya"');
     db.close();
-    return { result, segmentId };
-  }
-
-  it.each([
-    {
-      label: "prose-wrapped JSON",
-      text: (id: number) => `I found one useful result.\n{"keep":[${id}],"notes":"bear { by the river }"}\nHope that helps.`,
-      notes: "bear { by the river }",
-    },
-    {
-      label: "fenced JSON",
-      text: (id: number) => `\`\`\`json\n{"keep":[${id}],"notes":"fenced"}\n\`\`\``,
-      notes: "fenced",
-    },
-    {
-      label: "numeric string IDs with malformed entries",
-      text: (id: number) => JSON.stringify({ keep: [String(id), "nope", 0, -1, 1.5], notes: "coerced" }),
-      notes: "coerced",
-    },
-    {
-      label: "a bare array",
-      text: (id: number) => JSON.stringify([id]),
-      notes: "",
-    },
-    {
-      label: "missing notes",
-      text: (id: number) => JSON.stringify({ keep: [id] }),
-      notes: "",
-    },
-  ])("accepts $label", async ({ text, notes }) => {
-    const { result, segmentId } = await runTranscriptSelection(text);
-
-    expect(result.hits.map((hit) => hit.segmentId)).toEqual([segmentId]);
-    expect(result.notes).toBe(notes);
   });
 
-  it("fails closed instead of promoting cached transcript candidates", async () => {
-    const db = makeDb("scout");
-    const file = addFile(db, "S001.mov", 20, null);
+  it("registers semantic-only direct search results", async () => {
+    const db = makeDb("semantic-search");
+    const file = addFile(db, "V001.mov", 30, null);
     db.replaceTranscript(file.id, [{
-      startS: 1,
-      endS: 2,
-      text: "A bear crosses the river.",
+      startS: 4,
+      endS: 8,
+      text: "Shallow basins catch runoff before it reaches the school.",
+      speaker: "Maya",
       avgConf: 1,
       words: [],
     }]);
-
+    const segmentId = db.listSegments(file.id)[0]!.id;
+    const vector = new Float32Array(768);
+    vector[0] = 1;
+    db.upsertEmbedding("segment", segmentId, vector);
+    const embedder = { embed: vi.fn(async () => [vector]) };
+    const query = "How is heavy rain kept away from classrooms?";
+    expect(db.searchTranscripts(expandTerms(query))).toEqual([]);
     const responses = [
       {
         message: {
@@ -260,36 +380,237 @@ describe("scout parsing", () => {
             type: "function" as const,
             function: {
               name: "search_transcripts",
-              arguments: JSON.stringify({ query: "bear", extra_terms: [] }),
+              arguments: JSON.stringify({
+                query,
+                extra_terms: [],
+              }),
             },
           }],
         },
       },
-      { message: { content: `not valid\n${"x".repeat(500)}` } },
+      {
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "final-1",
+            type: "function" as const,
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                prose: "The basins catch runoff.",
+                hits: [{ source: "segment", id: segmentId, confidence: "high" }],
+              }),
+            },
+          }],
+        },
+      },
     ];
-    const client = {
+    const client: OpenRouterClient = {
       chat: vi.fn(async () => responses.shift()!),
-      embed: vi.fn(),
-    } as unknown as OpenRouterClient;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      embed: vi.fn(async () => []),
+    };
 
-    const result = await runTranscriptScout({
-      client,
-      model: "test-model",
+    const answer = await runChatTurn({
       db,
-      query: "bear",
-      embedder: null,
+      history: [],
+      userText: query,
+      apiKey: "unused-test-value",
+      qualityMode: "standard",
+      modelProfile: MODEL_PROFILES[0]!,
+      embedder,
       episodeId: null,
+      emit: () => {},
+      client,
     });
 
-    expect(result.hits).toEqual([]);
-    expect(warn).toHaveBeenCalledTimes(1);
-    const warning = String(warn.mock.calls[0]![0]);
-    expect(warning).not.toContain("\n");
-    expect(warning).toContain(`raw=not valid\\n${"x".repeat(390)}`);
-    expect(warning).not.toContain("x".repeat(391));
-    warn.mockRestore();
+    expect(answer.hits[0]?.quote).toBe("Shallow basins catch runoff before it reaches the school.");
+    expect(embedder.embed).toHaveBeenCalledWith([query]);
     db.close();
   });
 
+  it("registers every segment returned by a bounded source-timecode window", async () => {
+    const db = makeDb("direct-window");
+    const file = addFile(db, "W001.mov", 90, null);
+    db.replaceTranscript(file.id, [
+      { startS: 10, endS: 14, text: "First context line.", speaker: "Luis", avgConf: 1, words: [] },
+      { startS: 20, endS: 24, text: "The timecoded answer.", speaker: "Maya", avgConf: 1, words: [] },
+    ]);
+    const segmentId = db.listSegments(file.id)[1]!.id;
+    const responses = [
+      {
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "window-1",
+            type: "function" as const,
+            function: {
+              name: "get_transcript_window",
+              arguments: JSON.stringify({ file_id: file.id, source_timecode: "01:00:20:00" }),
+            },
+          }],
+        },
+      },
+      {
+        message: {
+          content: null,
+          tool_calls: [{
+            id: "final-1",
+            type: "function" as const,
+            function: {
+              name: "final_answer",
+              arguments: JSON.stringify({
+                prose: "Maya gives the answer there.",
+                hits: [{ source: "segment", id: segmentId, confidence: "high" }],
+              }),
+            },
+          }],
+        },
+      },
+    ];
+    const client: OpenRouterClient = {
+      chat: vi.fn(async () => responses.shift()!),
+      embed: vi.fn(async () => []),
+    };
+
+    const answer = await runChatTurn({
+      db,
+      history: [],
+      userText: "What is said at 01:00:20:00?",
+      apiKey: "unused-test-value",
+      qualityMode: "standard",
+      modelProfile: MODEL_PROFILES[0]!,
+      embedder: null,
+      episodeId: null,
+      emit: () => {},
+      client,
+    });
+
+    expect(answer.hits[0]?.quote).toBe("The timecoded answer.");
+    const secondRequest = vi.mocked(client.chat).mock.calls[1]?.[0];
+    const toolContent = secondRequest?.messages.find((message) => message.role === "tool")?.content;
+    expect(toolContent).toContain('"speaker":"Luis"');
+    expect(toolContent).toContain('"speaker":"Maya"');
+    db.close();
+  });
+
+  it("falls back from an unavailable high-quality model", async () => {
+    const db = makeDb("model-fallback");
+    const requests: string[] = [];
+    let calls = 0;
+    const client: OpenRouterClient = {
+      chat: vi.fn(async (request) => {
+        requests.push(request.model);
+        calls += 1;
+        if (calls === 1) {
+          const error = new Error("model not found");
+          Object.assign(error, { status: 404 });
+          throw error;
+        }
+        return {
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "final-1",
+              type: "function" as const,
+              function: {
+                name: "final_answer",
+                arguments: JSON.stringify({ prose: "Fallback worked.", hits: [] }),
+              },
+            }],
+          },
+        };
+      }),
+      embed: vi.fn(async () => []),
+    };
+    const events: Array<{ type: "activity"; agent: string; status: string }> = [];
+    const profile = MODEL_PROFILES[0]!;
+
+    const answer = await runChatTurn({
+      db,
+      history: [],
+      userText: "hello",
+      apiKey: "unused-test-value",
+      qualityMode: "high",
+      modelProfile: profile,
+      embedder: null,
+      episodeId: null,
+      emit: (event) => events.push(event),
+      client,
+    });
+
+    expect(answer.prose).toBe("Fallback worked.");
+    expect(requests).toEqual([profile.supervisorHigh, profile.supervisor]);
+    expect(events).toEqual([{
+      type: "activity",
+      agent: "supervisor",
+      status: `${profile.supervisorHigh} unavailable — using ${profile.supervisor}`,
+    }]);
+    db.close();
+  });
+
+  it("forces final_answer after the 16-round tool budget", async () => {
+    const db = makeDb("forced-final");
+    const file = addFile(db, "B001.mov", 30, null);
+    let calls = 0;
+    const client: OpenRouterClient = {
+      chat: vi.fn(async (request) => {
+        calls += 1;
+        if (request.tool_choice === "required") {
+          return {
+            message: {
+              content: null,
+              tool_calls: [{
+                id: "forced-final",
+                type: "function" as const,
+                function: {
+                  name: "final_answer",
+                  arguments: JSON.stringify({ prose: "Budget exhausted safely.", hits: [] }),
+                },
+              }],
+            },
+          };
+        }
+        return {
+          message: {
+            content: null,
+            tool_calls: [{
+              id: `file-info-${calls}`,
+              type: "function" as const,
+              function: {
+                name: "get_file_info",
+                arguments: JSON.stringify({ file_id: file.id }),
+              },
+            }],
+          },
+        };
+      }),
+      embed: vi.fn(async () => []),
+    };
+    const events: Array<{ type: "activity"; agent: string; status: string }> = [];
+
+    const answer = await runChatTurn({
+      db,
+      history: [],
+      userText: "Keep looking forever",
+      apiKey: "unused-test-value",
+      qualityMode: "standard",
+      modelProfile: MODEL_PROFILES[0]!,
+      embedder: null,
+      episodeId: null,
+      emit: (event) => events.push(event),
+      client,
+    });
+
+    expect(answer).toEqual({ prose: "Budget exhausted safely.", hits: [] });
+    expect(client.chat).toHaveBeenCalledTimes(18);
+    const lastRequest = vi.mocked(client.chat).mock.calls[17]?.[0];
+    expect(lastRequest?.tool_choice).toBe("required");
+    expect(lastRequest?.tools?.map((tool) => tool.function.name)).toEqual(["final_answer"]);
+    expect(events.at(-1)).toEqual({
+      type: "activity",
+      agent: "supervisor",
+      status: "wrapping up the answer",
+    });
+    db.close();
+  });
 });

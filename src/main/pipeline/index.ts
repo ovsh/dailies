@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join, extname } from "node:path";
 
+import { OpenRouterApiError } from "../agents/openrouter-client";
 import type { DailiesDB } from "../db/types";
 import type {
   FileInput,
@@ -645,7 +646,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
   async function handleEmbed(job: Job): Promise<void> {
     const e = embedder();
     if (!e) {
-      db.waitJob(job.id, "Gemini API key not set");
+      db.waitJob(job.id, "OpenRouter API key not set — Settings → AI");
       return;
     }
 
@@ -718,6 +719,15 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     );
   }
 
+  function isTransientEmbedError(err: unknown): boolean {
+    if (err instanceof OpenRouterApiError) {
+      return err.status === 408 ||
+        err.status === 429 ||
+        (err.status >= 500 && err.status < 600);
+    }
+    return isTransientError(err);
+  }
+
   function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -746,9 +756,14 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (isTransientError(err) && job.attempts < MAX_TRANSIENT_RETRIES) {
+      const transient = job.stage === "embed"
+        ? isTransientEmbedError(err)
+        : isTransientError(err);
+      if (transient && job.attempts < MAX_TRANSIENT_RETRIES) {
         await delay(RETRY_BASE_MS * 2 ** job.attempts);
         db.retryJob(job.id, message);
+      } else if (job.stage === "embed") {
+        db.failJob(job.id, message);
       } else if (job.stage === "proxy" || job.stage === "scenes") {
         // Video-stage give-up: degrade to audio-only instead of dead-ending the
         // file — a good transcript can still make it 'ready'. The failed job

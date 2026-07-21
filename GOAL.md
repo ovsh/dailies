@@ -29,8 +29,8 @@ fixes it, and leaves behind gates that keep it working.
 - `landscaping test/` — 7 real OP-Atom MXF atoms across 2 recording days (expected to
   group into named Avid clips).
 - Whisper `large-v3-turbo` model already at `~/Library/Application Support/Dailies/models/`.
-- Gemini key stored encrypted in the app (safeStorage). **The key never leaves the app**:
-  chat gates run through the real app; no plaintext key in scripts, logs, or briefs.
+- OpenRouter key stored encrypted in the app (safeStorage). The app decrypts it only for
+  API calls; no plaintext key appears in scripts, logs, or briefs.
 
 ## Gates
 

@@ -6,7 +6,7 @@
 
 // ---------- media & index ----------
 
-export type FileStatus = "pending" | "processing" | "ready" | "offline" | "error";
+export type FileStatus = "pending" | "processing" | "ready" | "error";
 
 /** raw = camera media / dailies; final = exported cuts (timecode is timeline TC). */
 export type MediaRole = "raw" | "final";
@@ -289,7 +289,7 @@ export const MODEL_PROFILES: ModelProfile[] = [
   {
     id: "balanced",
     label: "Balanced (recommended)",
-    description: "Gemini 2.5 Flash — proven with Dailies, cheap",
+    description: "Fast, proven with Dailies, inexpensive",
     supervisor: "google/gemini-2.5-flash",
     supervisorHigh: "meta/muse-spark-1.1",
     subagent: "google/gemini-2.5-flash",
@@ -305,15 +305,15 @@ export const MODEL_PROFILES: ModelProfile[] = [
   {
     id: "best",
     label: "Best quality",
-    description: "Gemini 3.5 Flash — top-10 vision arena (can hit capacity)",
+    description: "Higher-ranked chat model (can hit capacity)",
     supervisor: "google/gemini-3.5-flash",
     supervisorHigh: "meta/muse-spark-1.1",
     subagent: "google/gemini-3.5-flash",
   },
   {
     id: "budget",
-    label: "Budget bulk indexing",
-    description: "Xiaomi MiMo V2.5 — most-used model on OpenRouter, ~10× cheaper",
+    label: "Budget chat",
+    description: "Lower-cost chat model on OpenRouter",
     supervisor: "xiaomi/mimo-v2.5",
     supervisorHigh: "qwen/qwen3.7-plus",
     subagent: "xiaomi/mimo-v2.5",

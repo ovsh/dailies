@@ -22,7 +22,7 @@ export interface QueueOptions {
 
 export interface JobQueue {
   retryFile(fileId: number): Promise<void>;
-  refreshPrerequisites(kind: "whisper" | "gemini" | "all"): Promise<void>;
+  refreshPrerequisites(kind: "whisper" | "openrouter" | "all"): Promise<void>;
   start(): void;
   stop(): Promise<void>;
 }
@@ -47,14 +47,14 @@ export function createQueue(opts: QueueOptions): JobQueue {
   const pendingTranscribeJobs: Job[] = [];
   const inFlightJobs = new Map<Promise<void>, AbortController>();
 
-  async function refreshPrerequisites(kind: "whisper" | "gemini" | "all"): Promise<void> {
+  async function refreshPrerequisites(kind: "whisper" | "openrouter" | "all"): Promise<void> {
     if (kind === "whisper" || kind === "all") {
       db.requeueWaitingJobs(["transcribe"]);
     }
-    if (kind === "gemini") {
+    if (kind === "openrouter") {
       db.reopenErroredJobs(undefined, ["embed"]);
     }
-    if (kind === "gemini" || kind === "all") {
+    if (kind === "openrouter" || kind === "all") {
       db.requeueWaitingJobs(["embed"]);
     }
     reconcileAndEnsureAllFiles();

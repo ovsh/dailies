@@ -200,7 +200,7 @@ describe("optional embed job failures", () => {
     await pipeline.stop();
   });
 
-  it("reopens existing embed failures when Gemini becomes available", async () => {
+  it("reopens existing embed failures when OpenRouter becomes available", async () => {
     const { db, pipeline } = setup();
     const firstFileId = seedTranscribedFile(db, {
       filename: "first-embed-retry.wav",
@@ -224,7 +224,7 @@ describe("optional embed job failures", () => {
     db.failJob(transcribeJob.id, "non-embed failure");
     const jobIdsBeforeRefresh = db.listJobs().map((job) => job.id).sort((a, b) => a - b);
 
-    await pipeline.refreshPrerequisites("gemini");
+    await pipeline.refreshPrerequisites("openrouter");
 
     const jobs = db.listJobs();
     expect(jobs.map((job) => job.id).sort((a, b) => a - b)).toEqual(jobIdsBeforeRefresh);

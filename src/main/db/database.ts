@@ -367,6 +367,8 @@ interface TableInfoRow {
   name: string;
 }
 
+const VISUAL_CLEANUP_MIGRATION_KEY = "migration_visual_cleanup_done";
+
 /** Adds any missing columns from `wantedColumns` to `table`, reading PRAGMA table_info. */
 function addMissingColumns(
   db: BetterSqlite3Database,
@@ -448,12 +450,21 @@ function migrate(db: BetterSqlite3Database): void {
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_episode_id ON files(episode_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id)");
-  db.exec(`
-    DROP TABLE IF EXISTS visual_fts;
-    DROP TABLE IF EXISTS visual_annotations;
-    DELETE FROM embeddings WHERE kind = 'scene';
-    DELETE FROM jobs WHERE stage = 'visual_index';
-  `);
+  const visualCleanupDone = db
+    .prepare<[string], { value: string }>("SELECT value FROM settings WHERE key = ?")
+    .get(VISUAL_CLEANUP_MIGRATION_KEY);
+  if (!visualCleanupDone) {
+    db.transaction(() => {
+      db.exec(`
+        DROP TABLE IF EXISTS visual_fts;
+        DROP TABLE IF EXISTS visual_annotations;
+        DELETE FROM embeddings WHERE kind = 'scene';
+        DELETE FROM jobs WHERE stage = 'visual_index';
+      `);
+      db.prepare<[string, string]>("INSERT INTO settings (key, value) VALUES (?, ?)")
+        .run(VISUAL_CLEANUP_MIGRATION_KEY, "1");
+    })();
+  }
   migrateWatchedFoldersKv(db);
 }
 

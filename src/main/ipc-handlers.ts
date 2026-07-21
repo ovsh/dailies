@@ -232,7 +232,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     if (status !== "connected") return status;
     const saved = settings.setOpenRouterKey(trimmed);
     cachedApiKeyStatus = saved ? "connected" : null;
-    if (saved) void manager.current()?.pipeline.refreshPrerequisites("gemini"); // openrouter
+    if (saved) void manager.current()?.pipeline.refreshPrerequisites("openrouter");
     return saved ? "connected" : "invalid";
   });
   ipcMain.handle(IPC.setModelProfile, (_e, id: string) => {

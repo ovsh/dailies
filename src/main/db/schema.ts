@@ -31,8 +31,6 @@ CREATE TABLE IF NOT EXISTS files (
   status TEXT NOT NULL DEFAULT 'pending',
   added_at TEXT NOT NULL,
   has_transcript INTEGER NOT NULL DEFAULT 0,
-  -- legacy, unused
-  has_visual_index INTEGER NOT NULL DEFAULT 0,
   proxy_path TEXT,
   role TEXT NOT NULL DEFAULT 'raw',
   clip_name TEXT,

@@ -168,7 +168,7 @@ try {
   await waitFor("Welcome setup", `document.querySelector(".welcome-overlay") !== null`);
   // innerText reflects CSS text-transform (headings render uppercase) — compare case-insensitively.
   const welcomeText = (await evaluate(`document.querySelector(".welcome-panel")?.innerText ?? ""`)).toLowerCase();
-  for (const requirement of ["gemini api key", "footage folder", "speech model"]) {
+  for (const requirement of ["openrouter api key", "footage folder", "speech model"]) {
     if (!welcomeText.includes(requirement)) throw new Error(`Welcome is missing requirement: ${requirement}`);
   }
   await record("welcome", { projectName });
@@ -213,7 +213,7 @@ try {
     const active = state.jobs.filter((job) => job.status === "queued" || job.status === "running");
     const waiting = state.jobs.filter((job) => job.status === "waiting");
     const knownPrerequisiteWait = waiting.every((job) =>
-      /speech model|Gemini API key/i.test(job.error ?? ""),
+      /speech model|OpenRouter API key/i.test(job.error ?? ""),
     );
     if (args.skipKeyDependent && state.files.length > 0 && active.length === 0 && waiting.length > 0 && knownPrerequisiteWait) {
       terminal = { outcome: "waiting-for-setup", ...status, settings: state.settings };

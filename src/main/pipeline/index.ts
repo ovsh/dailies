@@ -40,7 +40,7 @@ export interface Pipeline {
   /** Retry every terminal job failure for one known file. */
   retryFile(fileId: number): Promise<void>;
   /** Requeue prerequisite-blocked and otherwise missing derived stages. */
-  refreshPrerequisites(kind: "whisper" | "gemini" | "all"): Promise<void>;
+  refreshPrerequisites(kind: "whisper" | "openrouter" | "all"): Promise<void>;
   start(): void;
   stop(): Promise<void>;
 }

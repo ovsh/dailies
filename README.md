@@ -1,12 +1,12 @@
 # Dailies
 
-Chat with your footage. Local transcription and visual indexing, agent-powered search,
+Chat with your footage. Local transcription and semantic indexing, agent-powered search,
 Avid-native export (markers + EDL). Built for documentary and reality editors.
 
-- **Fully local media** — footage is indexed in place; nothing is moved, copied, or uploaded.
-  Only text excerpts and small keyframes are sent to the AI API.
-- **One key** — a single Gemini API key powers the chat agents, frame verification, visual
-  indexing, and semantic search. Stored in the macOS Keychain.
+- **Fully local media** — footage is indexed in place; nothing is moved or copied, and media
+  files are never uploaded. Text excerpts and embedding inputs are sent to OpenRouter.
+- **One key** — a single OpenRouter API key powers chat and semantic embeddings. Stored in
+  the macOS Keychain.
 - **Reads Avid media directly** — point it at an `Avid MediaFiles` folder; OP-Atom MXF atoms
   are grouped back into clips under their real Avid clip names. No exports needed.
 - **Whisper on-device, built in** — the transcription engine ships inside the app
@@ -26,8 +26,9 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
 
 ### 2. First run — three things
 
-1. **Gemini API key.** Get one free at [aistudio.google.com](https://aistudio.google.com)
-   → "Get API key" → paste it into the welcome screen. This one key powers everything.
+1. **OpenRouter API key.** Create one at
+   [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys), then paste it into the
+   welcome screen. It powers chat and semantic embeddings.
 2. **A footage folder.** Choose "raw footage" for camera media / dailies and "finals" for
    exported cuts. You can point directly at an **`Avid MediaFiles`** folder — Avid's MXF
    media is read in place, grouped into clips with their real names. New files dropped into
@@ -35,8 +36,8 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
 3. **The speech model.** The Whisper engine is built into the app — nothing to install.
    The first time, go to **Settings & Jobs → Transcription → Download** to fetch the
    speech model (~1.6 GB, one time; a progress bar shows it downloading). Until it's
-   downloaded, everything else still works (visual search, chat, export) and any clips
-   waiting on transcription pick it up automatically afterwards.
+   downloaded, document import and chat still work, and any clips waiting on transcription
+   pick it up automatically afterwards.
 
    *Advanced:* if you already use whisper.cpp, Dailies also honors a Homebrew install
    (`brew install whisper-cpp`) or a `DAILIES_WHISPER_BIN` override — but you never need
@@ -61,12 +62,13 @@ you see, and what the chat searches. **ALL** searches the whole project.
 
 ### 5. Indexing — what happens to your footage
 
-When a clip is found, Dailies (in the background, watchable under **Settings & Jobs**):
+When a clip is found, Dailies runs an audio-first pipeline in the background, watchable
+under **Settings & Jobs**:
 
 1. reads its metadata and **source timecode** (frame-accurate, drop-frame aware),
-2. transcribes the audio locally (Whisper),
-3. detects scenes and asks Gemini to describe what's *on screen* per scene,
-4. builds keyword + semantic search indexes over all of it.
+2. builds a playback proxy and detects scene boundaries,
+3. transcribes the audio locally with Whisper,
+4. builds keyword + semantic search indexes over the transcript.
 
 An hour of footage takes roughly 10 minutes on an M-series Mac, mostly transcription.
 Drop a shoot day in a watched folder in the evening; it's searchable in the morning.
@@ -81,17 +83,19 @@ same project (and episode, if one is selected), and the chat can search them.
 
 Ask in plain language:
 
-> *Where can I find footage of bears, and what do people say about them?*
+> *Where do people talk about bears, and what do they say about them?*
 > *The producer wants more tension in the storm scene — what do we have?*
 > *Where in the final of 202 does Marsh mention the salmon run?*
 
-Behind the scenes a supervisor agent runs specialist searches (spoken words, visuals,
-notes), **verifies visual hits against actual frames**, and answers with clip cards:
-thumbnail, filename, timecodes, a **SEEN** or **SAID** tag, and a confidence dot.
+Behind the scenes a supervisor agent runs specialist searches over spoken words and
+imported notes, then answers with clip cards: thumbnail, filename, timecodes, a **SAID**
+tag, and a confidence dot.
 Click a card to open the clip at that exact moment, with the synced transcript beside it.
 
 - Hits from finals carry a **FINAL** tag and their timecode is the timeline TC of the cut.
-- "Quality" in Settings routes the supervisor to Gemini 3.5 Pro when your key has access.
+- "Model profile" selects the OpenRouter routes used by the supervisor and search agents.
+  "Quality" switches the supervisor to that profile's higher-quality route, with automatic
+  fallback when the route is unavailable. Embeddings use one fixed model.
 
 ### 8. Export to Avid
 
@@ -109,10 +113,8 @@ All timecodes are source TC (or timeline TC for finals), drop-frame handled corr
 | Symptom | Fix |
 |---|---|
 | "Can't verify the app" on first open | Right-click → Open → Open (one time). |
-| Chat says a key is needed | Settings & Jobs → paste your Gemini key. |
+| Chat says a key is needed | Settings & Jobs → paste your OpenRouter key. |
 | Clips stuck without transcripts | Download the speech model: Settings & Jobs → Transcription → Download. |
-| A clip shows "media offline" | Its drive is unmounted; remount and it recovers. |
-| Visual search finds nothing | Visual indexing needs the Gemini key at scan time — re-scan after adding the key. |
 | Something looks stuck | Settings & Jobs shows every indexing job and any errors; "Scan again" is always safe. |
 
 Your index lives in `~/Library/Application Support/Dailies/` — deleting it never touches
@@ -162,7 +164,7 @@ See `docs/` and `src/shared/types.ts` (the cross-boundary contract). Modules:
 |---|---|
 | `src/main/project-manager.ts` | Projects: one SQLite DB + pipeline per show, registry, legacy adoption |
 | `src/main/db/` | SQLite index (better-sqlite3, FTS5 + embedding vectors), episodes, folders |
-| `src/main/pipeline/` | watch → probe → audio/proxy/scenes → whisper → Gemini visual index → embeddings; Avid OP-Atom MXF grouping; document (notes/script/xlsx) ingest |
-| `src/main/agents/` | Gemini 3.5 Flash supervisor + scouts/verifier (3.5 Pro optional), episode-scoped hybrid search |
+| `src/main/pipeline/` | watch → probe → audio/proxy/scenes → whisper → transcript embeddings; Avid OP-Atom MXF grouping; document (notes/script/xlsx) ingest |
+| `src/main/agents/` | OpenRouter supervisor + transcript/document search agents, episode-scoped hybrid search |
 | `src/main/export/` | Avid locator lists + CMX3600 EDL (frame-accurate, DF-aware) |
 | `src/renderer/` | React UI ("screening room" design): projects, episodes, chat, library, clip view |

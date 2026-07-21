@@ -50,6 +50,18 @@ CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
 describe("legacy database migration", () => {
+  it("omits the retired visual index column from new databases", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-mig-new-"));
+    const dbPath = path.join(dir, "new.db");
+
+    openDatabase(dbPath).close();
+
+    const verify = new Database(dbPath);
+    const columns = verify.pragma("table_info(files)") as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).not.toContain("has_visual_index");
+    verify.close();
+  });
+
   it("opens a v1 database and migrates it in place (regression: clip_key)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-mig-"));
     const dbPath = path.join(dir, "legacy.db");
@@ -95,6 +107,7 @@ describe("legacy database migration", () => {
     expect(columns.map((column) => column.name)).toEqual(
       expect.arrayContaining(["has_video", "discovery_failed"]),
     );
+    expect(columns.map((column) => column.name)).toContain("has_visual_index");
     expect(indexes.map((index) => index.name)).toContain("idx_files_file_hash");
     verify.close();
   });
@@ -199,6 +212,34 @@ describe("legacy database migration", () => {
       .toEqual({ count: 0 });
     expect(verify.prepare("SELECT COUNT(*) AS count FROM files").get()).toEqual({ count: 1 });
     expect(verify.prepare("SELECT COUNT(*) AS count FROM transcript_segments").get()).toEqual({ count: 1 });
+    expect(verify.prepare("SELECT value FROM settings WHERE key = ?").get("migration_visual_cleanup_done"))
+      .toEqual({ value: "1" });
+
+    verify.exec(`
+      CREATE TABLE visual_annotations (id INTEGER PRIMARY KEY);
+      CREATE VIRTUAL TABLE visual_fts USING fts5(content);
+      INSERT INTO visual_annotations DEFAULT VALUES;
+      INSERT INTO visual_fts (content) VALUES ('created after migration');
+    `);
+    verify.prepare("INSERT INTO embeddings (kind, ref_id, vector) VALUES (?, ?, ?)")
+      .run("scene", sceneId, Buffer.alloc(4));
+    verify.prepare(
+      "INSERT INTO jobs (file_id, stage, status, attempts, error, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(fileId, "visual_index", "queued", 0, null, new Date(0).toISOString());
     verify.close();
+
+    openDatabase(dbPath).close();
+
+    const reopened = new Database(dbPath);
+    const tablesAfterSecondOpen = reopened.prepare<[], { name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    ).all().map((row) => row.name);
+    expect(tablesAfterSecondOpen).toContain("visual_annotations");
+    expect(tablesAfterSecondOpen).toContain("visual_fts");
+    expect(reopened.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE kind = 'scene'").get())
+      .toEqual({ count: 1 });
+    expect(reopened.prepare("SELECT COUNT(*) AS count FROM jobs WHERE stage = 'visual_index'").get())
+      .toEqual({ count: 1 });
+    reopened.close();
   });
 });

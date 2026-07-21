@@ -552,7 +552,7 @@ export function openDatabase(dbPath: string): DailiesDB {
     "SELECT * FROM files WHERE episode_id = ? ORDER BY added_at DESC",
   );
   const stmtSetFileStatus = db.prepare<[string, number]>("UPDATE files SET status = ? WHERE id = ?");
-  const stmtSetFileHasVideo = db.prepare<[number, number]>(
+  const stmtSetFileHasVideo = db.prepare<[number | null, number]>(
     "UPDATE files SET has_video = ? WHERE id = ?",
   );
   const stmtSetDiscoveryFailed = db.prepare<[number, number]>(
@@ -782,6 +782,9 @@ export function openDatabase(dbPath: string): DailiesDB {
   );
   const stmtFailJob = db.prepare<[string, string, number]>(
     "UPDATE jobs SET status = 'error', error = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?",
+  );
+  const stmtReleaseClaimedJob = db.prepare<[string, number]>(
+    "UPDATE jobs SET status = 'queued', updated_at = ? WHERE id = ? AND status = 'running'",
   );
   const stmtResetRunningJobs = db.prepare<[string]>(
     "UPDATE jobs SET status = 'queued', updated_at = ? WHERE status = 'running'",
@@ -1125,8 +1128,8 @@ export function openDatabase(dbPath: string): DailiesDB {
       return stmtListFilesByEpisode.all(episodeId).map(mapFile);
     },
 
-    setFileHasVideo(id: number, hasVideo: boolean): void {
-      stmtSetFileHasVideo.run(hasVideo ? 1 : 0, id);
+    setFileHasVideo(id: number, hasVideo: boolean | null): void {
+      stmtSetFileHasVideo.run(hasVideo === null ? null : hasVideo ? 1 : 0, id);
     },
 
     setDiscoveryFailed(id: number, failed: boolean): void {
@@ -1416,6 +1419,10 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     failJob(jobId: number, error: string): void {
       stmtFailJob.run(error, new Date().toISOString(), jobId);
+    },
+
+    releaseClaimedJob(jobId: number): void {
+      stmtReleaseClaimedJob.run(new Date().toISOString(), jobId);
     },
 
     resetRunningJobs(): void {

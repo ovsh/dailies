@@ -40,7 +40,7 @@ export interface DailiesDB {
   deleteFilesUnderPath(pathPrefix: string): MediaFile[];
   /** All files, or one episode's when episodeId is given. */
   listFiles(episodeId?: number): MediaFile[];
-  setFileHasVideo(id: number, hasVideo: boolean): void;
+  setFileHasVideo(id: number, hasVideo: boolean | null): void;
   setDiscoveryFailed(id: number, failed: boolean): void;
   /** Backfill legacy unreadable stubs. Returns the number of changed rows. */
   backfillDiscoveryFailures(): number;
@@ -108,6 +108,8 @@ export interface DailiesDB {
   /** Bounded transient retry; increments attempts and returns the job to the queue. */
   retryJob(jobId: number, error: string): void;
   failJob(jobId: number, error: string): void;
+  /** Return one claimed but unstarted job to the queue without consuming an attempt. */
+  releaseClaimedJob(jobId: number): void;
   /** Called on boot: any 'running' job becomes 'queued' again. */
   resetRunningJobs(): void;
   listJobs(limit?: number): Job[];

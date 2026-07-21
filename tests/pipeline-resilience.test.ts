@@ -242,6 +242,29 @@ describe("pipeline prerequisite and applicability handling", () => {
     await pipeline.stop();
   });
 
+  it("surfaces a terminal probe failure on a hash-only-discovered file as a file error", async () => {
+    const { db, pipeline } = setup();
+    mocks.probeFile.mockRejectedValue(new Error("ffprobe failed for /media/corrupt.mxf (exit 1)"));
+    // Discovery only hashes: duration/fps/codec are unknown until probe runs.
+    const file = db.upsertFile({
+      path: "/media/corrupt.mxf",
+      filename: "corrupt.mxf",
+      durationS: 0,
+      fps: 0,
+      dropFrame: false,
+      startTc: "00:00:00:00",
+      codec: "",
+      audioChannels: 0,
+      fileHash: "real-hash-from-discovery",
+    });
+    db.enqueueJob(file.id, "probe");
+    pipeline.start();
+
+    await vi.waitFor(() => expect(db.getFile(file.id)?.status).toBe("error"));
+    expect(db.listJobsForFile(file.id).find((job) => job.stage === "probe")?.status).toBe("error");
+    await pipeline.stop();
+  });
+
   it("backfills and preserves an unreadable legacy stub on startup", async () => {
     const { dataDir, db, pipeline } = setup();
     const file = db.upsertFile({

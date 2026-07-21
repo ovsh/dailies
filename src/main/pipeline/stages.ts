@@ -54,16 +54,20 @@ export function createStages(opts: StageOptions): Stages {
   function reconcile(fileId: number): void {
     const file = db.getFile(fileId);
     if (!file) return;
+    const latestJobs = latestJobsByStage(db.listJobsForFile(fileId));
+    // "Probed" means a probe actually succeeded — discovery only hashes, so a
+    // hash alone proves nothing about the media being readable.
+    const probed = !file.discoveryFailed &&
+      !file.fileHash.startsWith("unreadable:") &&
+      (file.durationS > 0 || latestJobs.get("probe")?.status === "done");
     const status = computeFileStatus({
       hasVideo: file.hasVideo,
       hasTranscript: file.hasTranscript,
       proxyPath: file.proxyPath,
       videoUnplayable: file.videoUnplayable,
       discoveryFailed: file.discoveryFailed,
-      probed: !file.discoveryFailed &&
-        file.fileHash.length > 0 &&
-        !file.fileHash.startsWith("unreadable:"),
-      latestJobs: latestJobsByStage(db.listJobsForFile(fileId)),
+      probed,
+      latestJobs,
     });
     if (status !== file.status) setFileStatusInternal(db, fileId, status);
   }

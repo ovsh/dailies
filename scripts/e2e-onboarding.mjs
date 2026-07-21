@@ -200,9 +200,13 @@ try {
     const failedFiles = state.files.filter((file) => file.status === "error");
     // Fixtures may include deliberately corrupt media; those must surface as
     // visible file errors (that IS the pass condition), capped by the flag.
+    // A job error is tolerated only when its file is one of those visible
+    // file errors — orphaned job errors still fail the run.
     const allowedFileErrors = args.expectFileErrors ?? 0;
-    if (failedJobs.length > 0 || failedFiles.length > allowedFileErrors) {
-      throw new Error(`Indexing failed: ${failedJobs.length} job error(s), ${failedFiles.length} file error(s)`);
+    const failedFileIds = new Set(failedFiles.map((file) => file.id));
+    const orphanJobErrors = failedJobs.filter((job) => !failedFileIds.has(job.fileId));
+    if (orphanJobErrors.length > 0 || failedFiles.length > allowedFileErrors) {
+      throw new Error(`Indexing failed: ${failedJobs.length} job error(s) (${orphanJobErrors.length} orphaned), ${failedFiles.length} file error(s)`);
     }
     const pendingFiles = state.files.filter((file) => file.status !== "error");
     if (pendingFiles.length > 0 && pendingFiles.every((file) => file.status === "ready")) {

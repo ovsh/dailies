@@ -2,6 +2,11 @@
 
 **Written 2026-07-22. Engineering plan — reviewed and self-critiqued at the end.**
 
+> **Status 2026-07-22: implemented.** See `docs/releasing.md` for the release flow and
+> one-time setup (public releases repo + Sentry DSN), and `docs/errors.md` for the error
+> catalog. Remaining manual steps: create `ovsh/dailies-releases`, paste the Sentry DSN
+> into `src/main/telemetry.ts`, and run the release dry-run.
+
 Two features, both in service of one thing: users stay on the latest build with one
 click, and when something breaks we can see exactly what happened without asking the
 user to describe it.

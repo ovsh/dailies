@@ -25,6 +25,9 @@ import type {
   ProjectState,
   QualityMode,
   ApiKeyValidationStatus,
+  UpdateState,
+  LogLevel,
+  LogScope,
   WordTiming,
 } from "./types";
 
@@ -86,6 +89,21 @@ export interface DailiesAPI {
   /** Opens an https:// URL in the system browser (e.g. the OpenRouter key page). */
   openExternal(url: string): Promise<void>;
 
+  // updates
+  getUpdateState(): Promise<UpdateState>;
+  checkForUpdates(): Promise<void>;
+  downloadUpdate(): Promise<void>;
+  /** Quits and installs the downloaded update. */
+  installUpdate(): Promise<void>;
+  onUpdateEvent(cb: (state: UpdateState) => void): () => void;
+
+  // diagnostics
+  setErrorReporting(enabled: boolean): Promise<void>;
+  /** Sends the description plus recent session logs to the error-reporting service. */
+  reportProblem(description: string): Promise<{ ok: boolean; error?: string }>;
+  /** Fire-and-forget line into the main-process session log. */
+  log(level: LogLevel, scope: LogScope, event: string, fields?: Record<string, unknown>): void;
+
   /** Fired when project state changes in the main process (indexing, scans). */
   onProjectUpdate(cb: () => void): () => void;
 
@@ -127,4 +145,12 @@ export const IPC = {
   openExternal: "dailies:openExternal",
   projectUpdate: "dailies:projectUpdate",
   indexUpdate: "dailies:indexUpdate",
+  getUpdateState: "dailies:getUpdateState",
+  checkForUpdates: "dailies:checkForUpdates",
+  downloadUpdate: "dailies:downloadUpdate",
+  installUpdate: "dailies:installUpdate",
+  updateEvent: "dailies:updateEvent",
+  setErrorReporting: "dailies:setErrorReporting",
+  reportProblem: "dailies:reportProblem",
+  log: "dailies:log",
 } as const;

@@ -351,6 +351,24 @@ export function createMockApi(): DailiesAPI {
       return () => indexUpdateListeners.delete(cb);
     },
 
+    // updates — the browser preview can't self-update; report unsupported.
+    async getUpdateState() {
+      return { phase: "idle", version: null, percent: null, error: null, lastCheckedAt: null, supported: false } as const;
+    },
+    async checkForUpdates() {},
+    async downloadUpdate() {},
+    async installUpdate() {},
+    onUpdateEvent() {
+      return () => {};
+    },
+
+    // diagnostics
+    async setErrorReporting() {},
+    async reportProblem() {
+      return { ok: false, error: "Not available in the browser preview." };
+    },
+    log() {},
+
     fileUrl(path: string) {
       return path;
     },

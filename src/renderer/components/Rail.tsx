@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import type { Screen } from "../App";
+import { UpdatePill } from "./UpdatePill";
 
 interface RailProps {
   screen: Screen;
@@ -77,6 +78,7 @@ export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailPr
           </button>
         ))}
       </div>
+      <UpdatePill />
       <style>{`
         .rail {
           width: var(--rail-w);

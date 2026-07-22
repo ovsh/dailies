@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
-  ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder, QualityMode } from "../../shared/types";
+  ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder, QualityMode, UpdateState } from "../../shared/types";
 import { MODEL_PROFILES } from "../../shared/types";
 import { InlineError } from "../components/InlineError";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
@@ -63,6 +63,10 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
   const [actionError, setActionError] = useState<string | null>(null);
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
   const [retryingFileIds, setRetryingFileIds] = useState<Set<number>>(() => new Set());
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null);
+  const [reportText, setReportText] = useState("");
+  const [reportStatus, setReportStatus] = useState<string | null>(null);
+  const [reportSending, setReportSending] = useState(false);
 
   const refreshJobs = useCallback(async () => {
     const result = await runIpc(api.listJobs, {
@@ -88,6 +92,42 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
   }, [refreshJobs, refreshSettings]);
 
   useLiveRefresh(refreshJobs);
+
+  useEffect(() => {
+    let mounted = true;
+    void api.getUpdateState().then((s) => {
+      if (mounted) setUpdateState(s);
+    });
+    const unsub = api.onUpdateEvent(setUpdateState);
+    return () => {
+      mounted = false;
+      unsub();
+    };
+  }, []);
+
+  async function handleToggleErrorReporting() {
+    if (!settings) return;
+    await api.setErrorReporting(!settings.errorReportingEnabled);
+    await refreshSettings();
+  }
+
+  async function handleSendReport() {
+    setReportSending(true);
+    setReportStatus(null);
+    try {
+      const result = await api.reportProblem(reportText);
+      if (result.ok) {
+        setReportStatus("Sent — thank you. Recent session logs were attached.");
+        setReportText("");
+      } else {
+        setReportStatus(result.error ?? "Could not send the report.");
+      }
+    } catch {
+      setReportStatus("Could not send the report.");
+    } finally {
+      setReportSending(false);
+    }
+  }
 
   useEffect(() => {
     const unsub = api.onModelProgress((p) => {
@@ -496,6 +536,89 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
 
           <section className="jobs-section">
             <div className="section-head">
+              <span className="label">Updates</span>
+            </div>
+            <div className="trans-row">
+              <span className="trans-name">
+                Dailies
+                <span className="trans-sub mono"> v{settings?.appVersion ?? "…"}</span>
+              </span>
+              {!updateState || !updateState.supported ? (
+                <span className="trans-status mono">updates run from the installed app</span>
+              ) : updateState.phase === "downloading" ? (
+                <span className="trans-status mono">downloading… {updateState.percent ?? 0}%</span>
+              ) : updateState.phase === "ready" ? (
+                <button className="ghost-btn label" onClick={() => void api.installUpdate()}>
+                  Restart to update to v{updateState.version}
+                </button>
+              ) : updateState.version ? (
+                <button className="ghost-btn label" onClick={() => void api.downloadUpdate()}>
+                  {updateState.phase === "error" ? `Retry v${updateState.version} download` : `Download v${updateState.version}`}
+                </button>
+              ) : updateState.phase === "checking" ? (
+                <span className="trans-status mono">checking…</span>
+              ) : (
+                <button className="ghost-btn label" onClick={() => void api.checkForUpdates()}>
+                  Check now
+                </button>
+              )}
+            </div>
+            {updateState?.phase === "error" && updateState.error && (
+              <p className="jobs-error mono">Update failed: {updateState.error}</p>
+            )}
+            <p className="jobs-hint mono">
+              {updateState?.supported
+                ? updateState.lastCheckedAt
+                  ? `Checked automatically every 10 minutes — last checked ${formatScanTime(updateState.lastCheckedAt)}.${updateState.phase === "idle" ? " You're on the latest version." : ""}`
+                  : "Checked automatically every 10 minutes."
+                : "Install the packaged app to receive one-click updates."}
+            </p>
+          </section>
+
+          <section className="jobs-section">
+            <div className="section-head">
+              <span className="label">Diagnostics</span>
+            </div>
+            <div className="trans-row">
+              <span className="trans-name">
+                Send error reports
+                <span className="trans-sub mono"> crashes and errors only — never media, transcripts, or chats</span>
+              </span>
+              <button
+                className="ghost-btn label"
+                onClick={() => void handleToggleErrorReporting()}
+                disabled={!settings}
+              >
+                {settings?.errorReportingEnabled ? "On — turn off" : "Off — turn on"}
+              </button>
+            </div>
+            <p className="jobs-hint mono">
+              Hit a problem that didn't crash anything? Describe it and send it with the recent
+              session logs so we can trace what happened.
+            </p>
+            <textarea
+              className="report-textarea mono"
+              placeholder="What happened? What did you expect?"
+              value={reportText}
+              onChange={(e) => setReportText(e.target.value)}
+              rows={3}
+              disabled={reportSending || !settings?.errorReportingEnabled}
+            />
+            <button
+              className="ghost-btn label"
+              onClick={() => void handleSendReport()}
+              disabled={reportSending || !settings?.errorReportingEnabled || !reportText.trim()}
+            >
+              {reportSending ? "Sending…" : "Send report"}
+            </button>
+            {reportStatus && <p className="jobs-hint mono">{reportStatus}</p>}
+            {!settings?.errorReportingEnabled && (
+              <p className="jobs-hint mono">Turn error reports on to send a problem report.</p>
+            )}
+          </section>
+
+          <section className="jobs-section">
+            <div className="section-head">
               <span className="label">Danger zone</span>
               <h2 className="display">Clear cache &amp; reprocess</h2>
             </div>
@@ -648,6 +771,25 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
           padding: 7px 14px;
           border-radius: 6px;
           transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+        }
+        .report-textarea {
+          display: block;
+          width: 100%;
+          resize: vertical;
+          background: transparent;
+          border: 1px solid var(--hairline-strong);
+          border-radius: 6px;
+          color: var(--ink);
+          font-size: 12px;
+          padding: 9px 11px;
+          margin-bottom: 12px;
+        }
+        .report-textarea:focus {
+          outline: none;
+          border-color: var(--accent-dim);
+        }
+        .report-textarea:disabled {
+          color: var(--ink-faint);
         }
         .ghost-btn:hover {
           border-color: var(--accent-dim);

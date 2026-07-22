@@ -333,6 +333,9 @@ export interface AppSettings {
   /** True once the speech model file is on disk (global, shared by projects). */
   whisperModelReady: boolean;
   ffmpegAvailable: boolean;
+  appVersion: string;
+  /** Gates remote error reporting. Session logs always stay local. */
+  errorReportingEnabled: boolean;
 }
 
 /** Progress events while the speech model downloads (main -> renderer). */
@@ -396,3 +399,25 @@ export interface FileDetail {
   scenes: Scene[];
   segments: TranscriptSegment[];
 }
+
+// ---------- auto-update ----------
+
+export type UpdatePhase = "idle" | "checking" | "available" | "downloading" | "ready" | "error";
+
+/** Updater state mirrored to the renderer (main -> renderer via onUpdateEvent). */
+export interface UpdateState {
+  phase: UpdatePhase;
+  /** Version offered by the update feed; set from "available" onward. */
+  version: string | null;
+  /** 0-100 while downloading. */
+  percent: number | null;
+  error: string | null;
+  lastCheckedAt: string | null;
+  /** False in dev/e2e runs, where self-update cannot operate. */
+  supported: boolean;
+}
+
+// ---------- session logging ----------
+
+export type LogLevel = "info" | "warn" | "error";
+export type LogScope = "app" | "pipeline" | "agents" | "db" | "export" | "updater" | "ui";

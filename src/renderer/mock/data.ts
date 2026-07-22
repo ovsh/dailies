@@ -431,6 +431,8 @@ export const MOCK_SETTINGS: AppSettings = {
   whisperAvailable: true,
   whisperModelReady: false,
   ffmpegAvailable: true,
+  appVersion: "0.2.0",
+  errorReportingEnabled: true,
 };
 
 // ---------- chat ----------

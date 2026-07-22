@@ -2,6 +2,7 @@ import { OpenRouterApiError } from "../agents/openrouter-client";
 import type { DailiesDB } from "../db/types";
 import type { Job } from "../../shared/types";
 import { STAGE_POLICY } from "./status";
+import { log } from "../log";
 
 const MAX_CONCURRENCY = 2;
 const MAX_TRANSCRIBE_CONCURRENCY = 1;
@@ -9,6 +10,14 @@ const IDLE_POLL_MS = 1500;
 const MAX_TRANSIENT_RETRIES = 3;
 const RETRY_BASE_MS = 250;
 const SHUTDOWN_TIMEOUT_MS = 15_000;
+
+const WATCHDOG_INTERVAL_MS = 60_000;
+/** Above the largest per-stage ceiling (60 min transcribe) — a `running` job
+ * older than this is stuck, not slow. */
+const RUNNING_STUCK_MS = 70 * 60_000;
+/** Consecutive watchdog sweeps with queued work but nothing in flight before
+ * declaring the queue stalled (the poll loop should claim within seconds). */
+const STALLED_SWEEPS = 3;
 
 export interface QueueOptions {
   db: DailiesDB;
@@ -101,9 +110,23 @@ export function createQueue(opts: QueueOptions): JobQueue {
         ? isTransientEmbedError(err)
         : isTransientError(err);
       if (transient && job.attempts < MAX_TRANSIENT_RETRIES) {
+        log.warn("pipeline", "pipeline.stage.retry", {
+          jobId: job.id,
+          stage: job.stage,
+          fileId: job.fileId,
+          filename: job.filename,
+          attempt: job.attempts + 1,
+          error: message,
+        });
         await delay(RETRY_BASE_MS * 2 ** job.attempts);
         db.retryJob(job.id, message);
       } else {
+        log.error(
+          "pipeline",
+          "pipeline.stage.failed",
+          { jobId: job.id, stage: job.stage, fileId: job.fileId, filename: job.filename, attempts: job.attempts },
+          err,
+        );
         db.failJob(job.id, message);
         if (STAGE_POLICY[job.stage].failureImpact === "degrade-video") {
           db.setVideoUnplayable(job.fileId, true);
@@ -180,9 +203,50 @@ export function createQueue(opts: QueueOptions): JobQueue {
     }, IDLE_POLL_MS);
   }
 
+  // Watchdog for the "stuck in a state" class of bug: a job left `running`
+  // past every stage ceiling, or queued work that nothing ever claims. Both
+  // only log (once per job / stall episode) — recovery stays with the queue.
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  const flaggedStuckJobs = new Set<number>();
+  let idleWithQueuedSweeps = 0;
+
+  function watchdogSweep(): void {
+    let jobs: Job[];
+    try {
+      jobs = db.listJobs();
+    } catch {
+      return;
+    }
+    const now = Date.now();
+    for (const job of jobs) {
+      if (job.status !== "running" || flaggedStuckJobs.has(job.id)) continue;
+      const ageMs = now - Date.parse(job.updatedAt);
+      if (Number.isFinite(ageMs) && ageMs > RUNNING_STUCK_MS) {
+        flaggedStuckJobs.add(job.id);
+        log.warn("pipeline", "pipeline.job.stuck", {
+          jobId: job.id,
+          stage: job.stage,
+          fileId: job.fileId,
+          filename: job.filename,
+          ageMin: Math.round(ageMs / 60_000),
+        });
+      }
+    }
+    const queued = jobs.filter((j) => j.status === "queued").length;
+    if (queued > 0 && inFlightCount === 0) {
+      idleWithQueuedSweeps += 1;
+      if (idleWithQueuedSweeps === STALLED_SWEEPS) {
+        log.warn("pipeline", "pipeline.stalled", { queued });
+      }
+    } else {
+      idleWithQueuedSweeps = 0;
+    }
+  }
+
   function start(): void {
     if (running) return;
     running = true;
+    if (!watchdogTimer) watchdogTimer = setInterval(watchdogSweep, WATCHDOG_INTERVAL_MS);
     db.resetRunningJobs();
     // Prerequisites may have arrived while this project was closed (model
     // downloaded with another/no project open, key added, app restarted) —
@@ -195,6 +259,10 @@ export function createQueue(opts: QueueOptions): JobQueue {
     if (loopTimer) {
       clearTimeout(loopTimer);
       loopTimer = null;
+    }
+    if (watchdogTimer) {
+      clearInterval(watchdogTimer);
+      watchdogTimer = null;
     }
 
     for (const job of pendingTranscribeJobs.splice(0)) {

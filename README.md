@@ -5,6 +5,9 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
 
 - **Fully local media** — footage is indexed in place; nothing is moved or copied, and media
   files are never uploaded. Text excerpts and embedding inputs are sent to OpenRouter.
+  When something breaks, the app can send an anonymous error report (the error plus recent
+  app events — never media, transcripts, chats, or file contents) so it can be fixed;
+  toggle this off any time in **Settings & Jobs → Diagnostics**.
 - **One key** — a single OpenRouter API key powers chat and semantic embeddings. Stored in
   the macOS Keychain.
 - **Reads Avid media directly** — point it at an `Avid MediaFiles` folder; OP-Atom MXF atoms
@@ -108,7 +111,20 @@ Under every answer:
 Files land in `~/Documents/Dailies Exports/` (the toast has a **Reveal in Finder** button).
 All timecodes are source TC (or timeline TC for finals), drop-frame handled correctly.
 
-### 9. Troubleshooting
+### 9. Updates
+
+Dailies checks for updates in the background (every 10 minutes, a ~1 KB request). When a
+new version is ready, a small pill fades in at the bottom of the left rail — click it to
+download, then click **Restart to update**. **Settings & Jobs → Updates** shows the
+current version, a **Check now** button, and the last check time.
+
+### 10. Reporting a problem
+
+Hit something odd that didn't crash? **Settings & Jobs → Diagnostics → Send report**
+describes the problem in your words and attaches the recent session logs (stored at
+`~/Library/Application Support/Dailies/logs/`) so it can be traced end to end.
+
+### 11. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -130,7 +146,8 @@ npm run dev            # vite + electron
 npm run dev:renderer   # renderer only in a browser, with mock data
 npm run typecheck
 npm test
-npm run dist           # signed macOS DMG into release/
+npm run dist           # signed macOS DMG + update zip into release/
+npm run release        # dist + publish the auto-update feed (see docs/releasing.md)
 npm run rebuild        # force a fresh Electron native rebuild (normally unnecessary)
 ```
 

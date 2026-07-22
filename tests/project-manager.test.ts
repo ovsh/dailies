@@ -17,6 +17,8 @@ function fakeSettings(): AppSettingsStore {
     getQualityMode: () => "standard" as const,
     setQualityMode: () => {},
     getWhisperModel: () => "large-v3-turbo",
+    getErrorReportingEnabled: () => true,
+    setErrorReportingEnabled: () => {},
   };
 }
 

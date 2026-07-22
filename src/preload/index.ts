@@ -1,7 +1,8 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC, type DailiesAPI } from "../shared/ipc";
 import type {
-  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, IndexUpdate, MediaRole, QualityMode } from "../shared/types";
+  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, IndexUpdate, MediaRole, QualityMode,
+  UpdateState, LogLevel, LogScope } from "../shared/types";
 
 const api: DailiesAPI = {
   // projects
@@ -56,6 +57,24 @@ const api: DailiesAPI = {
     ipcRenderer.invoke(IPC.exportHits, kind, items),
   revealInFinder: (path: string) => ipcRenderer.invoke(IPC.revealInFinder, path),
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url),
+
+  // updates
+  getUpdateState: () => ipcRenderer.invoke(IPC.getUpdateState),
+  checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
+  downloadUpdate: () => ipcRenderer.invoke(IPC.downloadUpdate),
+  installUpdate: () => ipcRenderer.invoke(IPC.installUpdate),
+  onUpdateEvent: (cb: (state: UpdateState) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, state: UpdateState) => cb(state);
+    ipcRenderer.on(IPC.updateEvent, listener);
+    return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
+  },
+
+  // diagnostics
+  setErrorReporting: (enabled: boolean) => ipcRenderer.invoke(IPC.setErrorReporting, enabled),
+  reportProblem: (description: string) => ipcRenderer.invoke(IPC.reportProblem, description),
+  log: (level: LogLevel, scope: LogScope, event: string, fields?: Record<string, unknown>) => {
+    ipcRenderer.send(IPC.log, level, scope, event, fields);
+  },
 
   // project updates (indexing progress, scans)
   onProjectUpdate: (cb: () => void) => {

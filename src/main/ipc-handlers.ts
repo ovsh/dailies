@@ -24,16 +24,20 @@ import { createOpenRouterClient, validateOpenRouterKey } from "./agents/openrout
 import { createOpenRouterEmbedder } from "./agents/openrouter";
 import { writeExport } from "./export";
 import { resolvePlaybackPath } from "./playback-path";
+import { log, logFromRenderer } from "./log";
+import { reportProblem } from "./telemetry";
+import type { Updater } from "./updater";
 
 export interface IpcContext {
   manager: ProjectManager;
   settings: AppSettingsStore;
   dataDir: string;
   getWindow: () => BrowserWindow | null;
+  updater: Updater;
 }
 
 export function registerIpcHandlers(ctx: IpcContext): void {
-  const { manager, settings, dataDir } = ctx;
+  const { manager, settings, dataDir, updater } = ctx;
 
   const emitChatEvent = (ev: ChatEvent) => {
     ctx.getWindow()?.webContents.send(IPC.chatEvent, ev);
@@ -66,7 +70,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   // ---- projects ----
   ipcMain.handle(IPC.listProjects, () => manager.listProjects());
   ipcMain.handle(IPC.createProject, (_e, name: string) => manager.createProject(name));
-  ipcMain.handle(IPC.openProject, (_e, id: string) => manager.openProject(id));
+  ipcMain.handle(IPC.openProject, async (_e, id: string) => {
+    const state = await manager.openProject(id);
+    log.info("app", "app.project.opened", { id });
+    return state;
+  });
   ipcMain.handle(IPC.getProjectState, () => manager.currentState());
 
   // ---- episodes & folders ----
@@ -210,6 +218,8 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       whisperAvailable: avail.whisper,
       whisperModelReady: findWhisperModel(model, dataDir) !== null,
       ffmpegAvailable: avail.ffmpeg,
+      appVersion: app.getVersion(),
+      errorReportingEnabled: settings.getErrorReportingEnabled(),
     };
   });
 
@@ -217,7 +227,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     const model = settings.getWhisperModel();
     void downloadWhisperModel(model, path.join(dataDir, "models"), (p) => {
       ctx.getWindow()?.webContents.send(IPC.modelProgress, p);
+      if (p.done && p.error) {
+        log.error("app", "app.model_download.failed", { error: p.error });
+      }
       if (p.done && !p.error) {
+        log.info("app", "app.model_download.done", { model });
         void manager.current()?.pipeline.refreshPrerequisites("whisper");
       }
     }).catch(() => {
@@ -269,8 +283,10 @@ export function registerIpcHandlers(ctx: IpcContext): void {
           emitChatEvent({ type: "done", chatId: id, turnId });
           return;
         }
+        const turnStartedAt = Date.now();
         try {
           const modelProfile = activeProfile();
+          log.info("agents", "agents.turn.start", { turnId, profile: modelProfile.id });
           const client = createOpenRouterClient(() => apiKey);
           const answer = await runChatTurn({
             db: c.db,
@@ -285,8 +301,14 @@ export function registerIpcHandlers(ctx: IpcContext): void {
             client,
           });
           c.db.addChatMessage(id, "assistant", answer.prose, answer.hits);
+          log.info("agents", "agents.turn.done", {
+            turnId,
+            durationMs: Date.now() - turnStartedAt,
+            hits: answer.hits.length,
+          });
           emitChatEvent({ type: "answer", chatId: id, turnId, answer });
         } catch (err) {
+          log.error("agents", "agents.turn.failed", { turnId, durationMs: Date.now() - turnStartedAt }, err);
           emitChatEvent({
             type: "error",
             chatId: id,
@@ -303,10 +325,17 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   );
 
   // ---- export ----
-  ipcMain.handle(IPC.exportHits, (_e, kind: ExportKind, items: ExportItem[]) => {
+  ipcMain.handle(IPC.exportHits, async (_e, kind: ExportKind, items: ExportItem[]) => {
     const { db } = requireProject();
     const outDir = path.join(app.getPath("documents"), "Dailies Exports");
-    return writeExport(kind, items, (fid) => db.getFile(fid), outDir);
+    try {
+      const result = await writeExport(kind, items, (fid) => db.getFile(fid), outDir);
+      log.info("export", "export.done", { kind, items: items.length });
+      return result;
+    } catch (err) {
+      log.error("export", "export.failed", { kind, items: items.length }, err);
+      throw err;
+    }
   });
 
   ipcMain.handle(IPC.revealInFinder, (_e, p: string) => {
@@ -316,5 +345,23 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC.openExternal, (_e, url: string) => {
     // https-only: never let the renderer launch arbitrary protocols/apps.
     if (/^https:\/\//.test(url)) void shell.openExternal(url);
+  });
+
+  // ---- updates ----
+  ipcMain.handle(IPC.getUpdateState, () => updater.getState());
+  ipcMain.handle(IPC.checkForUpdates, () => updater.check());
+  ipcMain.handle(IPC.downloadUpdate, () => updater.download());
+  ipcMain.handle(IPC.installUpdate, () => updater.install());
+
+  // ---- diagnostics ----
+  ipcMain.handle(IPC.setErrorReporting, (_e, enabled: boolean) => {
+    settings.setErrorReportingEnabled(enabled === true);
+    log.info("app", "app.error_reporting.set", { enabled: enabled === true });
+  });
+  ipcMain.handle(IPC.reportProblem, (_e, description: string) =>
+    reportProblem(typeof description === "string" ? description.slice(0, 4000) : ""),
+  );
+  ipcMain.on(IPC.log, (_e, level: unknown, scope: unknown, event: unknown, fields: unknown) => {
+    logFromRenderer(level, scope, event, fields);
   });
 }

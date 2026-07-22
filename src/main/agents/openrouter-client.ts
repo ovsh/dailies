@@ -1,3 +1,5 @@
+import { log } from "../log";
+
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 export interface ContentPart {
@@ -72,6 +74,8 @@ export class OpenRouterApiError extends Error {
 function apiError(status: number, body: unknown): OpenRouterApiError {
   const error = isRecord(body) && isRecord(body.error) ? body.error : null;
   const detail = error && typeof error.message === "string" ? `: ${error.message}` : "";
+  // Status only — never request/response content.
+  log.warn("agents", "agents.request.failed", { status });
   return new OpenRouterApiError(`OpenRouter API error ${status}${detail}`, status);
 }
 

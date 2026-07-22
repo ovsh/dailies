@@ -16,6 +16,7 @@ interface AppSettingsFile {
   modelProfileId?: string;
   qualityMode?: QualityMode;
   whisperModel?: string;
+  errorReportingEnabled?: boolean;
 }
 
 function parseAppSettings(value: unknown): AppSettingsFile {
@@ -40,6 +41,9 @@ function parseAppSettings(value: unknown): AppSettingsFile {
   if ("whisperModel" in value && typeof value.whisperModel === "string") {
     settings.whisperModel = value.whisperModel;
   }
+  if ("errorReportingEnabled" in value && typeof value.errorReportingEnabled === "boolean") {
+    settings.errorReportingEnabled = value.errorReportingEnabled;
+  }
   return settings;
 }
 
@@ -52,6 +56,8 @@ export interface AppSettingsStore {
   getQualityMode(): QualityMode;
   setQualityMode(mode: QualityMode): void;
   getWhisperModel(): string;
+  getErrorReportingEnabled(): boolean;
+  setErrorReportingEnabled(enabled: boolean): void;
 }
 
 export function createAppSettings(dataDir: string): AppSettingsStore {
@@ -118,6 +124,12 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
     },
     getWhisperModel() {
       return read().whisperModel ?? "large-v3-turbo";
+    },
+    getErrorReportingEnabled() {
+      return read().errorReportingEnabled !== false;
+    },
+    setErrorReportingEnabled(enabled: boolean) {
+      write({ errorReportingEnabled: enabled });
     },
   };
 }

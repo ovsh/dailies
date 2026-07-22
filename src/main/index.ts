@@ -8,6 +8,9 @@ import { createAppSettings } from "./app-settings";
 import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { buildMediaResponse, parseMediaRequestPath } from "./media-protocol";
+import { initLog, log } from "./log";
+import { initTelemetry } from "./telemetry";
+import { createUpdater } from "./updater";
 
 /**
  * When the app is launched from Finder/Dock (rather than a terminal), the
@@ -86,26 +89,23 @@ void app.whenReady().then(async () => {
   fs.mkdirSync(dataDir, { recursive: true });
   setGlobalModelsDir(path.join(dataDir, "models"));
 
-  // Crash-visibility for remote debugging: everything lands in dailies.log.
-  const logFile = path.join(dataDir, "dailies.log");
-  const logLine = (level: string, args: unknown[]) => {
-    try {
-      const text = args
-        .map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ""}` : String(a)))
-        .join(" ");
-      fs.appendFileSync(logFile, `${new Date().toISOString()} [${level}] ${text}\n`);
-    } catch {
-      // never let logging break the app
-    }
-  };
-  const origError = console.error.bind(console);
-  const origWarn = console.warn.bind(console);
-  console.error = (...args: unknown[]) => (logLine("error", args), origError(...args));
-  console.warn = (...args: unknown[]) => (logLine("warn", args), origWarn(...args));
-  process.on("uncaughtException", (err) => logLine("uncaught", [err]));
-  process.on("unhandledRejection", (reason) => logLine("unhandledRejection", [reason]));
-
   const settings = createAppSettings(dataDir);
+
+  // Session log first (console + crash funnels live there), then telemetry
+  // so every subsequent log line also lands in the remote breadcrumb trail.
+  initLog(dataDir);
+  initTelemetry({
+    appVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    isEnabled: () => settings.getErrorReportingEnabled(),
+  });
+  log.info("app", "app.launch", {
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    platform: process.platform,
+    arch: process.arch,
+    packaged: app.isPackaged,
+  });
   let indexRevision = 0;
   const manager = createProjectManager({
     dataDir,
@@ -116,13 +116,18 @@ void app.whenReady().then(async () => {
     },
   });
 
-  registerIpcHandlers({ manager, settings, dataDir, getWindow: () => win });
+  const updater = createUpdater((state) => {
+    win?.webContents.send(IPC.updateEvent, state);
+  });
+
+  registerIpcHandlers({ manager, settings, dataDir, getWindow: () => win, updater });
+  updater.start();
 
   // Re-open the last project (adopts a pre-projects install on first boot).
   try {
     await manager.openLastProject();
   } catch (err) {
-    console.error("Failed to open last project:", err);
+    log.error("app", "app.project.open_failed", {}, err);
   }
 
   win = createWindow();

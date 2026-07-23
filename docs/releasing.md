@@ -12,7 +12,10 @@ downloads, a second click restarts into the new version.
 2. **GitHub token on the build machine**: `export GH_TOKEN=…` with `repo` scope
    for `dailies-releases`. The token is used at publish time only — it never
    ships in the app.
-3. **Sentry** (error reporting): create a project at sentry.io (free tier),
+3. **Signing & notarization** (Digital Lane LLC Developer ID): the `/apple-sign`
+   skill (`.claude/skills/apple-sign/SKILL.md`) covers certificate setup,
+   notarization credentials, post-build verification, and troubleshooting.
+4. **Sentry** (error reporting): create a project at sentry.io (free tier),
    paste the DSN into `SENTRY_DSN` in `src/main/telemetry.ts`. Until that
    constant is set, telemetry is a no-op and "Report a problem" says it is not
    configured in this build.

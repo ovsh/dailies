@@ -34,10 +34,10 @@ export function Toast({ message, actionLabel, onAction, onDismiss }: ToastProps)
           display: flex;
           align-items: center;
           gap: 16px;
-          background: var(--ground-card);
-          border: 1px solid var(--hairline-strong);
-          box-shadow: var(--shadow-card);
-          border-radius: 8px;
+          background: var(--ground-raised);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--bevel-out), var(--shadow-card);
+          border-radius: 2px;
           padding: 12px 16px;
           font-size: 13px;
           color: var(--ink);
@@ -45,16 +45,22 @@ export function Toast({ message, actionLabel, onAction, onDismiss }: ToastProps)
           z-index: 500;
         }
         .toast-action {
-          background: transparent;
-          border: none;
-          color: var(--accent);
-          font-size: 12px;
-          letter-spacing: 0.04em;
-          padding: 0;
-          border-bottom: 1px solid transparent;
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          color: var(--ink);
+          font-size: 11px;
+          font-weight: 600;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          padding: 4px 10px;
         }
         .toast-action:hover {
-          border-bottom-color: var(--accent);
+          background: #d2d6d9;
+        }
+        .toast-action:active {
+          box-shadow: var(--bevel-in);
         }
         .toast-close {
           background: transparent;

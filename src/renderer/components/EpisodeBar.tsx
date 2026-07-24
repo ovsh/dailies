@@ -12,8 +12,8 @@ interface EpisodeBarProps {
 }
 
 /**
- * A quiet row of episode chips — ALL, then each episode code, then a "+" to
- * add one inline (no native prompt()). Active chip gets brass styling.
+ * A quiet row of episode chips: ALL, then each episode code, then a "+" to
+ * add one inline (no native prompt()). Active chip gets black-inverse selection.
  */
 export function EpisodeBar({ episodes, activeEpisodeId, onSelect, onCreate, size = "inline" }: EpisodeBarProps) {
   const [adding, setAdding] = useState(false);
@@ -84,42 +84,48 @@ export function EpisodeBar({ episodes, activeEpisodeId, onSelect, onCreate, size
           justify-content: center;
         }
         .episode-chip {
-          background: transparent;
-          border: 1px solid var(--hairline-strong);
-          border-radius: 6px;
-          color: var(--ink-dimmer);
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          color: var(--ink);
           padding: 5px 11px;
           font-size: 11px;
-          transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
         }
         .episode-chip:hover {
-          color: var(--ink-dim);
+          background: #d2d6d9;
+        }
+        .episode-chip:active {
+          box-shadow: var(--bevel-in);
         }
         .episode-chip.active {
-          color: var(--accent);
-          border-color: var(--accent-dim);
+          background: var(--select-bg);
+          border-color: var(--select-bg);
+          color: var(--select-ink);
+          box-shadow: none;
         }
         .episode-chip-add {
-          color: var(--ink-faint);
+          color: var(--ink-dim);
           width: 26px;
           padding: 5px 0;
           text-align: center;
         }
         .episode-chip-add:hover {
-          color: var(--accent);
-          border-color: var(--accent-dim);
+          color: var(--ink);
         }
         .episode-chip-input {
           width: 58px;
-          background: transparent;
-          border: 1px solid var(--accent-dim);
-          border-radius: 6px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
           color: var(--ink);
           padding: 5px 9px;
           font-size: 11px;
         }
         .episode-chip-input:focus {
-          outline: none;
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
         }
         .episode-chip-input::placeholder {
           color: var(--ink-faint);

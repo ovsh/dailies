@@ -74,48 +74,41 @@ export function ClipCard({ file, keyframe, onOpen, onRetry, retrying }: ClipCard
         .clip-card-shell {
           position: relative;
           min-width: 0;
-          transition: transform var(--dur-fast) var(--ease-out);
-        }
-        .clip-card-shell:hover {
-          transform: translateY(-1px);
         }
         .clip-card {
           display: flex;
           flex-direction: column;
           width: 100%;
           height: 100%;
-          background: var(--ground-card);
-          border: 1px solid var(--hairline);
-          border-radius: 10px;
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
           overflow: hidden;
           text-align: left;
-          padding: 0;
-          transition: border-color var(--dur-fast) var(--ease-out);
+          padding: 4px;
         }
         .clip-card-shell:hover .clip-card {
-          border-color: var(--hairline-strong);
+          border-color: var(--panel-border);
+          box-shadow: var(--bevel-out), var(--shadow-card);
         }
         .clip-thumb {
           position: relative;
           width: 100%;
           aspect-ratio: 16 / 9;
-          background: var(--ground);
+          background: var(--bezel);
+          border: 1px solid var(--panel-border);
         }
         .clip-thumb img {
           width: 100%;
           height: 100%;
           object-fit: cover;
           display: block;
-          filter: saturate(0.85) brightness(0.9);
-          transition: filter var(--dur-med) var(--ease-out);
-        }
-        .clip-card-shell:hover .clip-thumb img {
-          filter: saturate(1) brightness(1);
         }
         .clip-thumb-empty {
           width: 100%;
           height: 100%;
-          background: var(--ground-raised);
+          background: var(--bezel);
         }
         .clip-thumb-audio {
           width: 100%;
@@ -125,65 +118,61 @@ export function ClipCard({ file, keyframe, onOpen, onRetry, retrying }: ClipCard
           align-items: center;
           justify-content: center;
           gap: 9px;
-          color: var(--ink-dimmer);
-          background:
-            radial-gradient(circle at center, var(--accent-wash), transparent 52%),
-            var(--ground-raised);
-          transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+          color: var(--bezel-ink);
+          background: var(--bezel);
         }
         .clip-thumb-audio .label {
-          color: var(--ink-faint);
+          color: var(--bezel-ink);
           font-size: 9px;
-        }
-        .clip-card-shell:hover .clip-thumb-audio {
-          color: var(--accent);
         }
         .clip-status {
           position: absolute;
           top: 8px;
           right: 8px;
-          background: rgba(20, 24, 31, 0.82);
-          border: 1px solid var(--hairline-strong);
-          color: var(--accent);
+          background: var(--ground-card);
+          border: 1px solid var(--status-warn);
+          color: var(--status-warn);
           padding: 3px 7px;
-          border-radius: 4px;
+          border-radius: 2px;
         }
         .clip-final-tag {
           position: absolute;
           top: 8px;
           left: 8px;
-          background: rgba(20, 24, 31, 0.82);
-          border: 1px solid var(--hairline-strong);
-          color: var(--ink-dimmer);
+          background: var(--select-bg);
+          border: 1px solid var(--select-bg);
+          color: var(--select-ink);
           padding: 3px 7px;
-          border-radius: 4px;
+          border-radius: 2px;
         }
         .clip-retry {
           position: absolute;
           top: 36px;
           right: 8px;
           z-index: 1;
-          background: rgba(20, 24, 31, 0.9);
-          border: 1px solid var(--hairline-strong);
-          color: var(--ink-dim);
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-out);
+          color: var(--ink);
           padding: 3px 7px;
-          border-radius: 4px;
+          border-radius: 2px;
           font-size: 9px;
-          transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
         }
         .clip-retry:hover:not(:disabled) {
-          border-color: var(--accent-dim);
-          color: var(--accent);
+          background: #d2d6d9;
+        }
+        .clip-retry:active:not(:disabled) {
+          box-shadow: var(--bevel-in);
         }
         .clip-retry:disabled {
           color: var(--ink-faint);
           cursor: default;
         }
         .clip-meta {
-          padding: 10px 12px 12px;
+          padding: 8px 8px 6px;
           display: flex;
           flex-direction: column;
-          gap: 6px;
+          gap: 5px;
         }
         .clip-filename {
           font-size: 11px;
@@ -199,7 +188,7 @@ export function ClipCard({ file, keyframe, onOpen, onRetry, retrying }: ClipCard
           font-size: 11px;
         }
         .clip-dur {
-          color: var(--ink-dimmer);
+          color: var(--ink-dim);
         }
         .clip-glyphs {
           margin-left: auto;

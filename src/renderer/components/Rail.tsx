@@ -83,46 +83,51 @@ export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailPr
           flex: 0 0 var(--rail-w);
           height: 100%;
           background: var(--ground-raised);
-          border-right: 1px solid var(--hairline);
+          border-right: 1px solid var(--panel-border);
+          box-shadow: var(--bevel-out);
           display: flex;
           flex-direction: column;
           align-items: center;
           padding: 20px 0 24px;
         }
         .rail-mark {
-          font-size: 22px;
-          color: var(--accent);
+          font-size: 20px;
+          font-weight: 800;
+          color: var(--ink);
           margin-bottom: 20px;
           user-select: none;
         }
         .rail-project {
           position: relative;
-          width: 30px;
-          height: 30px;
+          width: 32px;
+          height: 32px;
           flex: 0 0 auto;
           display: flex;
           align-items: center;
           justify-content: center;
-          background: transparent;
-          border: 1px solid var(--hairline-strong);
-          border-radius: 50%;
-          color: var(--ink-dim);
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          color: var(--ink);
           margin-bottom: 36px;
-          transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
         }
         .rail-project:hover {
-          border-color: var(--accent-dim);
-          color: var(--accent);
+          background: #d2d6d9;
+        }
+        .rail-project:active {
+          box-shadow: var(--bevel-in);
         }
         .rail-project-initials {
-          font-size: 12px;
-          letter-spacing: 0.02em;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.04em;
           user-select: none;
         }
         .rail-items {
           display: flex;
           flex-direction: column;
-          gap: 8px;
+          gap: 6px;
         }
         .rail-btn {
           position: relative;
@@ -132,32 +137,21 @@ export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailPr
           align-items: center;
           justify-content: center;
           background: transparent;
-          border: none;
-          border-radius: 8px;
-          color: var(--ink-dimmer);
-          transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+          border: 1px solid transparent;
+          border-radius: 2px;
+          color: var(--ink-dim);
         }
         .rail-btn svg {
           width: 19px;
           height: 19px;
         }
         .rail-btn:hover {
-          color: var(--ink-dim);
-          background: rgba(255, 255, 255, 0.03);
+          color: var(--ink);
         }
         .rail-btn.active {
-          color: var(--accent);
-        }
-        .rail-btn.active::before {
-          content: "";
-          position: absolute;
-          left: -12px;
-          top: 50%;
-          transform: translateY(-50%);
-          width: 2px;
-          height: 16px;
-          background: var(--accent);
-          border-radius: 1px;
+          color: var(--select-ink);
+          background: var(--select-bg);
+          border-color: var(--select-bg);
         }
         .rail-btn[data-tooltip]::after,
         .rail-project[data-tooltip]::after {
@@ -165,24 +159,23 @@ export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailPr
           position: absolute;
           left: calc(100% + 10px);
           top: 50%;
-          transform: translateY(-50%) translateX(-4px);
+          transform: translateY(-50%);
           background: var(--ground-card);
-          border: 1px solid var(--hairline-strong);
-          color: var(--ink-dim);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow-card);
+          color: var(--ink);
           font-size: 11px;
           letter-spacing: 0.04em;
           white-space: nowrap;
           padding: 5px 9px;
-          border-radius: 5px;
+          border-radius: 2px;
           opacity: 0;
           pointer-events: none;
-          transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
           z-index: 20;
         }
         .rail-btn[data-tooltip]:hover::after,
         .rail-project[data-tooltip]:hover::after {
           opacity: 1;
-          transform: translateY(-50%) translateX(0);
         }
       `}</style>
     </nav>

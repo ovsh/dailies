@@ -9,8 +9,8 @@ list), user-confirmed over the Emulsion (16mm strip) alternate.
 World: **The Bin** — the page is built as a Media Composer bin. Not the modern
 dark MC: the pre-dark-era steel-gray chrome veteran editors remember (Meridien /
 Adrenaline age), which also keeps the page out of the dark-neon "video AI" rut.
-The real app screenshots (dark slate) sit inside this light chrome like source
-monitors on a gray desktop.
+Since 2026-07-24 the app itself wears the same world (root DESIGN.md), so the
+screenshots are light chrome too; only their player/thumbnail bezels are dark.
 
 ## Palette
 

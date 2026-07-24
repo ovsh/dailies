@@ -86,6 +86,12 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
   return (
     <div className="welcome-overlay">
       <div className="welcome-panel">
+        <div className="welcome-bar">
+          <span className="welcome-bar-close" aria-hidden="true" />
+          <span className="welcome-bar-title">Setup</span>
+          <span className="welcome-bar-stripes" aria-hidden="true" />
+        </div>
+        <div className="welcome-body">
         <p className="welcome-mark display">Dailies</p>
         <p className="welcome-sub">
           Chat with your footage. Three independent setup checks. Continue now, or finish them later in Settings.
@@ -212,6 +218,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
             {allReady ? "Enter Dailies →" : "Continue with missing setup →"}
           </button>
         </div>
+        </div>
       </div>
 
       <style>{`
@@ -220,22 +227,61 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           inset: 0;
           z-index: 100;
           background: var(--ground);
+          background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.045) 0 1px, transparent 1px 7px);
           display: flex;
           align-items: flex-start;
           justify-content: center;
           overflow-y: auto;
-          animation: fade-in var(--dur-med) var(--ease-out) both;
+          padding: 44px 24px;
         }
         .welcome-panel {
-          width: 560px;
-          max-width: calc(100vw - 96px);
-          padding: 48px 0;
-          animation: fade-up var(--dur-med) var(--ease-out) both;
+          width: 620px;
+          max-width: 100%;
+          height: fit-content;
+          background: var(--ground-raised);
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out), 4px 6px 0 rgba(23, 25, 27, 0.28);
+        }
+        .welcome-bar {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 7px 10px;
+          box-shadow: inset 0 -1px 0 var(--chrome-lo);
+          user-select: none;
+        }
+        .welcome-bar-close {
+          width: 13px;
+          height: 13px;
+          flex: none;
+          background: var(--ground-raised);
+          box-shadow: var(--bevel-out);
+          border: 1px solid var(--chrome-lo);
+        }
+        .welcome-bar-title {
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+        }
+        .welcome-bar-stripes {
+          flex: 1;
+          height: 9px;
+          background: repeating-linear-gradient(0deg, var(--chrome-lo) 0 1px, transparent 1px 3px);
+          opacity: 0.5;
+        }
+        .welcome-body {
+          background: var(--ground-card);
+          border: 1px solid var(--chrome-lo);
+          margin: 10px;
+          padding: 26px 28px 30px;
         }
         .welcome-mark {
-          font-size: 44px;
+          font-size: 40px;
           color: var(--ink);
           margin: 0 0 10px;
+          letter-spacing: -0.015em;
         }
         .text-link {
           background: none;
@@ -293,17 +339,17 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
         }
         .welcome-input {
           flex: 1;
-          background: transparent;
-          border: none;
-          border-bottom: 1px solid var(--hairline-strong);
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
           color: var(--ink);
           font-size: 12.5px;
-          padding: 8px 0;
-          transition: border-color var(--dur-fast) var(--ease-out);
+          padding: 8px 10px;
         }
         .welcome-input:focus {
-          outline: none;
-          border-color: var(--accent-dim);
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
         }
         .welcome-input::placeholder {
           color: var(--ink-faint);
@@ -354,29 +400,36 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           font-size: 11px;
         }
         .welcome-progress-bar {
-          height: 2px;
-          background: var(--hairline);
+          height: 10px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
           margin-top: 8px;
           overflow: hidden;
         }
         .welcome-progress-fill {
           height: 100%;
-          background: var(--accent);
+          background: repeating-linear-gradient(90deg, var(--accent) 0 6px, var(--accent-dim) 6px 12px);
           transform-origin: left;
           transition: transform 400ms var(--ease-out);
         }
         .welcome-enter {
           flex: 0 0 auto;
-          background: transparent;
-          border: none;
-          font-family: var(--font-display);
-          font-size: 19px;
-          color: var(--ink);
-          padding: 0;
-          transition: color var(--dur-fast) var(--ease-out);
+          background: var(--marker-red);
+          border: 1px solid var(--marker-red-dn);
+          border-radius: 999px;
+          font-family: var(--font-body);
+          font-size: 12px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: #fff;
+          padding: 12px 22px;
+          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 2px 3px 0 rgba(23,25,27,.3);
         }
         .welcome-enter:hover {
-          color: var(--accent);
+          transform: translate(1px, 1px);
+          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 1px 1px 0 rgba(23,25,27,.3);
         }
       `}</style>
     </div>

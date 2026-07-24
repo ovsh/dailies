@@ -10,8 +10,6 @@ if (!rootEl) {
 
 createRoot(rootEl).render(
   <StrictMode>
-    <div className="grain-overlay" />
-    <div className="vignette-overlay" />
     <App />
   </StrictMode>,
 );

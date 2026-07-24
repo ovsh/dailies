@@ -18,7 +18,7 @@ function formatLastOpened(iso: string | null): string {
 
 /**
  * The entry surface — shown when no project is open, or when the user clicks
- * back to the project mark in the rail. Full-bleed on the dark ground.
+ * back to the project mark in the rail. Full-bleed on the desktop ground.
  */
 export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -63,40 +63,45 @@ export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
 
   return (
     <div className="project-screen">
-      <div className="project-screen-column">
-        <span className="label project-screen-label">Projects</span>
-
-        <div className="project-list">
-          {projects === null && <p className="project-loading mono">Loading…</p>}
-          {projects?.map((p) => (
-            <button
-              key={p.id}
-              className="project-line"
-              onClick={() => open(p.id)}
-              disabled={opening !== null}
-            >
-              <span className="display project-line-name">{p.name}</span>
-              <span className="project-line-sub mono">
-                {opening === p.id ? "opening…" : formatLastOpened(p.lastOpenedAt)}
-              </span>
-            </button>
-          ))}
+      <div className="project-panel">
+        <div className="project-bar">
+          <span className="project-bar-close" aria-hidden="true" />
+          <span className="project-bar-title">Projects</span>
+          <span className="project-bar-stripes" aria-hidden="true" />
         </div>
+        <div className="project-body">
+          <div className="project-list">
+            {projects === null && <p className="project-loading mono">Loading…</p>}
+            {projects?.map((p) => (
+              <button
+                key={p.id}
+                className="project-line"
+                onClick={() => open(p.id)}
+                disabled={opening !== null}
+              >
+                <span className="mono project-line-name">{p.name}</span>
+                <span className="project-line-sub mono">
+                  {opening === p.id ? "opening…" : formatLastOpened(p.lastOpenedAt)}
+                </span>
+              </button>
+            ))}
+          </div>
 
-        {error && <p className="project-error mono">{error}</p>}
+          {error && <p className="project-error mono">{error}</p>}
 
-        <div className="project-new">
-          <input
-            className="project-new-input mono"
-            placeholder="New project…"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && create()}
-            disabled={creating}
-          />
-          <button className="ghost-btn label" onClick={create} disabled={!newName.trim() || creating}>
-            {creating ? "Creating…" : "Create"}
-          </button>
+          <div className="project-new">
+            <input
+              className="project-new-input mono"
+              placeholder="New project…"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && create()}
+              disabled={creating}
+            />
+            <button className="project-create" onClick={create} disabled={!newName.trim() || creating}>
+              {creating ? "Creating…" : "Create"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -105,25 +110,63 @@ export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
           position: absolute;
           inset: 0;
           background: var(--ground);
+          background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.045) 0 1px, transparent 1px 7px);
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: center;
           overflow-y: auto;
+          padding: 64px 24px;
           animation: fade-in var(--dur-med) var(--ease-out) both;
         }
-        .project-screen-column {
-          width: 520px;
-          max-width: calc(100vw - 96px);
-          padding: 64px 0;
+        .project-panel {
+          width: 560px;
+          max-width: 100%;
+          height: fit-content;
+          background: var(--ground-raised);
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out), 4px 6px 0 rgba(23, 25, 27, 0.28);
           animation: fade-up var(--dur-med) var(--ease-out) both;
         }
-        .project-screen-label {
-          display: block;
-          margin-bottom: 28px;
+        .project-bar {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 7px 10px;
+          box-shadow: inset 0 -1px 0 var(--chrome-lo);
+          user-select: none;
+        }
+        .project-bar-close {
+          width: 13px;
+          height: 13px;
+          flex: none;
+          background: var(--ground-raised);
+          box-shadow: var(--bevel-out);
+          border: 1px solid var(--chrome-lo);
+        }
+        .project-bar-title {
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: var(--ink);
+        }
+        .project-bar-stripes {
+          flex: 1;
+          height: 9px;
+          background: repeating-linear-gradient(0deg, var(--chrome-lo) 0 1px, transparent 1px 3px);
+          opacity: 0.5;
+        }
+        .project-body {
+          background: var(--ground-card);
+          border: 1px solid var(--chrome-lo);
+          margin: 10px;
+          padding: 6px 26px 26px;
         }
         .project-loading {
           font-size: 12px;
           color: var(--ink-dimmer);
+          padding: 18px 4px;
         }
         .project-list {
           display: flex;
@@ -136,21 +179,23 @@ export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
           gap: 20px;
           background: transparent;
           border: none;
-          border-bottom: 1px solid var(--hairline);
-          padding: 22px 0;
+          border-bottom: 1px solid var(--paper-alt);
+          padding: 18px 6px;
           text-align: left;
-          transition: color var(--dur-fast) var(--ease-out);
+        }
+        .project-line:nth-child(even) {
+          background: var(--paper-alt);
+        }
+        .project-line:hover:not(:disabled) {
+          background: #d2d6d9;
         }
         .project-line:disabled {
           cursor: default;
         }
         .project-line-name {
-          font-size: 30px;
+          font-size: 18px;
+          font-weight: 500;
           color: var(--ink);
-          transition: color var(--dur-fast) var(--ease-out);
-        }
-        .project-line:hover .project-line-name {
-          color: var(--accent);
         }
         .project-line-sub {
           flex: 0 0 auto;
@@ -160,32 +205,56 @@ export function ProjectScreen({ onProjectOpened }: ProjectScreenProps) {
         .project-error {
           color: var(--status-error);
           font-size: 12px;
-          margin: 0 0 14px;
+          margin: 14px 0 0;
         }
         .project-new {
           display: flex;
           align-items: center;
           gap: 14px;
-          margin-top: 36px;
-          padding-top: 28px;
+          margin-top: 24px;
+          padding-top: 22px;
           border-top: 1px solid var(--hairline);
         }
         .project-new-input {
           flex: 1;
-          background: transparent;
-          border: none;
-          border-bottom: 1px solid var(--hairline-strong);
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
           color: var(--ink);
-          font-size: 13px;
-          padding: 8px 0;
-          transition: border-color var(--dur-fast) var(--ease-out);
+          font-size: 12.5px;
+          padding: 9px 11px;
         }
         .project-new-input:focus {
-          outline: none;
-          border-color: var(--accent-dim);
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
         }
         .project-new-input::placeholder {
           color: var(--ink-faint);
+        }
+        .project-create {
+          flex: 0 0 auto;
+          background: var(--marker-red);
+          border: 1px solid var(--marker-red-dn);
+          border-radius: 999px;
+          font-family: var(--font-body);
+          font-size: 11.5px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: #fff;
+          padding: 11px 20px;
+          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 2px 3px 0 rgba(23,25,27,.3);
+        }
+        .project-create:hover:not(:disabled) {
+          transform: translate(1px, 1px);
+          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 1px 1px 0 rgba(23,25,27,.3);
+        }
+        .project-create:disabled {
+          background: var(--ink-faint);
+          border-color: var(--ink-faint);
+          cursor: default;
+          box-shadow: none;
         }
       `}</style>
     </div>

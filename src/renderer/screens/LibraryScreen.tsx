@@ -167,64 +167,69 @@ export function LibraryScreen({
   return (
     <div className="library-screen">
       <header className="library-header">
-        <div className="library-header-row">
-          <div>
-            <span className="label">Library</span>
+        <div className="library-bar">
+          <span className="library-bar-close" aria-hidden="true" />
+          <span className="library-bar-title label">Library</span>
+          <span className="library-bar-stripes" aria-hidden="true" />
+          {files && files.length > 0 && <span className="library-bar-meta mono">{files.length} clips</span>}
+        </div>
+
+        <div className="library-header-body">
+          <div className="library-header-row">
             <h1 className="display">Footage</h1>
-            {files && files.length > 0 && <p className="library-count mono">{files.length} clips</p>}
-          </div>
-          <div className="library-header-btns">
-            <button className="ghost-btn label" onClick={handleImport} disabled={importing}>
-              {importing ? "Importing…" : "Import"}
-            </button>
-            <button className="ghost-btn label" onClick={() => addFolder("raw")} disabled={addingFolder}>
-              Add raw folder…
-            </button>
-            <button className="ghost-btn label" onClick={() => addFolder("final")} disabled={addingFolder}>
-              Add finals…
-            </button>
-          </div>
-        </div>
-
-        <div className="library-scope-row">
-          <EpisodeBar
-            episodes={episodes}
-            activeEpisodeId={episodeId}
-            onSelect={onEpisodeChange}
-            onCreate={onCreateEpisode}
-          />
-          {files && files.length > 0 && (
-            <div className="library-filters">
-              {(["all", "raw", "final"] as RoleFilter[]).map((r) => (
-                <button
-                  key={r}
-                  className={`library-filter-chip label${roleFilter === r ? " active" : ""}`}
-                  onClick={() => setRoleFilter(r)}
-                >
-                  {r === "all" ? "ALL" : r === "raw" ? "RAW" : "FINALS"}
-                </button>
-              ))}
+            <div className="library-header-btns">
+              <button className="ghost-btn label" onClick={handleImport} disabled={importing}>
+                {importing ? "Importing…" : "Import"}
+              </button>
+              <button className="ghost-btn label" onClick={() => addFolder("raw")} disabled={addingFolder}>
+                Add raw folder…
+              </button>
+              <button className="ghost-btn label" onClick={() => addFolder("final")} disabled={addingFolder}>
+                Add finals…
+              </button>
             </div>
+          </div>
+
+          <div className="library-scope-row">
+            <EpisodeBar
+              episodes={episodes}
+              activeEpisodeId={episodeId}
+              onSelect={onEpisodeChange}
+              onCreate={onCreateEpisode}
+            />
+            {files && files.length > 0 && (
+              <div className="library-filters">
+                {(["all", "raw", "final"] as RoleFilter[]).map((r) => (
+                  <button
+                    key={r}
+                    className={`library-filter-chip label${roleFilter === r ? " active" : ""}`}
+                    onClick={() => setRoleFilter(r)}
+                  >
+                    {r === "all" ? "ALL" : r === "raw" ? "RAW" : "FINALS"}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <p className="library-scan-line mono">
+            {latestScan ? (
+              <>Scanned {formatScanTime(latestScan)} · </>
+            ) : (
+              <>Not scanned yet · </>
+            )}
+            <button className="library-scan-action" onClick={handleRescan} disabled={scanning}>
+              {scanning ? "Scanning…" : latestScan ? "Scan again" : "Scan now"}
+            </button>
+          </p>
+          {actionError && (
+            <InlineError
+              message={actionError}
+              onRetry={retryAction ?? undefined}
+              retrying={importing || scanning || addingFolder || retryingFileIds.size > 0}
+            />
           )}
         </div>
-
-        <p className="library-scan-line mono">
-          {latestScan ? (
-            <>Scanned {formatScanTime(latestScan)} · </>
-          ) : (
-            <>Not scanned yet · </>
-          )}
-          <button className="library-scan-action" onClick={handleRescan} disabled={scanning}>
-            {scanning ? "Scanning…" : latestScan ? "Scan again" : "Scan now"}
-          </button>
-        </p>
-        {actionError && (
-          <InlineError
-            message={actionError}
-            onRetry={retryAction ?? undefined}
-            retrying={importing || scanning || addingFolder || retryingFileIds.size > 0}
-          />
-        )}
       </header>
 
       <div className="library-scroll">
@@ -274,9 +279,42 @@ export function LibraryScreen({
           flex-direction: column;
         }
         .library-header {
-          padding: 44px 48px 20px;
-          border-bottom: 1px solid var(--hairline);
+          background: var(--ground-raised);
+          border-bottom: 1px solid var(--panel-border);
           flex: 0 0 auto;
+        }
+        .library-bar {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 16px;
+          box-shadow: inset 0 -1px 0 var(--chrome-lo);
+          user-select: none;
+        }
+        .library-bar-close {
+          width: 11px;
+          height: 11px;
+          flex: none;
+          background: var(--ground-raised);
+          box-shadow: var(--bevel-out);
+          border: 1px solid var(--chrome-lo);
+        }
+        .library-bar-title {
+          margin: 0;
+        }
+        .library-bar-stripes {
+          flex: 1;
+          height: 8px;
+          background: repeating-linear-gradient(0deg, var(--chrome-lo) 0 1px, transparent 1px 3px);
+          opacity: 0.5;
+        }
+        .library-bar-meta {
+          font-size: 11px;
+          color: var(--ink-dimmer);
+          white-space: nowrap;
+        }
+        .library-header-body {
+          padding: 22px 48px 20px;
         }
         .library-header-row {
           display: flex;
@@ -284,14 +322,10 @@ export function LibraryScreen({
           justify-content: space-between;
           gap: 24px;
         }
-        .library-header h1 {
+        .library-header-row h1 {
           font-size: 28px;
-          margin: 6px 0 8px;
+          margin: 0;
           color: var(--ink);
-        }
-        .library-count {
-          font-size: 11px;
-          color: var(--ink-dimmer);
         }
         .library-header-btns {
           display: flex;
@@ -309,24 +343,26 @@ export function LibraryScreen({
           gap: 8px;
         }
         .library-filter-chip {
-          background: transparent;
-          border: 1px solid var(--hairline-strong);
-          border-radius: 6px;
-          color: var(--ink-dimmer);
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          color: var(--ink-dim);
           padding: 5px 11px;
-          transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
         }
         .library-filter-chip:hover {
-          color: var(--ink-dim);
+          background: #d2d6d9;
         }
         .library-filter-chip.active {
-          color: var(--accent);
-          border-color: var(--accent-dim);
+          background: var(--select-bg);
+          border-color: var(--select-bg);
+          box-shadow: none;
+          color: var(--select-ink);
         }
         .library-scan-line {
           margin: 16px 0 0;
           font-size: 11px;
-          color: var(--ink-faint);
+          color: var(--ink-dimmer);
         }
         .library-scan-action {
           background: transparent;
@@ -350,6 +386,8 @@ export function LibraryScreen({
         .library-scroll {
           flex: 1;
           overflow-y: auto;
+          background: var(--ground-card);
+          box-shadow: inset 0 2px 0 rgba(23, 25, 27, 0.14);
           padding: 32px 48px 48px;
         }
         .library-loading {

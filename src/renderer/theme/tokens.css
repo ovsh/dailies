@@ -1,41 +1,68 @@
 :root {
-  /* ground — cool slate, not black */
-  --ground: #1b1f27;
-  --ground-raised: #232833;
-  --ground-card: #2a3039;
+  /* The Bin — pre-dark Media Composer chrome (see /DESIGN.md) */
 
-  /* near-white text hierarchy */
-  --ink: #f3f6fa;
-  --ink-dim: #c4ccd8;
-  --ink-dimmer: #949cab;
-  --ink-faint: #646c7a;
+  /* grounds */
+  --ground: #9ea4a9; /* window desktop */
+  --ground-raised: #c7cbce; /* panel chrome */
+  --ground-card: #f4f5f6; /* work paper: bins, lists, panes */
+  --paper-alt: #e9ebec; /* alternating rows */
 
-  /* hairlines */
-  --hairline: rgba(255, 255, 255, 0.1);
-  --hairline-strong: rgba(255, 255, 255, 0.16);
+  /* ink hierarchy on paper/chrome */
+  --ink: #17191b;
+  --ink-dim: #4d5257;
+  --ink-dimmer: #6b727a;
+  --ink-faint: #8a9096;
 
-  /* accent — brass/amber, interactive only */
-  --accent: #d0ad5f;
-  --accent-dim: #a3854a;
-  --accent-wash: rgba(208, 173, 95, 0.14);
+  /* platinum bevels replace hairlines */
+  --chrome-hi: #eceeef;
+  --chrome-lo: #74797d;
+  --bevel-out: inset 1px 1px 0 var(--chrome-hi), inset -1px -1px 0 var(--chrome-lo);
+  --bevel-in: inset 1px 1px 0 var(--chrome-lo), inset -1px -1px 0 var(--chrome-hi);
+  --hairline: rgba(23, 25, 27, 0.18);
+  --hairline-strong: rgba(23, 25, 27, 0.32);
+  --panel-border: #5c6165;
 
-  /* status */
-  --status-error: #d17c6c;
-  --status-ok: #93a985;
-  --status-warn: #d0ad5f;
+  /* accents: blue interacts, red records */
+  --accent: #3a6ea8;
+  --accent-dim: #315e8f;
+  --accent-wash: rgba(58, 110, 168, 0.12);
+  --marker-red: #c94038;
+  --marker-red-dn: #a83329;
+
+  /* selection: black-inverse */
+  --select-bg: #17191b;
+  --select-ink: #f4f5f6;
+  --select-hit: #f0d269;
+
+  /* clip colors (chips only) */
+  --clip-red: #c94038;
+  --clip-orange: #d07a2e;
+  --clip-yellow: #c9a52a;
+  --clip-green: #4e8a4a;
+  --clip-blue: #3a6ea8;
+  --clip-purple: #7458a0;
+
+  /* status (AA on paper) */
+  --status-error: #a83329;
+  --status-ok: #3f7140;
+  --status-warn: #8a6d16;
+
+  /* the one dark region: player bezel */
+  --bezel: #17191b;
+  --bezel-ink: #c4ccd8;
 
   /* type */
-  --font-display: "Cormorant Garamond", "Times New Roman", serif;
-  --font-body: "Schibsted Grotesk", -apple-system, sans-serif;
-  --font-mono: "Spline Sans Mono", ui-monospace, monospace;
+  --font-display: "Archivo", -apple-system, sans-serif;
+  --font-body: "Archivo", -apple-system, sans-serif;
+  --font-mono: "Fragment Mono", ui-monospace, monospace;
 
-  /* motion */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --dur-fast: 180ms;
-  --dur-med: 240ms;
+  /* motion: chrome snaps */
+  --ease-out: steps(2, end);
+  --dur-fast: 120ms;
+  --dur-med: 180ms;
 
-  /* elevation */
-  --shadow-card: 0 12px 32px rgba(0, 0, 0, 0.35);
+  /* elevation: hard offset, no blur glow */
+  --shadow-card: 2px 3px 0 rgba(23, 25, 27, 0.22);
 
   /* rail */
   --rail-w: 72px;

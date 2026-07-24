@@ -15,7 +15,7 @@ export function ActivityLine({ agent, status, index }: ActivityLineProps) {
           align-items: baseline;
           gap: 10px;
           font-size: 12px;
-          color: var(--ink-dimmer);
+          color: var(--ink-dim);
           animation: fade-in var(--dur-med) var(--ease-out) both;
           padding: 2px 0;
         }
@@ -24,7 +24,7 @@ export function ActivityLine({ agent, status, index }: ActivityLineProps) {
           color: var(--accent-dim);
         }
         .activity-status {
-          color: var(--ink-dimmer);
+          color: var(--ink-dim);
         }
       `}</style>
     </div>

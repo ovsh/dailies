@@ -11,8 +11,8 @@ interface HitCardProps {
 }
 
 const CONFIDENCE_COLOR: Record<AnswerHit["confidence"], string> = {
-  high: "var(--accent)",
-  medium: "var(--ink-dim)",
+  high: "var(--status-ok)",
+  medium: "var(--status-warn)",
   low: "var(--ink-faint)",
 };
 
@@ -49,14 +49,14 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
 
         <div className="hit-row">
           <TimecodeText tc={hit.inTc} />
-          <span className="hit-dash mono">—</span>
+          <span className="hit-dash mono">-</span>
           <TimecodeText tc={hit.outTc} />
           <span className="hit-conf" title={`Confidence: ${hit.confidence}`}>
             <span className="hit-conf-dot" style={{ background: CONFIDENCE_COLOR[hit.confidence] }} />
           </span>
         </div>
 
-        {hit.quote && <p className="hit-quote">&ldquo;{hit.quote}&rdquo;</p>}
+        {hit.quote && <p className="hit-quote mono">"{hit.quote}"</p>}
         {hit.description && <p className="hit-desc">{hit.description}</p>}
       </div>
 
@@ -64,12 +64,13 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
         .hit-card {
           display: flex;
           flex-direction: column;
-          background: var(--ground-card);
-          border: 1px solid var(--hairline);
-          border-radius: 10px;
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out), var(--shadow-card);
           overflow: hidden;
           animation: fade-up var(--dur-med) var(--ease-out) both;
-          box-shadow: var(--shadow-card);
+          padding: 4px;
         }
         .hit-thumb {
           position: relative;
@@ -77,8 +78,8 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
           width: 100%;
           aspect-ratio: 16 / 9;
           padding: 0;
-          border: none;
-          background: var(--ground);
+          border: 1px solid var(--panel-border);
+          background: var(--bezel);
           cursor: pointer;
         }
         .hit-thumb img {
@@ -86,16 +87,11 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
           height: 100%;
           object-fit: cover;
           display: block;
-          filter: saturate(0.85) brightness(0.9);
-          transition: filter var(--dur-med) var(--ease-out);
-        }
-        .hit-thumb:hover img {
-          filter: saturate(1) brightness(1);
         }
         .hit-thumb-empty {
           width: 100%;
           height: 100%;
-          background: var(--ground-raised);
+          background: var(--bezel);
         }
         .hit-kind-group {
           position: absolute;
@@ -105,19 +101,19 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
           gap: 6px;
         }
         .hit-kind {
-          background: rgba(20, 24, 31, 0.82);
-          border: 1px solid var(--hairline-strong);
-          color: var(--ink-dim);
+          background: var(--ground-card);
+          border: 1px solid var(--panel-border);
+          color: var(--ink);
           padding: 3px 7px;
-          border-radius: 4px;
+          border-radius: 2px;
           font-size: 9.5px;
         }
         .hit-final-tag {
-          background: rgba(20, 24, 31, 0.82);
-          border: 1px solid var(--hairline-strong);
-          color: var(--ink-dimmer);
+          background: var(--select-bg);
+          border: 1px solid var(--select-bg);
+          color: var(--select-ink);
           padding: 3px 7px;
-          border-radius: 4px;
+          border-radius: 2px;
           font-size: 9.5px;
         }
         .hit-body {
@@ -133,7 +129,7 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
         }
         .hit-filename {
           font-size: 11px;
-          color: var(--ink-dim);
+          color: var(--ink);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -160,10 +156,8 @@ export function HitCard({ hit, index, onOpen, selected, onToggleSelect }: HitCar
           border-radius: 50%;
         }
         .hit-quote {
-          font-family: var(--font-display);
-          font-style: italic;
-          font-size: 15px;
-          line-height: 1.5;
+          font-size: 12.5px;
+          line-height: 1.55;
           color: var(--ink);
           margin: 2px 0 0;
         }

@@ -8,11 +8,10 @@ content brief BEFORE any visual direction, real product screenshots (never
 CSS depictions) on marketing surfaces, and the impeccable-finish-reviewer
 before anything is called done.
 
-Two separate visual worlds, do not mix them:
-- The app renderer is the "screening room" (slate + brass,
-  `src/renderer/theme/tokens.css`).
-- The landing page is "The Bin" (steel-gray Media Composer chrome,
-  `site/DESIGN.md`).
+One visual world, "The Bin" (steel-gray Media Composer chrome), two
+expressions: the app renderer follows root `DESIGN.md`
+(tokens in `src/renderer/theme/tokens.css`), the landing page follows
+`site/DESIGN.md`. The old dark "screening room" app theme is retired.
 
 ## Landing page — one deploy
 

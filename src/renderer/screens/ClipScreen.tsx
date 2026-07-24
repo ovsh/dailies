@@ -96,15 +96,15 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
         <button className="clip-back label" onClick={onBack}>
           ← Back
         </button>
-        <h1 className="display clip-title">{file.filename}</h1>
+        <h1 className="clip-title mono">{file.filename}</h1>
         <p className="clip-meta-line mono">
           {audioOnly ? (
-            <><span className="clip-audio-chip label">Audio</span><span className="clip-meta-separator">·</span></>
+            <><span className="clip-chip">Audio</span><span className="clip-meta-separator">·</span></>
           ) : file.fps > 0 ? (
             <>{file.fps.toFixed(3)} FPS <span className="clip-meta-separator">·</span></>
           ) : null}
           <TimecodeText tc={file.startTc} dim /> · {formatDuration(file.durationS)} · {file.codec} ·{" "}
-          {file.role === "raw" ? "RAW" : "FINAL"}
+          <span className="clip-chip">{file.role === "raw" ? "RAW" : "FINAL"}</span>
         </p>
         {loadError && <InlineError message={loadError} onRetry={() => void load()} retrying={loading} />}
       </header>
@@ -208,6 +208,7 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           height: 100%;
           display: flex;
           flex-direction: column;
+          background: var(--ground-card);
         }
         .clip-loading {
           margin: 48px;
@@ -218,26 +219,36 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           margin: 48px;
         }
         .clip-header {
-          padding: 32px 48px 20px;
-          border-bottom: 1px solid var(--hairline);
+          padding: 28px 48px 18px;
+          border-bottom: 1px solid var(--panel-border);
+          box-shadow: inset 0 -1px 0 var(--chrome-hi);
           flex: 0 0 auto;
+          background: var(--ground-card);
         }
         .clip-back {
-          background: transparent;
-          border: none;
-          color: var(--ink-dimmer);
-          padding: 0;
-          margin-bottom: 14px;
-          font-size: 11px;
-          transition: color var(--dur-fast) var(--ease-out);
+          display: inline-flex;
+          align-items: center;
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-out);
+          border-radius: 2px;
+          color: var(--ink-dim);
+          padding: 5px 10px;
+          margin-bottom: 16px;
+          font-size: 10.5px;
         }
         .clip-back:hover {
-          color: var(--accent);
+          background: #d2d6d9;
+          color: var(--ink);
+        }
+        .clip-back:active {
+          box-shadow: var(--bevel-in);
         }
         .clip-title {
-          font-size: 24px;
+          font-size: 21px;
+          font-weight: 600;
           color: var(--ink);
-          margin: 0 0 8px;
+          margin: 0 0 9px;
         }
         .clip-meta-line {
           font-size: 11.5px;
@@ -247,12 +258,21 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           flex-wrap: wrap;
           gap: 0;
         }
-        .clip-audio-chip {
-          color: var(--accent);
-          border: 1px solid var(--accent-dim);
-          border-radius: 4px;
-          padding: 2px 6px;
-          line-height: 1.2;
+        .clip-chip {
+          display: inline-flex;
+          align-items: center;
+          font-family: var(--font-mono);
+          font-size: 9.5px;
+          font-weight: 500;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--ink-dim);
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-out);
+          border-radius: 2px;
+          padding: 2px 7px;
+          line-height: 1.4;
         }
         .clip-meta-separator {
           margin: 0 7px;
@@ -264,26 +284,19 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           overflow: hidden;
         }
         .clip-player-col {
-          padding: 32px 32px 32px 48px;
+          padding: 28px 32px 32px 48px;
           overflow-y: auto;
           display: flex;
           flex-direction: column;
-          gap: 28px;
+          gap: 26px;
         }
         .clip-player-wrap {
           width: 100%;
-          background: #000;
-          border-radius: 8px;
-          overflow: hidden;
-          box-shadow: var(--shadow-card);
-        }
-        .clip-player-wrap.audio {
           background: var(--ground-raised);
-          border: 1px solid var(--hairline);
-        }
-        .clip-player-wrap.unavailable {
-          background: var(--ground-raised);
-          border: 1px solid var(--hairline);
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          padding: 8px;
+          box-shadow: var(--bevel-out), var(--shadow-card);
         }
         .clip-preview-unavailable {
           min-height: 230px;
@@ -291,7 +304,9 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           display: grid;
           place-items: center;
           text-align: center;
-          color: var(--ink-dimmer);
+          background: var(--bezel);
+          color: var(--bezel-ink);
+          border-radius: 1px;
           font-size: 12px;
           line-height: 1.6;
         }
@@ -299,7 +314,8 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           width: 100%;
           display: block;
           aspect-ratio: 16 / 9;
-          background: #000;
+          background: var(--bezel);
+          border-radius: 1px;
         }
         .clip-audio-player {
           min-height: 230px;
@@ -307,17 +323,19 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           display: flex;
           flex-direction: column;
           justify-content: space-between;
-          background: radial-gradient(circle at 50% 38%, var(--accent-wash), transparent 40%);
+          background: var(--bezel);
+          border-radius: 1px;
         }
         .clip-audio-mark {
           display: flex;
           flex-direction: column;
           align-items: center;
           gap: 10px;
-          color: var(--ink-dimmer);
+          color: var(--bezel-ink);
         }
         .clip-audio-mark .label {
-          color: var(--ink-faint);
+          color: var(--bezel-ink);
+          opacity: 0.7;
         }
         .clip-audio {
           width: 100%;
@@ -338,11 +356,12 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
         .scene-chip {
           flex: 0 0 auto;
           width: 120px;
-          background: var(--ground-card);
-          border: 1px solid var(--hairline);
-          border-radius: 6px;
+          background: var(--ground-raised);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--bevel-out);
+          border-radius: 2px;
           overflow: hidden;
-          padding: 0;
+          padding: 4px 4px 5px;
           position: relative;
         }
         .scene-chip img {
@@ -350,7 +369,9 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           aspect-ratio: 16 / 9;
           object-fit: cover;
           display: block;
-          filter: saturate(0.85) brightness(0.9);
+          background: var(--bezel);
+          border-radius: 1px;
+          filter: saturate(0.85) brightness(0.92);
           transition: filter var(--dur-fast) var(--ease-out);
         }
         .scene-chip:hover img {
@@ -360,7 +381,7 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           display: block;
           font-size: 9.5px;
           color: var(--ink-dimmer);
-          padding: 4px 6px;
+          padding: 4px 2px 0;
           text-align: left;
         }
         .scene-strip-empty {
@@ -368,9 +389,11 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           color: var(--ink-faint);
         }
         .clip-transcript-col {
-          border-left: 1px solid var(--hairline);
-          padding: 32px 48px 32px 32px;
+          border-left: 1px solid var(--panel-border);
+          box-shadow: inset 1px 0 0 var(--chrome-hi);
+          padding: 28px 48px 32px 32px;
           overflow-y: auto;
+          background: var(--ground-card);
         }
         .transcript-label {
           display: block;
@@ -379,7 +402,7 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
         .transcript-list {
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 3px;
         }
         .transcript-empty {
           font-size: 11px;
@@ -389,17 +412,20 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           text-align: left;
           background: transparent;
           border: none;
-          border-left: 2px solid transparent;
-          padding: 9px 0 9px 14px;
-          border-radius: 4px;
-          transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+          padding: 9px 10px 9px 12px;
+          border-radius: 2px;
+        }
+        .transcript-seg:nth-child(even) {
+          background: var(--paper-alt);
         }
         .transcript-seg:hover {
-          background: rgba(255, 255, 255, 0.02);
+          background: var(--accent-wash);
         }
         .transcript-seg.active {
-          background: var(--accent-wash);
-          border-left-color: var(--accent);
+          background: var(--select-bg);
+          --ink: var(--select-ink);
+          --ink-dim: var(--select-ink);
+          --ink-dimmer: var(--select-ink);
         }
         .transcript-seg-head {
           display: flex;
@@ -417,7 +443,7 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
           margin: 0;
         }
         .transcript-seg.active .transcript-text {
-          color: var(--ink);
+          color: var(--select-ink);
         }
       `}</style>
     </div>

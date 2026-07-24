@@ -9,7 +9,7 @@ export function TimecodeText({ tc, dim, className }: TimecodeTextProps) {
   return (
     <span
       className={`mono${className ? ` ${className}` : ""}`}
-      style={{ color: dim ? "var(--ink-dimmer)" : "var(--ink)" }}
+      style={{ color: dim ? "var(--ink-dim)" : "var(--ink)" }}
     >
       {tc}
     </span>

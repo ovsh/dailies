@@ -252,263 +252,294 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
             />
           )}
           <section className="jobs-section">
-            <div className="section-head">
-              <span className="label">Jobs</span>
-              <h2 className="display">Indexing queue</h2>
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Jobs</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
             </div>
+            <div className="panel-body">
+              <h2 className="display panel-title">Indexing queue</h2>
 
-            {waitingCount > 0 && (
-              <p className="jobs-waiting-summary mono" role="status">
-                {waitingCount} {waitingCount === 1 ? "job is" : "jobs are"} paused until setup is complete. No retry is needed.
-              </p>
-            )}
-            {jobsError && (
-              <InlineError message={jobsError} onRetry={() => void refreshJobs()} retrying={jobsLoading} />
-            )}
+              {waitingCount > 0 && (
+                <p className="jobs-waiting-summary mono" role="status">
+                  {waitingCount} {waitingCount === 1 ? "job is" : "jobs are"} paused until setup is complete. No retry is needed.
+                </p>
+              )}
+              {jobsError && (
+                <InlineError message={jobsError} onRetry={() => void refreshJobs()} retrying={jobsLoading} />
+              )}
 
-            <table className="jobs-table mono">
-              <thead>
-                <tr>
-                  <th>File</th>
-                  <th>Stage</th>
-                  <th>Status</th>
-                  <th>Attempts</th>
-                  <th>Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {jobs?.map((job) => (
-                  <tr key={job.id}>
-                    <td className="jobs-filename" title={job.filename}>
-                      {job.filename}
-                    </td>
-                    <td>{job.stage}</td>
-                    <td>
-                      <span className="job-status">
-                        <span className="job-status-dot" style={{ background: STATUS_COLOR[job.status] }} />
-                        {job.status}
-                      </span>
-                    </td>
-                    <td>{job.attempts}</td>
-                    <td className={`job-detail${job.status === "waiting" ? " waiting" : job.status === "error" ? " error" : ""}`}>
-                      <span>{job.status === "waiting" ? waitingMessage(job) : job.error ?? "—"}</span>
-                      {job.status === "error" && (
-                        <button
-                          type="button"
-                          className="job-retry label"
-                          onClick={() => void handleRetryFile(job.fileId)}
-                          disabled={retryingFileIds.has(job.fileId)}
-                        >
-                          {retryingFileIds.has(job.fileId) ? "Retrying…" : "Retry failed jobs"}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {jobs?.length === 0 && (
+              <table className="jobs-table mono">
+                <thead>
                   <tr>
-                    <td colSpan={5} className="jobs-empty">
-                      Queue is empty.
-                    </td>
+                    <th>File</th>
+                    <th>Stage</th>
+                    <th>Status</th>
+                    <th>Attempts</th>
+                    <th>Details</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-            <button className="ghost-btn label" onClick={() => void refreshJobs()} disabled={jobsLoading} style={{ marginTop: 14 }}>
-              {jobsLoading ? "Refreshing…" : "Refresh"}
-            </button>
+                </thead>
+                <tbody>
+                  {jobs?.map((job) => (
+                    <tr key={job.id}>
+                      <td className="jobs-filename" title={job.filename}>
+                        {job.filename}
+                      </td>
+                      <td>{job.stage}</td>
+                      <td>
+                        <span className="job-status">
+                          <span className="job-status-dot" style={{ background: STATUS_COLOR[job.status] }} />
+                          {job.status}
+                        </span>
+                      </td>
+                      <td>{job.attempts}</td>
+                      <td className={`job-detail${job.status === "waiting" ? " waiting" : job.status === "error" ? " error" : ""}`}>
+                        <span>{job.status === "waiting" ? waitingMessage(job) : job.error ?? "—"}</span>
+                        {job.status === "error" && (
+                          <button
+                            type="button"
+                            className="job-retry label"
+                            onClick={() => void handleRetryFile(job.fileId)}
+                            disabled={retryingFileIds.has(job.fileId)}
+                          >
+                            {retryingFileIds.has(job.fileId) ? "Retrying…" : "Retry failed jobs"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {jobs?.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="jobs-empty">
+                        Queue is empty.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              <button className="ghost-btn label" onClick={() => void refreshJobs()} disabled={jobsLoading} style={{ marginTop: 14 }}>
+                {jobsLoading ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
           </section>
 
           <section className="jobs-section">
-            <div className="section-head">
-              <span className="label">Settings</span>
-              <h2 className="display">Watched folders</h2>
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Watched folders</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
             </div>
+            <div className="panel-body">
+              <h2 className="display panel-title">Watched folders</h2>
 
-            <div className="folder-list">
-              {folders.map((folder) => {
-                const episode = folder.episodeId === null ? null : episodes.find((e) => e.id === folder.episodeId);
-                return (
-                  <div key={folder.id} className="folder-row">
-                    <span className="folder-path-row">
-                      <span className="folder-role-tag label">{folder.role === "raw" ? "RAW" : "FINAL"}</span>
-                      <span className="mono folder-path">{folder.path}</span>
-                      <span className="folder-episode-tag mono">{episode ? episode.code : "ALL"}</span>
-                      <span className="folder-scanned mono">
-                        {folder.lastScannedAt ? formatScanTime(folder.lastScannedAt) : "never"}
+              <div className="folder-list">
+                {folders.map((folder) => {
+                  const episode = folder.episodeId === null ? null : episodes.find((e) => e.id === folder.episodeId);
+                  return (
+                    <div key={folder.id} className="folder-row">
+                      <span className="folder-path-row">
+                        <span className="folder-role-tag label">{folder.role === "raw" ? "RAW" : "FINAL"}</span>
+                        <span className="mono folder-path">{folder.path}</span>
+                        <span className="folder-episode-tag mono">{episode ? episode.code : "ALL"}</span>
+                        <span className="folder-scanned mono">
+                          {folder.lastScannedAt ? formatScanTime(folder.lastScannedAt) : "never"}
+                        </span>
                       </span>
+                      <button
+                        className="ghost-btn label"
+                        onClick={() => void handleRemoveFolder(folder.id, folder.path)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  );
+                })}
+                {folders.length === 0 && <p className="jobs-empty mono">No folders watched.</p>}
+              </div>
+            </div>
+          </section>
+
+          <section className="jobs-section">
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Episodes</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
+            </div>
+            <div className="panel-body">
+              <h2 className="display panel-title">Episodes</h2>
+
+              <div className="folder-list">
+                {episodes.map((ep) => (
+                  <div key={ep.id} className="folder-row">
+                    <span className="folder-path-row">
+                      <span className="mono episode-code">{ep.code}</span>
+                      <span className="folder-scanned mono">{formatDate(ep.createdAt)}</span>
                     </span>
-                    <button
-                      className="ghost-btn label"
-                      onClick={() => void handleRemoveFolder(folder.id, folder.path)}
-                    >
-                      Remove
-                    </button>
                   </div>
-                );
-              })}
-              {folders.length === 0 && <p className="jobs-empty mono">No folders watched.</p>}
-            </div>
-          </section>
-
-          <section className="jobs-section">
-            <div className="section-head">
-              <span className="label">Settings</span>
-              <h2 className="display">Episodes</h2>
-            </div>
-
-            <div className="folder-list">
-              {episodes.map((ep) => (
-                <div key={ep.id} className="folder-row">
-                  <span className="folder-path-row">
-                    <span className="mono episode-code">{ep.code}</span>
-                    <span className="folder-scanned mono">{formatDate(ep.createdAt)}</span>
-                  </span>
-                </div>
-              ))}
-              {episodes.length === 0 && <p className="jobs-empty mono">No episodes yet.</p>}
-            </div>
-            <div className="episode-add-row" style={{ marginTop: 14 }}>
-              <input
-                className="episode-add-input mono"
-                placeholder="e.g. 204"
-                value={newEpisodeCode}
-                onChange={(e) => setNewEpisodeCode(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleCreateEpisode()}
-                disabled={addingEpisode}
-              />
-              <button
-                className="ghost-btn label"
-                onClick={handleCreateEpisode}
-                disabled={!newEpisodeCode.trim() || addingEpisode}
-              >
-                {addingEpisode ? "Adding…" : "Add"}
-              </button>
-            </div>
-          </section>
-
-          <section className="jobs-section">
-            <div className="section-head">
-              <span className="label">API key</span>
-            </div>
-
-            <ApiKeyField
-              label="OpenRouter API key"
-              connected={settings?.apiKeyStatus === "connected"}
-              value={openRouterKey}
-              onChange={setOpenRouterKey}
-              onSave={() => handleSaveKey("openrouter")}
-              saving={savingProvider === "openrouter"}
-            />
-            <p className="jobs-hint mono">
-              Need a key?{" "}
-              <button
-                className="text-link"
-                onClick={() => void api.openExternal("https://openrouter.ai/keys")}
-              >
-                Create one at openrouter.ai/keys
-              </button>
-              . Free to sign up, then paste it here.
-            </p>
-          </section>
-
-          <section className="jobs-section">
-            <div className="section-head">
-              <span className="label">Models</span>
-            </div>
-            <select
-              className="model-select"
-              value={settings?.modelProfileId ?? MODEL_PROFILES[0]!.id}
-              onChange={(event) => void handleModelProfileChange(event.target.value)}
-              disabled={actionPending}
-            >
-              {MODEL_PROFILES.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.label} · {profile.description}
-                </option>
-              ))}
-            </select>
-            <p className="model-description mono">
-              {MODEL_PROFILES.find((profile) => profile.id === settings?.modelProfileId)?.description ??
-                MODEL_PROFILES[0]!.description}
-            </p>
-          </section>
-
-          <section className="jobs-section">
-            <div className="section-head">
-              <span className="label">Transcription</span>
-            </div>
-            <div className="trans-row">
-              <span className="trans-name">Whisper engine</span>
-              <span className={`trans-status mono${settings?.whisperAvailable ? " ok" : ""}`}>
-                {settings?.whisperAvailable ? "built in" : "missing"}
-              </span>
-            </div>
-            <div className="trans-row">
-              <span className="trans-name">
-                Speech model
-                <span className="trans-sub mono"> {settings?.whisperModel ?? ""} · ~1.6 GB · one-time download</span>
-              </span>
-              {settings?.whisperModelReady ? (
-                <span className="trans-status mono ok">downloaded</span>
-              ) : modelProgress && !modelProgress.done ? (
-                <span className="trans-status mono">
-                  {modelProgress.pct !== null ? `${modelProgress.pct}%` : `${Math.round(modelProgress.downloadedMb)} MB`}
-                </span>
-              ) : (
+                ))}
+                {episodes.length === 0 && <p className="jobs-empty mono">No episodes yet.</p>}
+              </div>
+              <div className="episode-add-row" style={{ marginTop: 14 }}>
+                <input
+                  className="episode-add-input mono"
+                  placeholder="e.g. 204"
+                  value={newEpisodeCode}
+                  onChange={(e) => setNewEpisodeCode(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleCreateEpisode()}
+                  disabled={addingEpisode}
+                />
                 <button
                   className="ghost-btn label"
-                  onClick={() => void handleDownloadModel()}
-                  disabled={actionPending}
+                  onClick={handleCreateEpisode}
+                  disabled={!newEpisodeCode.trim() || addingEpisode}
                 >
-                  Download
+                  {addingEpisode ? "Adding…" : "Add"}
                 </button>
-              )}
-            </div>
-            {modelProgress && !modelProgress.done && modelProgress.pct !== null && (
-              <div className="trans-bar">
-                <div className="trans-bar-fill" style={{ transform: `scaleX(${modelProgress.pct / 100})` }} />
               </div>
-            )}
-            {modelProgress?.error && <p className="jobs-error mono">{modelProgress.error}</p>}
-            <p className="jobs-hint mono">
-              Everything transcribes on this Mac. Audio never leaves the machine.
-            </p>
+            </div>
           </section>
 
           <section className="jobs-section">
-            <div className="section-head">
-              <span className="label">Quality</span>
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">API key</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
             </div>
-            <div className="quality-toggle">
-              {(["standard", "high"] as QualityMode[]).map((mode) => (
+            <div className="panel-body">
+              <ApiKeyField
+                label="OpenRouter API key"
+                connected={settings?.apiKeyStatus === "connected"}
+                value={openRouterKey}
+                onChange={setOpenRouterKey}
+                onSave={() => handleSaveKey("openrouter")}
+                saving={savingProvider === "openrouter"}
+              />
+              <p className="jobs-hint mono">
+                Need a key?{" "}
                 <button
-                  key={mode}
-                  className={`quality-btn label${settings?.qualityMode === mode ? " active" : ""}`}
-                  onClick={() => void handleQualityChange(mode)}
-                  disabled={actionPending}
+                  className="text-link"
+                  onClick={() => void api.openExternal("https://openrouter.ai/keys")}
                 >
-                  {mode}
+                  Create one at openrouter.ai/keys
                 </button>
-              ))}
+                . Free to sign up, then paste it here.
+              </p>
             </div>
           </section>
 
           <section className="jobs-section">
-            <div className="section-head">
-              <span className="label">Danger zone</span>
-              <h2 className="display">Clear cache &amp; reprocess</h2>
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Models</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
             </div>
-            <p className="jobs-hint mono">
-              Deletes every generated proxy, transcript, scene index, and embedding for this project and re-processes all watched footage from scratch. Your source files are never touched.
-            </p>
-            <button
-              className="ghost-btn label"
-              onClick={() => void handleClearProjectCache()}
-              disabled={actionPending}
-            >
-              {actionPending ? "Clearing…" : "Clear cache & reprocess"}
-            </button>
+            <div className="panel-body">
+              <select
+                className="model-select"
+                value={settings?.modelProfileId ?? MODEL_PROFILES[0]!.id}
+                onChange={(event) => void handleModelProfileChange(event.target.value)}
+                disabled={actionPending}
+              >
+                {MODEL_PROFILES.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.label} · {profile.description}
+                  </option>
+                ))}
+              </select>
+              <p className="model-description mono">
+                {MODEL_PROFILES.find((profile) => profile.id === settings?.modelProfileId)?.description ??
+                  MODEL_PROFILES[0]!.description}
+              </p>
+            </div>
+          </section>
+
+          <section className="jobs-section">
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Transcription</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
+            </div>
+            <div className="panel-body">
+              <div className="trans-row">
+                <span className="trans-name">Whisper engine</span>
+                <span className={`trans-status mono${settings?.whisperAvailable ? " ok" : ""}`}>
+                  {settings?.whisperAvailable ? "built in" : "missing"}
+                </span>
+              </div>
+              <div className="trans-row">
+                <span className="trans-name">
+                  Speech model
+                  <span className="trans-sub mono"> {settings?.whisperModel ?? ""} · ~1.6 GB · one-time download</span>
+                </span>
+                {settings?.whisperModelReady ? (
+                  <span className="trans-status mono ok">downloaded</span>
+                ) : modelProgress && !modelProgress.done ? (
+                  <span className="trans-status mono">
+                    {modelProgress.pct !== null ? `${modelProgress.pct}%` : `${Math.round(modelProgress.downloadedMb)} MB`}
+                  </span>
+                ) : (
+                  <button
+                    className="ghost-btn label"
+                    onClick={() => void handleDownloadModel()}
+                    disabled={actionPending}
+                  >
+                    Download
+                  </button>
+                )}
+              </div>
+              {modelProgress && !modelProgress.done && modelProgress.pct !== null && (
+                <div className="trans-bar">
+                  <div className="trans-bar-fill" style={{ transform: `scaleX(${modelProgress.pct / 100})` }} />
+                </div>
+              )}
+              {modelProgress?.error && <p className="jobs-error mono">{modelProgress.error}</p>}
+              <p className="jobs-hint mono">
+                Everything transcribes on this Mac. Audio never leaves the machine.
+              </p>
+            </div>
+          </section>
+
+          <section className="jobs-section">
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Quality</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
+            </div>
+            <div className="panel-body">
+              <div className="quality-toggle">
+                {(["standard", "high"] as QualityMode[]).map((mode) => (
+                  <button
+                    key={mode}
+                    className={`quality-btn label${settings?.qualityMode === mode ? " active" : ""}`}
+                    onClick={() => void handleQualityChange(mode)}
+                    disabled={actionPending}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="jobs-section">
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Danger zone</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
+            </div>
+            <div className="panel-body">
+              <h2 className="display panel-title">Clear cache &amp; reprocess</h2>
+              <p className="jobs-hint mono" style={{ marginTop: 0 }}>
+                Deletes every generated proxy, transcript, scene index, and embedding for this project and re-processes all watched footage from scratch. Your source files are never touched.
+              </p>
+              <button
+                className="ghost-btn label"
+                onClick={() => void handleClearProjectCache()}
+                disabled={actionPending}
+              >
+                {actionPending ? "Clearing…" : "Clear cache & reprocess"}
+              </button>
+            </div>
           </section>
         </div>
       </div>
@@ -517,6 +548,7 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         .jobs-screen {
           height: 100%;
           overflow: hidden;
+          background: var(--ground);
         }
         .text-link {
           background: none;
@@ -533,29 +565,62 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         .jobs-scroll {
           height: 100%;
           overflow-y: auto;
-          padding: 56px 48px 80px;
+          padding: 40px 40px 80px;
         }
         .jobs-column {
-          max-width: 780px;
+          max-width: 800px;
           margin: 0 auto;
           display: flex;
           flex-direction: column;
-          gap: 56px;
+          gap: 24px;
         }
         .jobs-section {
+          background: var(--ground-raised);
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out), var(--shadow-card);
           animation: fade-up var(--dur-med) var(--ease-out) both;
         }
-        .api-key-label {
-          display: block;
-          margin-bottom: 8px;
+        .panel-bar {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 7px 10px;
+          box-shadow: inset 0 -1px 0 var(--chrome-lo);
+          user-select: none;
         }
-        .section-head {
-          margin-bottom: 22px;
+        .panel-bar-close {
+          width: 11px;
+          height: 11px;
+          flex: none;
+          background: var(--ground-raised);
+          box-shadow: var(--bevel-out);
+          border: 1px solid var(--chrome-lo);
         }
-        .section-head h2 {
-          font-size: 22px;
+        .panel-bar-title {
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
           color: var(--ink);
-          margin: 6px 0 0;
+          white-space: nowrap;
+        }
+        .panel-bar-stripes {
+          flex: 1;
+          height: 8px;
+          background: repeating-linear-gradient(0deg, var(--chrome-lo) 0 1px, transparent 1px 3px);
+          opacity: 0.5;
+        }
+        .panel-body {
+          background: var(--ground-card);
+          border: 1px solid var(--chrome-lo);
+          margin: 8px;
+          padding: 22px 24px 26px;
+        }
+        .panel-title {
+          font-size: 19px;
+          color: var(--ink);
+          margin: 0 0 18px;
         }
         .jobs-table {
           width: 100%;
@@ -564,19 +629,26 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         }
         .jobs-table th {
           text-align: left;
-          color: var(--ink-faint);
-          font-weight: 500;
-          letter-spacing: 0.08em;
+          background: var(--ground-raised);
+          color: var(--ink-dim);
+          font-weight: 600;
+          letter-spacing: 0.1em;
           text-transform: uppercase;
           font-size: 9.5px;
-          padding: 0 12px 10px 0;
-          border-bottom: 1px solid var(--hairline);
+          padding: 8px 12px 8px 10px;
+          border-bottom: 1px solid var(--chrome-lo);
+        }
+        .jobs-table th:first-child {
+          padding-left: 10px;
         }
         .jobs-table td {
-          padding: 10px 12px 10px 0;
-          border-bottom: 1px solid var(--hairline);
+          padding: 9px 12px 9px 10px;
+          border-bottom: 1px solid var(--paper-alt);
           color: var(--ink-dim);
           vertical-align: top;
+        }
+        .jobs-table tbody tr:nth-child(even) td {
+          background: var(--paper-alt);
         }
         .jobs-filename {
           color: var(--ink);
@@ -602,9 +674,9 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         }
         .jobs-waiting-summary {
           color: var(--status-warn);
-          background: rgba(208, 173, 95, 0.08);
-          border: 1px solid rgba(208, 173, 95, 0.2);
-          border-radius: 6px;
+          background: rgba(138, 109, 22, 0.08);
+          border: 1px solid rgba(138, 109, 22, 0.25);
+          border-radius: 2px;
           font-size: 11px;
           padding: 9px 11px;
           margin: 0 0 16px;
@@ -615,17 +687,20 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         .job-retry {
           display: block;
           margin-top: 6px;
-          background: transparent;
-          border: 1px solid var(--hairline-strong);
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-out);
           color: var(--ink-dim);
-          padding: 3px 7px;
-          border-radius: 4px;
+          padding: 3px 8px;
+          border-radius: 2px;
           font-size: 9px;
-          transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
         }
         .job-retry:hover:not(:disabled) {
-          border-color: var(--accent-dim);
+          background: #d2d6d9;
           color: var(--accent);
+        }
+        .job-retry:active:not(:disabled) {
+          box-shadow: var(--bevel-in);
         }
         .job-retry:disabled {
           color: var(--ink-faint);
@@ -640,18 +715,6 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         .jobs-empty {
           color: var(--ink-faint);
           padding: 16px 0;
-        }
-        .ghost-btn {
-          background: transparent;
-          border: 1px solid var(--hairline-strong);
-          color: var(--ink-dim);
-          padding: 7px 14px;
-          border-radius: 6px;
-          transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
-        }
-        .ghost-btn:hover {
-          border-color: var(--accent-dim);
-          color: var(--accent);
         }
         .folder-list {
           display: flex;
@@ -695,38 +758,40 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
           gap: 10px;
         }
         .episode-add-input {
-          background: var(--ground-raised);
-          border: 1px solid var(--hairline);
-          border-radius: 6px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
           padding: 9px 12px;
           color: var(--ink);
           font-size: 12.5px;
           width: 140px;
         }
-        .episode-add-input:focus-visible {
-          border-color: var(--accent-dim);
+        .episode-add-input:focus {
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
         }
         .episode-add-input::placeholder {
           color: var(--ink-faint);
         }
         .quality-toggle {
           display: inline-flex;
-          border: 1px solid var(--hairline-strong);
-          border-radius: 7px;
-          overflow: hidden;
+          gap: 2px;
         }
         .model-select {
           width: 100%;
-          background: var(--ground-raised);
-          border: 1px solid var(--hairline);
-          border-radius: 6px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
           padding: 10px 12px;
           color: var(--ink);
           font-family: var(--font-body);
           font-size: 12.5px;
         }
         .model-select:focus-visible {
-          border-color: var(--accent-dim);
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
         }
         .model-description {
           margin: 10px 0 0;
@@ -734,17 +799,28 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
           font-size: 10.5px;
         }
         .quality-btn {
-          background: transparent;
-          border: none;
-          color: var(--ink-dimmer);
-          padding: 9px 20px;
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-out);
+          border-radius: 2px;
+          color: var(--ink-dim);
+          padding: 8px 18px;
         }
-        .quality-btn + .quality-btn {
-          border-left: 1px solid var(--hairline-strong);
+        .quality-btn:hover:not(:disabled):not(.active) {
+          background: #d2d6d9;
+        }
+        .quality-btn:active:not(:disabled) {
+          box-shadow: var(--bevel-in);
         }
         .quality-btn.active {
-          background: var(--accent-wash);
-          color: var(--accent);
+          background: var(--select-bg);
+          border-color: var(--select-bg);
+          color: var(--select-ink);
+          box-shadow: none;
+        }
+        .quality-btn:disabled {
+          color: var(--ink-faint);
+          cursor: default;
         }
         .trans-row {
           display: flex;
@@ -771,9 +847,9 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
           color: var(--status-ok);
         }
         .trans-bar {
-          height: 2px;
-          background: var(--hairline);
-          border-radius: 1px;
+          height: 4px;
+          background: var(--paper-alt);
+          box-shadow: var(--bevel-in);
           margin: 12px 0 4px;
           overflow: hidden;
         }
@@ -828,8 +904,7 @@ function ApiKeyField({ label, connected, value, onChange, onSave, saving }: ApiK
       </div>
       <style>{`
         .api-key-field {
-          padding: 16px 0;
-          border-bottom: 1px solid var(--hairline);
+          padding-bottom: 4px;
         }
         .api-key-head {
           display: flex;
@@ -858,15 +933,17 @@ function ApiKeyField({ label, connected, value, onChange, onSave, saving }: ApiK
         }
         .api-key-input {
           flex: 1;
-          background: var(--ground-raised);
-          border: 1px solid var(--hairline);
-          border-radius: 6px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
           padding: 9px 12px;
           color: var(--ink);
           font-size: 12.5px;
         }
-        .api-key-input:focus-visible {
-          border-color: var(--accent-dim);
+        .api-key-input:focus {
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
         }
       `}</style>
     </div>

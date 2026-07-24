@@ -4,8 +4,9 @@
     {
       "name": "renderer",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:renderer"],
-      "port": 5183
+      "runtimeArgs": ["run", "dev:renderer", "--", "--port", "5199", "--strictPort"],
+      "port": 5199,
+      "autoPort": false
     }
   ]
 }

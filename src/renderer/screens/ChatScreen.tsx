@@ -314,7 +314,7 @@ export function ChatScreen({
                 onKeyDown={handleKeyDown}
                 rows={1}
               />
-              <button className="chat-send label" onClick={handleSend} disabled={!input.trim() || isAnswering}>
+              <button className="chat-send" onClick={handleSend} disabled={!input.trim() || isAnswering}>
                 {isAnswering ? "Answering…" : "Send"}
               </button>
             </div>
@@ -341,18 +341,22 @@ export function ChatScreen({
         .chat-history {
           flex: 0 0 216px;
           min-width: 0;
-          padding: 50px 14px 22px;
-          border-right: 1px solid var(--hairline);
-          background: rgba(35, 40, 51, 0.45);
+          padding: 50px 10px 14px;
+          border-right: 1px solid var(--panel-border);
+          background: var(--ground-raised);
+          box-shadow: var(--bevel-out);
           overflow: hidden;
+          display: flex;
+          flex-direction: column;
         }
         .chat-history-head {
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 8px;
-          padding: 0 7px 13px;
-          border-bottom: 1px solid var(--hairline);
+          padding: 0 4px 10px;
+          box-shadow: inset 0 -1px 0 var(--chrome-lo);
+          flex: 0 0 auto;
         }
         .chat-new {
           border: 0;
@@ -360,7 +364,6 @@ export function ChatScreen({
           color: var(--ink-dimmer);
           padding: 3px 0;
           font-size: 9.5px;
-          transition: color var(--dur-fast) var(--ease-out);
         }
         .chat-new:hover:not(:disabled) {
           color: var(--accent);
@@ -370,32 +373,35 @@ export function ChatScreen({
           cursor: default;
         }
         .chat-history-list {
+          flex: 1;
           display: flex;
           flex-direction: column;
-          gap: 3px;
-          padding-top: 10px;
+          gap: 1px;
+          margin-top: 8px;
+          padding: 4px;
+          background: var(--ground-card);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
           overflow-y: auto;
-          max-height: calc(100% - 36px);
         }
         .chat-history-item {
           width: 100%;
           text-align: left;
           display: flex;
           flex-direction: column;
-          gap: 4px;
-          border: 1px solid transparent;
-          border-radius: 5px;
+          gap: 3px;
+          border: none;
+          border-radius: 0;
           background: transparent;
-          padding: 9px 8px 8px;
-          transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+          color: var(--ink-dim);
+          padding: 7px 6px;
         }
-        .chat-history-item:hover:not(:disabled) {
-          background: rgba(255, 255, 255, 0.025);
-          border-color: var(--hairline);
+        .chat-history-item:hover:not(:disabled):not(.active) {
+          background: var(--paper-alt);
         }
         .chat-history-item.active {
-          background: var(--accent-wash);
-          border-color: var(--hairline-strong);
+          background: var(--select-bg);
+          color: var(--select-ink);
         }
         .chat-history-item:disabled {
           cursor: default;
@@ -405,18 +411,19 @@ export function ChatScreen({
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          color: var(--ink-dim);
+          color: inherit;
           font-size: 11.5px;
         }
-        .chat-history-item.active .chat-history-title {
-          color: var(--ink);
-        }
         .chat-history-date {
-          color: var(--ink-faint);
+          color: var(--ink-dimmer);
           font-size: 9px;
         }
+        .chat-history-item.active .chat-history-date {
+          color: var(--select-ink);
+          opacity: 0.7;
+        }
         .chat-history-note {
-          padding: 8px;
+          padding: 8px 6px;
           color: var(--ink-faint);
           font-size: 9.5px;
           line-height: 1.5;
@@ -429,6 +436,7 @@ export function ChatScreen({
           min-width: 0;
           display: flex;
           flex-direction: column;
+          background: var(--ground-card);
         }
         .chat-scroll {
           flex: 1;
@@ -451,7 +459,7 @@ export function ChatScreen({
         .chat-conversation-loading {
           padding-top: 14vh;
           text-align: center;
-          color: var(--ink-faint);
+          color: var(--ink-dimmer);
           font-size: 10.5px;
         }
         .chat-empty-line {
@@ -461,7 +469,7 @@ export function ChatScreen({
         }
         .chat-empty-sub {
           font-size: 13.5px;
-          color: var(--ink-dimmer);
+          color: var(--ink-dim);
           max-width: 440px;
           margin: 0 auto;
           line-height: 1.6;
@@ -469,17 +477,16 @@ export function ChatScreen({
         .chat-empty-scope {
           margin: 18px 0 0;
           font-size: 11px;
-          color: var(--ink-faint);
+          color: var(--ink-dim);
         }
         .chat-key-hint {
           margin-top: 26px;
-          background: transparent;
-          border: 1px solid var(--hairline-strong);
-          border-radius: 6px;
+          background: var(--ground-card);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
           padding: 9px 16px;
           font-size: 12px;
           color: var(--accent);
-          transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
         }
         .chat-key-hint:hover {
           border-color: var(--accent-dim);
@@ -518,18 +525,24 @@ export function ChatScreen({
         }
         .chat-input-bar {
           flex: 0 0 auto;
-          padding: 14px 40px 26px;
-          background: linear-gradient(to top, var(--ground) 65%, transparent);
+          padding: 14px 40px 20px;
+          background: var(--ground-raised);
+          border-top: 1px solid var(--panel-border);
+          box-shadow: var(--bevel-out);
         }
         .chat-input-wrap {
           display: flex;
           align-items: flex-end;
-          gap: 16px;
-          border-bottom: 1px solid var(--hairline-strong);
-          transition: border-color var(--dur-fast) var(--ease-out);
+          gap: 12px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
+          padding: 8px 8px 8px 14px;
         }
         .chat-input-wrap:focus-within {
-          border-color: var(--accent-dim);
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
         }
         .chat-input {
           flex: 1;
@@ -538,34 +551,46 @@ export function ChatScreen({
           resize: none;
           color: var(--ink);
           font-family: var(--font-body);
-          font-size: 15.5px;
+          font-size: 14.5px;
           line-height: 1.5;
-          padding: 12px 0 14px;
+          padding: 8px 0;
           caret-color: var(--accent);
         }
         .chat-input::placeholder {
-          color: var(--ink-dimmer);
+          color: var(--ink-faint);
         }
         .chat-input:focus {
           outline: none;
         }
         .chat-send {
-          background: transparent;
-          border: none;
-          color: var(--ink-dimmer);
-          padding: 0 0 16px;
-          transition: color var(--dur-fast) var(--ease-out);
+          flex: 0 0 auto;
+          background: var(--marker-red);
+          border: 1px solid var(--marker-red-dn);
+          border-radius: 999px;
+          font-family: var(--font-body);
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: #fff;
+          padding: 9px 16px;
+          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 2px 3px 0 rgba(23,25,27,.3);
         }
         .chat-send:hover:not(:disabled) {
-          color: var(--accent);
+          transform: translate(1px, 1px);
+          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 1px 1px 0 rgba(23,25,27,.3);
         }
         .chat-send:disabled {
+          background: var(--ground-raised);
+          border-color: var(--chrome-lo);
           color: var(--ink-faint);
+          box-shadow: var(--bevel-out);
+          transform: none;
           cursor: default;
         }
         .chat-input-hint {
           font-size: 10px;
-          color: var(--ink-faint);
+          color: var(--ink-dimmer);
           margin: 10px 0 0;
           user-select: none;
         }
@@ -609,7 +634,7 @@ function TurnAnswer({ answer, onOpenClip, onExport }: TurnAnswerProps) {
         }
         .turn-prose {
           font-size: 14.5px;
-          line-height: 1.75;
+          line-height: 1.7;
           color: var(--ink-dim);
           margin: 0 0 24px;
         }

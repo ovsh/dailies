@@ -208,7 +208,7 @@ export function ChatScreen({
     }));
     const result = await api.exportHits(kind, items);
     setToast({
-      message: `Exported ${result.count} ${result.count === 1 ? "marker" : "markers"} — ${result.path.split("/").pop()}`,
+      message: `Exported ${result.count} ${result.count === 1 ? "marker" : "markers"} · ${result.path.split("/").pop()}`,
       action: { label: "Reveal in Finder", onClick: () => api.revealInFinder(result.path) },
     });
   }
@@ -266,12 +266,12 @@ export function ChatScreen({
               <div className="chat-empty">
                 <p className="display chat-empty-line">Ask your footage anything.</p>
                 <p className="chat-empty-sub">
-                  Search transcripts and producer notes — "where does Marsh mention the salmon run?"
+                  Search transcripts and producer notes, like "where does Marsh mention the salmon run?"
                 </p>
                 {activeEpisode && <p className="chat-empty-scope mono">Searching episode {activeEpisode.code}</p>}
                 {apiKeySet === false && onOpenSettings && (
                   <button className="chat-key-hint" onClick={onOpenSettings}>
-                    No OpenRouter key yet — set one up in Settings →
+                    No OpenRouter key yet. Set one up in Settings →
                   </button>
                 )}
               </div>

@@ -374,7 +374,7 @@ const SEGMENTS: Record<number, TranscriptSegment[]> = {
     seg(303, 3, 48, 58, "That mother bear you saw yesterday, she's raised three litters on this exact bend.", "Marsh", 0.88),
     seg(304, 3, 65, 76, "The cubs won't fish for themselves until next spring. Right now they're just watching, learning the current.", "Marsh", 0.93),
     seg(305, 3, 102, 114, "What surprises people is how patient the bears are. They'll stand in that cold water for an hour without moving.", "Marsh", 0.9),
-    seg(306, 3, 140, 149, "If the run is late, everything downstream is late — the eagles, the wolves, even the plant growth along the bank.", "Marsh", 0.87),
+    seg(306, 3, 140, 149, "If the run is late, everything downstream is late. The eagles, the wolves, even the plant growth along the bank.", "Marsh", 0.87),
   ],
   4: [
     seg(401, 4, 8, 18, "From this angle you can really see how the current pushes the salmon into that back eddy.", "Marsh", 0.89),
@@ -386,7 +386,7 @@ const SEGMENTS: Record<number, TranscriptSegment[]> = {
     seg(702, 7, 40, 49, "Weather's supposed to turn by noon, so we want the aerial work done early.", "Guide (off-cam)", 0.79),
   ],
   9: [
-    seg(901, 9, 15, 26, "Night filming here is a different discipline entirely — you're listening more than watching.", "Marsh", 0.86),
+    seg(901, 9, 15, 26, "Night filming here is a different discipline entirely. You're listening more than watching.", "Marsh", 0.86),
     seg(902, 9, 60, 71, "The bears are less cautious after dark. Fewer people on the river, less competition for the good spots.", "Marsh", 0.88),
     seg(903, 9, 118, 130, "Some of our best behavior footage has come from these night sessions, even though the light is brutal to work with.", "Marsh", 0.83),
   ],

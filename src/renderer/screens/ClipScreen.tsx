@@ -175,7 +175,7 @@ export function ClipScreen({ fileId, seekS, onBack }: ClipScreenProps) {
               ))}
               {scenes.length === 0 && (
                 <span className="scene-strip-empty mono">
-                  {audioOnly ? "Audio-only clip — no visual scenes." : "No scenes indexed yet."}
+                  {audioOnly ? "Audio-only clip, no visual scenes." : "No scenes indexed yet."}
                 </span>
               )}
             </div>

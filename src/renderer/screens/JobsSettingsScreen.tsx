@@ -33,9 +33,9 @@ function formatScanTime(iso: string): string {
 }
 
 function waitingMessage(job: Job): string {
-  if (job.stage === "transcribe") return "Waiting for speech model — download it below.";
+  if (job.stage === "transcribe") return "Waiting for speech model. Download it below.";
   if (job.stage === "embed") {
-    return "Waiting for a connected OpenRouter API key — check it below.";
+    return "Waiting for a connected OpenRouter API key. Check it below.";
   }
   return job.error ?? "Waiting for a required setup step.";
 }
@@ -407,8 +407,8 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
                 onClick={() => void api.openExternal("https://openrouter.ai/keys")}
               >
                 Create one at openrouter.ai/keys
-              </button>{" "}
-              — free to sign up, then paste it here.
+              </button>
+              . Free to sign up, then paste it here.
             </p>
           </section>
 
@@ -424,7 +424,7 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
             >
               {MODEL_PROFILES.map((profile) => (
                 <option key={profile.id} value={profile.id}>
-                  {profile.label} — {profile.description}
+                  {profile.label} · {profile.description}
                 </option>
               ))}
             </select>
@@ -467,12 +467,12 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
             </div>
             {modelProgress && !modelProgress.done && modelProgress.pct !== null && (
               <div className="trans-bar">
-                <div className="trans-bar-fill" style={{ width: `${modelProgress.pct}%` }} />
+                <div className="trans-bar-fill" style={{ transform: `scaleX(${modelProgress.pct / 100})` }} />
               </div>
             )}
             {modelProgress?.error && <p className="jobs-error mono">{modelProgress.error}</p>}
             <p className="jobs-hint mono">
-              Everything transcribes on this Mac — audio never leaves the machine.
+              Everything transcribes on this Mac. Audio never leaves the machine.
             </p>
           </section>
 
@@ -780,7 +780,8 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         .trans-bar-fill {
           height: 100%;
           background: var(--accent);
-          transition: width 400ms var(--ease-out);
+          transform-origin: left;
+          transition: transform 400ms var(--ease-out);
         }
         .jobs-hint {
           margin-top: 14px;

@@ -210,9 +210,9 @@ export function LibraryScreen({
 
         <p className="library-scan-line mono">
           {latestScan ? (
-            <>Scanned {formatScanTime(latestScan)} — </>
+            <>Scanned {formatScanTime(latestScan)} · </>
           ) : (
-            <>Not scanned yet — </>
+            <>Not scanned yet · </>
           )}
           <button className="library-scan-action" onClick={handleRescan} disabled={scanning}>
             {scanning ? "Scanning…" : latestScan ? "Scan again" : "Scan now"}

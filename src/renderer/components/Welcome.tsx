@@ -88,7 +88,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
       <div className="welcome-panel">
         <p className="welcome-mark display">Dailies</p>
         <p className="welcome-sub">
-          Chat with your footage. Three independent setup checks — continue now, or finish them later in Settings.
+          Chat with your footage. Three independent setup checks. Continue now, or finish them later in Settings.
         </p>
 
         {error && (
@@ -114,8 +114,8 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
               onClick={() => void api.openExternal("https://openrouter.ai/keys")}
             >
               Create one at openrouter.ai/keys
-            </button>{" "}
-            — free to sign up, takes about a minute, then paste it below.
+            </button>
+            . Free to sign up, takes about a minute, then paste it below.
           </p>
           {!keyConnected && (
             <div className="welcome-row">
@@ -147,7 +147,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
             </span>
           </div>
           <p className="welcome-step-why">
-            Point Dailies at a folder. Files are indexed in place — nothing is moved or copied — and
+            Point Dailies at a folder. Files are indexed in place, nothing is moved or copied, and
             new footage dropped in later is picked up automatically.
           </p>
           {folders.map((f) => (
@@ -195,7 +195,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           )}
           {modelProgress && !modelProgress.done && modelProgress.pct !== null && (
             <div className="welcome-progress-bar">
-              <div className="welcome-progress-fill" style={{ width: `${modelProgress.pct}%` }} />
+              <div className="welcome-progress-fill" style={{ transform: `scaleX(${modelProgress.pct / 100})` }} />
             </div>
           )}
         </div>
@@ -362,7 +362,8 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
         .welcome-progress-fill {
           height: 100%;
           background: var(--accent);
-          transition: width 400ms var(--ease-out);
+          transform-origin: left;
+          transition: transform 400ms var(--ease-out);
         }
         .welcome-enter {
           flex: 0 0 auto;

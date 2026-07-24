@@ -51,9 +51,6 @@ function projectInitials(name: string): string {
 export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailProps) {
   return (
     <nav className="rail">
-      <div className="rail-mark display" aria-label="Dailies">
-        D.
-      </div>
       <button
         className="rail-project"
         onClick={onOpenProjects}
@@ -88,14 +85,7 @@ export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailPr
           display: flex;
           flex-direction: column;
           align-items: center;
-          padding: 20px 0 24px;
-        }
-        .rail-mark {
-          font-size: 20px;
-          font-weight: 800;
-          color: var(--ink);
-          margin-bottom: 20px;
-          user-select: none;
+          padding: 56px 0 24px;
         }
         .rail-project {
           position: relative;

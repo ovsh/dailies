@@ -8,6 +8,7 @@ import { createAppSettings } from "./app-settings";
 import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { buildMediaResponse, parseMediaRequestPath } from "./media-protocol";
+import { createWindowRef } from "./window-ref";
 
 /**
  * When the app is launched from Finder/Dock (rather than a terminal), the
@@ -40,7 +41,10 @@ if (userDataOverride) {
   app.setPath("userData", userDataOverride);
 }
 
-let win: BrowserWindow | null = null;
+// On macOS the app keeps running after the window closes; anything pushing
+// to the renderer must go through winRef.get(), which returns null once the
+// window is destroyed.
+const winRef = createWindowRef<BrowserWindow>();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -71,7 +75,7 @@ function createWindow(): BrowserWindow {
   } else {
     void w.loadFile(path.join(__dirname, "../../dist/renderer/index.html"));
   }
-  return w;
+  return winRef.track(w);
 }
 
 void app.whenReady().then(async () => {
@@ -112,11 +116,11 @@ void app.whenReady().then(async () => {
     settings,
     onUpdate: () => {
       const update: IndexUpdate = { revision: ++indexRevision };
-      win?.webContents.send(IPC.indexUpdate, update);
+      winRef.get()?.webContents.send(IPC.indexUpdate, update);
     },
   });
 
-  registerIpcHandlers({ manager, settings, dataDir, getWindow: () => win });
+  registerIpcHandlers({ manager, settings, dataDir, getWindow: winRef.get });
 
   // Re-open the last project (adopts a pre-projects install on first boot).
   try {
@@ -125,10 +129,10 @@ void app.whenReady().then(async () => {
     console.error("Failed to open last project:", err);
   }
 
-  win = createWindow();
+  createWindow();
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) win = createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 
   app.on("before-quit", () => {

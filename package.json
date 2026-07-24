@@ -1,7 +1,7 @@
 {
   "name": "dailies",
   "productName": "Dailies",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Chat with your footage. Local indexing, agent search, Avid-native export.",
   "main": "dist-electron/main/index.cjs",

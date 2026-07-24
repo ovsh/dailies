@@ -19,10 +19,11 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
 
 ### 1. Install
 
-1. Open `Dailies-<version>-arm64.dmg` and drag **Dailies** to Applications.
-2. First open only: macOS may say it can't verify the app (it is signed but not yet
-   notarized). **Right-click the app → Open → Open.** After that it opens normally.
-3. Requirements: Apple Silicon Mac, macOS 14+.
+1. Download the latest `Dailies-<version>-arm64.dmg` from
+   [Releases](https://github.com/ovsh/dailies/releases), open it, and drag
+   **Dailies** to Applications. The app is signed and notarized; it opens
+   like any other Mac app.
+2. Requirements: Apple Silicon Mac, macOS 14+.
 
 ### 2. First run — three things
 
@@ -112,7 +113,7 @@ All timecodes are source TC (or timeline TC for finals), drop-frame handled corr
 
 | Symptom | Fix |
 |---|---|
-| "Can't verify the app" on first open | Right-click → Open → Open (one time). |
+| "Can't verify the app" on first open | Only affects pre-0.2.1 builds. Download the current notarized DMG from Releases, or right-click → Open → Open once. |
 | Chat says a key is needed | Settings & Jobs → paste your OpenRouter key. |
 | Clips stuck without transcripts | Download the speech model: Settings & Jobs → Transcription → Download. |
 | Something looks stuck | Settings & Jobs shows every indexing job and any errors; "Scan again" is always safe. |
@@ -144,14 +145,16 @@ then copies or directly loads the matching cached file instead of rebuilding it.
 once if necessary. `npm run rebuild` remains available when a deliberately fresh
 Electron rebuild is needed.
 
-To **notarize** (required for friction-free installs on modern macOS), export before
-`npm run dist`:
+To **notarize** (required for friction-free installs on modern macOS), build with the
+stored notarytool keychain profile:
 
 ```sh
-export APPLE_ID="you@example.com"
-export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # appleid.apple.com -> App-Specific Passwords
-export APPLE_TEAM_ID="7Z82LSPAPP"
+APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist
 ```
+
+Then notarize and staple the DMG itself and verify with Gatekeeper; the
+`apple-sign` skill (`.claude/skills/apple-sign/SKILL.md`) has the full flow,
+including the one-time `notarytool store-credentials` setup.
 
 Un-notarized builds are blocked by Gatekeeper on current macOS ("damaged / move to
 Trash"). Workaround for a machine you control: `xattr -d com.apple.quarantine /Applications/Dailies.app`.

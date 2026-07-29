@@ -14,6 +14,8 @@ function fakeSettings(): AppSettingsStore {
     setOpenRouterKey: (k: string) => ((key = k), true),
     hasOpenRouterKey: () => key !== null,
     getWhisperModel: () => "large-v3-turbo",
+    getChatModelId: () => null,
+    setChatModelId: () => {},
     getTelemetryEnabled: () => telemetryEnabled,
     setTelemetryEnabled: (enabled: boolean) => {
       telemetryEnabled = enabled;

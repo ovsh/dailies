@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, mediaUrl } from "../api";
-import { CHAT_MODEL } from "../../shared/types";
+import { CHAT_MODEL_OPTIONS, DEFAULT_CHAT_MODEL_ID } from "../../shared/types";
 import type {
   AgentAnswer,
   AnswerHit,
@@ -110,10 +110,6 @@ const CONFIDENCE_DOT_COLOR: Record<AnswerHit["confidence"], string> = {
   low: "var(--ink-faint)",
 };
 
-/** "google/gemini-3.6-flash" -> "gemini-3.6-flash" for the input hint. */
-function shortModelName(model: string): string {
-  return model.split("/").pop() ?? model;
-}
 
 /** Honest explanation for a null playbackPath — never a silent dead player. */
 function unplayableReason(file: MediaFile): string {
@@ -171,6 +167,22 @@ export function ChatScreen({
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
+  const [chatModelId, setChatModelId] = useState(DEFAULT_CHAT_MODEL_ID);
+
+  useEffect(() => {
+    api
+      .getSettings()
+      .then((settings) => setChatModelId(settings.chatModelId))
+      .catch(() => {
+        /* keep the default; the selector still works */
+      });
+  }, []);
+
+  const handleModelChange = (modelId: string) => {
+    const previous = chatModelId;
+    setChatModelId(modelId);
+    api.setChatModel(modelId).catch(() => setChatModelId(previous));
+  };
   const [toast, setToast] = useState<ToastState | null>(null);
   const [chatsLoading, setChatsLoading] = useState(true);
   const [conversationLoading, setConversationLoading] = useState(false);
@@ -596,7 +608,24 @@ export function ChatScreen({
                 {isAnswering ? "Answering…" : "Send"}
               </button>
             </div>
-            <p className="chat-input-hint mono">{shortModelName(CHAT_MODEL)} · ⌘⏎ to send</p>
+            <div className="chat-input-hint mono">
+              <label className="chat-model-label" htmlFor="chat-model-select">
+                Model
+              </label>
+              <select
+                id="chat-model-select"
+                className="chat-model-select mono"
+                value={chatModelId}
+                onChange={(e) => handleModelChange(e.target.value)}
+              >
+                {CHAT_MODEL_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span>· ⌘⏎ to send</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1000,10 +1029,31 @@ export function ChatScreen({
           cursor: default;
         }
         .chat-input-hint {
+          display: flex;
+          align-items: center;
+          gap: 6px;
           font-size: 10px;
           color: var(--ink-dimmer);
           margin: 10px 0 0;
           user-select: none;
+        }
+        .chat-model-label {
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          font-weight: 700;
+        }
+        .chat-model-select {
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          color: var(--ink);
+          font-size: 10px;
+          padding: 2px 4px;
+        }
+        .chat-model-select:focus {
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
         }
         .preview-scrim {
           position: fixed;

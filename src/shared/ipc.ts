@@ -67,6 +67,8 @@ export interface DailiesAPI {
   // settings (global)
   getSettings(): Promise<AppSettings>;
   setTelemetryEnabled(enabled: boolean): Promise<AppSettings>;
+  /** Selects the chat model; id must be one of CHAT_MODEL_OPTIONS. */
+  setChatModel(modelId: string): Promise<AppSettings>;
   /** Zips dailies.log, the failure list, versions, and the pipeline snapshot into Dailies Exports. */
   exportDiagnostics(): Promise<DiagnosticsExportOutcome>;
   /** Starts (or joins) the speech-model download; progress arrives via onModelProgress. */
@@ -139,6 +141,7 @@ export const IPC = {
   retryFile: "dailies:retryFile",
   getSettings: "dailies:getSettings",
   setTelemetryEnabled: "dailies:setTelemetryEnabled",
+  setChatModel: "dailies:setChatModel",
   exportDiagnostics: "dailies:exportDiagnostics",
   downloadWhisperModel: "dailies:downloadWhisperModel",
   modelProgress: "dailies:modelProgress",

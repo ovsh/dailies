@@ -28,12 +28,21 @@ export interface UpdaterService {
   restartNow(): void;
 }
 
-function terseErrorMessage(err: unknown): string {
+function classifyUpdateError(err: unknown): {
+  errorKind: NonNullable<UpdaterState["errorKind"]>;
+  errorMessage: string;
+} {
   const raw = err instanceof Error ? err.message : String(err);
-  if (/net::|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo|network/i.test(raw)) {
-    return "Could not reach GitHub — retrying in an hour";
+  if (/read-only volume/i.test(raw)) {
+    return {
+      errorKind: "read-only-volume",
+      errorMessage: "Dailies cannot update itself from the Downloads folder or the disk image. Move Dailies to Applications, then retry.",
+    };
   }
-  return "Update check failed — retrying in an hour";
+  if (/net::|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo|network/i.test(raw)) {
+    return { errorKind: "network", errorMessage: "Could not reach GitHub — retrying in an hour" };
+  }
+  return { errorKind: "unknown", errorMessage: "Update check failed — retrying in an hour" };
 }
 
 export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterService {
@@ -76,7 +85,7 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
     return autoUpdater.checkForUpdates().then(
       () => undefined,
       (err: unknown) => {
-        settle({ phase: "error", errorMessage: terseErrorMessage(err), lastCheckedAt: Date.now() });
+        settle({ phase: "error", ...classifyUpdateError(err), lastCheckedAt: Date.now() });
       },
     );
   }
@@ -97,6 +106,7 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
         phase: "idle",
         lastCheckedAt: Date.now(),
         errorMessage: undefined,
+        errorKind: undefined,
         availableVersion: undefined,
         transferred: undefined,
         total: undefined,
@@ -135,7 +145,7 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
     // Native staging failures (bad signature, ShipIt errors) surface here via
     // electron-updater's own native error forwarding.
     autoUpdater.on("error", (err) => {
-      settle({ phase: "error", errorMessage: terseErrorMessage(err), lastCheckedAt: Date.now() });
+      settle({ phase: "error", ...classifyUpdateError(err), lastCheckedAt: Date.now() });
     });
   }
 

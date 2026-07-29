@@ -24,6 +24,7 @@ import type { ModelDownloadProgress,
   UpdaterState,
   WordTiming,
 } from "../../shared/types";
+import { chatModelOption } from "../../shared/types";
 import {
   AGENT_STAGES,
   buildMockAnswer,
@@ -428,6 +429,11 @@ export function createMockApi(): DailiesAPI {
 
     async setTelemetryEnabled(enabled: boolean) {
       settings = { ...settings, telemetryEnabled: enabled };
+      return settings;
+    },
+
+    async setChatModel(modelId: string) {
+      settings = { ...settings, chatModelId: chatModelOption(modelId).id };
       return settings;
     },
 

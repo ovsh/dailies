@@ -362,8 +362,34 @@ export type LocatorExportOutcome =
 export type ApiKeyStatus = "missing" | "connected" | "invalid" | "unavailable";
 export type ApiKeyValidationStatus = Exclude<ApiKeyStatus, "missing">;
 
-/** Verified live on OpenRouter. Model choice may return later — no UI for it now. */
-export const CHAT_MODEL = "google/gemini-3.6-flash";
+/** One user-selectable chat model (OpenRouter slug + optional reasoning effort). */
+export interface ChatModelOption {
+  id: string;
+  label: string;
+  /** OpenRouter `reasoning.effort`; omitted = no reasoning parameter sent. */
+  effort?: "low" | "medium" | "high";
+}
+
+/** Selectable chat models, in display order. */
+export const CHAT_MODEL_OPTIONS: readonly ChatModelOption[] = [
+  { id: "x-ai/grok-4.5", label: "Grok 4.5 · High", effort: "high" },
+  { id: "google/gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+  { id: "z-ai/glm-5.2", label: "GLM 5.2 · Max", effort: "high" },
+  { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol · Medium", effort: "medium" },
+  { id: "moonshotai/kimi-k3", label: "Kimi K3 · High", effort: "high" },
+];
+
+export const DEFAULT_CHAT_MODEL_ID = "x-ai/grok-4.5";
+
+/** Resolves a stored id to an option, falling back to the default. */
+export function chatModelOption(id: string | null | undefined): ChatModelOption {
+  return (
+    CHAT_MODEL_OPTIONS.find((option) => option.id === id) ??
+    CHAT_MODEL_OPTIONS.find((option) => option.id === DEFAULT_CHAT_MODEL_ID) ??
+    CHAT_MODEL_OPTIONS[0]
+  );
+}
+
 export const EMBEDDING_MODEL = "google/gemini-embedding-001";
 
 /** Embedding vector length (google/gemini-embedding-001 with dimensions). */
@@ -377,6 +403,8 @@ export interface AppSettings {
   /** Only "connected" means the stored key passed an OpenRouter API request. */
   apiKeyStatus: ApiKeyStatus;
   whisperModel: string;
+  /** Selected chat model id; always one of CHAT_MODEL_OPTIONS. */
+  chatModelId: string;
   whisperAvailable: boolean;
   /** True once the speech model file is on disk (global, shared by projects). */
   whisperModelReady: boolean;
@@ -414,6 +442,8 @@ export interface UpdaterState {
   lastCheckedAt?: number;
   /** Terse, human-readable; never a stack trace. */
   errorMessage?: string;
+  /** Machine class for the error; the cluster picks its short label from this. */
+  errorKind?: "read-only-volume" | "network" | "unknown";
 }
 
 // ---------- documents (producer notes, scripts) ----------

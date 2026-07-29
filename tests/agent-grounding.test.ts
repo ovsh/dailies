@@ -18,7 +18,7 @@ import {
   getTranscriptWindowTool,
   searchTranscriptsTool,
 } from "../src/main/agents/tools";
-import { CHAT_MODEL, EMBEDDING_MODEL } from "../src/shared/types";
+import { chatModelOption, EMBEDDING_MODEL } from "../src/shared/types";
 
 function makeDb(name: string) {
   const dir = mkdtempSync(path.join(tmpdir(), "dailies-grounding-"));
@@ -1078,7 +1078,7 @@ describe("flat agent loop", () => {
       client,
     })).rejects.toThrow("404: model not found");
 
-    expect(vi.mocked(client.chat).mock.calls[0]?.[0].model).toBe(CHAT_MODEL);
+    expect(vi.mocked(client.chat).mock.calls[0]?.[0].model).toBe(chatModelOption(null).id);
     db.close();
   });
 
@@ -1106,7 +1106,7 @@ describe("flat agent loop", () => {
 
     expect(bodies).toEqual([
       {
-        model: CHAT_MODEL,
+        model: "not-the-pinned-chat-model",
         messages: [],
         provider: { allow_fallbacks: false },
       },

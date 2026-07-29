@@ -9,7 +9,7 @@ import type {
   TranscriptHit,
 } from "../../shared/types";
 import { deriveSourceTimecode } from "../../shared/timecode";
-import { CHAT_MODEL } from "../../shared/types";
+import { chatModelOption, type ChatModelOption } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
 import { computePipelineSnapshot } from "../pipeline/status";
 import { createOpenRouterClient } from "./openrouter-client";
@@ -35,6 +35,8 @@ export interface ChatTurnOptions {
   embedder: TextEmbedder | null;
   episodeId: number | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
+  /** Chat model to run this turn on; defaults to the app-wide default. */
+  model?: ChatModelOption;
   /** Test seam; production creates a client from apiKey. */
   client?: OpenRouterClient;
 }
@@ -583,6 +585,11 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgen
     emit,
   } = opts;
   const client = opts.client ?? createOpenRouterClient(() => apiKey);
+  const model = opts.model ?? chatModelOption(null);
+  const modelParams = {
+    model: model.id,
+    ...(model.effort ? { reasoning: { effort: model.effort } } : {}),
+  };
 
   const systemInstruction =
     episodeId === null ? SUPERVISOR_SYSTEM : `${SUPERVISOR_SYSTEM}\n\n${EPISODE_SCOPE_NOTICE}`;
@@ -642,7 +649,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgen
 
   const generate = () =>
     client.chat({
-      model: CHAT_MODEL,
+      ...modelParams,
       messages,
       tools: SUPERVISOR_TOOLS,
     });
@@ -658,7 +665,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgen
       content: "You have gathered enough evidence. Stop searching and call final_answer now with one disposition, supported segment references, and an optional fully supported summary.",
     });
     return client.chat({
-      model: CHAT_MODEL,
+      ...modelParams,
       messages,
       tools: [FINAL_ANSWER_TOOL],
       tool_choice: "required",

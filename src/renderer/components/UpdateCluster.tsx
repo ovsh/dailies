@@ -124,8 +124,11 @@ export function UpdateCluster({ updateState }: UpdateClusterProps) {
             className="check-btn error"
             onClick={handleCheck}
             aria-label={`Update check failed${updateState.errorMessage ? ` — ${updateState.errorMessage}` : ""} — retry`}
+            title={updateState.errorMessage}
           >
-            Check failed — retry
+            {updateState.errorKind === "read-only-volume"
+              ? "Move to Applications — retry"
+              : "Check failed — retry"}
           </button>
         );
       case "idle":

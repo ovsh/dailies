@@ -20,6 +20,7 @@ import type {
   Scene,
   TranscriptSegment,
 } from "../../shared/types";
+import { DEFAULT_CHAT_MODEL_ID } from "../../shared/types";
 
 // ---------- keyframe placeholder generator ----------
 
@@ -442,6 +443,7 @@ export const MOCK_JOBS: Job[] = [
 export const MOCK_SETTINGS: AppSettings = {
   apiKeySet: true,
   telemetryEnabled: true,
+  chatModelId: DEFAULT_CHAT_MODEL_ID,
   apiKeyStatus: "connected",
   whisperModel: "large-v3",
   whisperAvailable: true,

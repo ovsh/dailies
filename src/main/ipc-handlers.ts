@@ -20,6 +20,7 @@ import type {
   ProjectActivity,
   StructuredAgentAnswer,
 } from "../shared/types";
+import { CHAT_MODEL_OPTIONS, chatModelOption } from "../shared/types";
 import type { DailiesDB } from "./db/types";
 import type { ProjectManager } from "./project-manager";
 import type { AppSettingsStore } from "./app-settings";
@@ -276,6 +277,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       apiKeyStatus,
       telemetryEnabled: settings.getTelemetryEnabled(),
       whisperModel: model,
+      chatModelId: chatModelOption(settings.getChatModelId()).id,
       whisperAvailable: avail.whisper,
       whisperModelReady: findWhisperModel(model, dataDir) !== null,
       ffmpegAvailable: avail.ffmpeg,
@@ -283,6 +285,14 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   };
 
   ipcMain.handle(IPC.getSettings, () => assembleSettings());
+
+  ipcMain.handle(IPC.setChatModel, (_e, modelId: string): Promise<AppSettings> => {
+    if (!CHAT_MODEL_OPTIONS.some((option) => option.id === modelId)) {
+      throw new Error(`Unknown chat model: ${modelId}`);
+    }
+    settings.setChatModelId(modelId);
+    return assembleSettings();
+  });
 
   ipcMain.handle(IPC.downloadWhisperModel, () => {
     const model = settings.getWhisperModel();
@@ -374,6 +384,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
             embedder: createOpenRouterEmbedder(client),
             episodeId: boundEpisodeId,
             emit: (ev) => emitChatEvent({ ...ev, chatId: id, turnId }),
+            model: chatModelOption(settings.getChatModelId()),
             client,
           });
           c.db.addChatMessage(id, "assistant", structuredAnswerContent(answer), answer);

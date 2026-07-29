@@ -12,6 +12,7 @@ interface AppSettingsFile {
   openrouterKeyEnc?: string;
   openrouterKeyIsPlain?: boolean;
   whisperModel?: string;
+  chatModelId?: string;
   telemetryEnabled?: boolean;
   telemetryInstallId?: string;
 }
@@ -29,6 +30,9 @@ function parseAppSettings(value: unknown): AppSettingsFile {
   if ("whisperModel" in value && typeof value.whisperModel === "string") {
     settings.whisperModel = value.whisperModel;
   }
+  if ("chatModelId" in value && typeof value.chatModelId === "string") {
+    settings.chatModelId = value.chatModelId;
+  }
   if ("telemetryEnabled" in value && typeof value.telemetryEnabled === "boolean") {
     settings.telemetryEnabled = value.telemetryEnabled;
   }
@@ -43,6 +47,9 @@ export interface AppSettingsStore {
   setOpenRouterKey(key: string): boolean;
   hasOpenRouterKey(): boolean;
   getWhisperModel(): string;
+  /** Raw stored id; callers resolve/validate against CHAT_MODEL_OPTIONS. */
+  getChatModelId(): string | null;
+  setChatModelId(id: string): void;
   getTelemetryEnabled(): boolean;
   setTelemetryEnabled(enabled: boolean): void;
   /** Stable anonymous install id, created on first read. */
@@ -97,6 +104,12 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
     },
     getWhisperModel() {
       return read().whisperModel ?? "large-v3-turbo";
+    },
+    getChatModelId() {
+      return read().chatModelId ?? null;
+    },
+    setChatModelId(id: string) {
+      write({ chatModelId: id });
     },
     getTelemetryEnabled() {
       return read().telemetryEnabled ?? true;

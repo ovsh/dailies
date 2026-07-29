@@ -94,8 +94,10 @@ export async function computeFileIdentity(path: string): Promise<FileIdentity> {
 export async function probeFile(path: string, knownFileHash?: string): Promise<FileInput> {
   const ffprobeBin = findFfprobeBinary();
   const args = [
+    // "error", not "quiet": when ffprobe fails, its stderr is the diagnosis,
+    // and it must reach the failed-jobs table instead of a bare exit code.
     "-v",
-    "quiet",
+    "error",
     "-print_format",
     "json",
     "-show_format",
@@ -103,14 +105,17 @@ export async function probeFile(path: string, knownFileHash?: string): Promise<F
     path,
   ];
 
-  const { stdout, code, timedOut } = await run(ffprobeBin, args, {
+  const { stdout, stderr, code, timedOut } = await run(ffprobeBin, args, {
     timeoutMs: PROBE_TIMEOUT_MS,
   });
   if (timedOut) {
     throw new Error(`ffprobe timed out after ${PROBE_TIMEOUT_MS}ms for ${path}`);
   }
   if (code !== 0) {
-    throw new Error(`ffprobe failed for ${path} (exit ${code ?? "unknown"})`);
+    const detail = stderr.trim().split("\n").slice(-3).join(" · ").slice(0, 300);
+    throw new Error(
+      `ffprobe failed for ${path} (exit ${code ?? "unknown"})${detail ? `: ${detail}` : ""}`,
+    );
   }
 
   let parsed: FfprobeOutput;

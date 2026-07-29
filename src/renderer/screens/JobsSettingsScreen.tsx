@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import { CHAT_MODEL, EMBEDDING_MODEL } from "../../shared/types";
+import { chatModelOption, EMBEDDING_MODEL } from "../../shared/types";
 import type {
   ModelDownloadProgress, AppSettings, Episode, Job, PipelineSnapshot, ProjectFolder, UpdaterState } from "../../shared/types";
 import { InlineError } from "../components/InlineError";
@@ -919,7 +919,7 @@ export function JobsSettingsScreen({
               <h2 className="display panel-title">Model</h2>
               <div className="trans-row">
                 <span className="trans-name">Chat model</span>
-                <span className="trans-status mono">{CHAT_MODEL}</span>
+                <span className="trans-status mono">{chatModelOption(settings?.chatModelId).id}</span>
               </div>
               <div className="trans-row">
                 <span className="trans-name">Embedding model</span>

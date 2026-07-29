@@ -6,7 +6,6 @@ import {
   type ToolCall,
 } from "../src/main/agents/openrouter-client";
 import { createOpenRouterEmbedder } from "../src/main/agents/openrouter";
-import { CHAT_MODEL } from "../src/shared/types";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -60,7 +59,7 @@ describe("OpenRouter client", () => {
       "HTTP-Referer": "https://dailies.app",
       "X-Title": "Dailies",
     });
-    expect(body.model).toBe(CHAT_MODEL);
+    expect(body.model).toBe("google/gemini-2.5-flash");
     expect(body.provider).toEqual({ allow_fallbacks: false });
     expect(body.messages).toEqual([
       { role: "system", content: "Follow the evidence." },

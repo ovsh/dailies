@@ -1,4 +1,4 @@
-import { CHAT_MODEL, EMBEDDING_MODEL } from "../../shared/types";
+import { EMBEDDING_MODEL } from "../../shared/types";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -32,6 +32,8 @@ export interface ChatRequest {
   tools?: ToolDef[];
   tool_choice?: "auto" | "required" | "none";
   response_format?: { type: "json_object" };
+  /** OpenRouter reasoning control; ignored by models without reasoning. */
+  reasoning?: { effort: "low" | "medium" | "high" };
 }
 
 export interface ChatResponse {
@@ -91,7 +93,6 @@ export function createOpenRouterClient(getKey: () => string | null): OpenRouterC
         headers: headers(requireKey()),
         body: JSON.stringify({
           ...req,
-          model: CHAT_MODEL,
           provider: { allow_fallbacks: false },
         }),
       });

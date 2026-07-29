@@ -282,14 +282,15 @@ export interface ModelProfile {
 /**
  * Curated from a July 2026 scan of the OpenRouter catalog (vision + tool
  * support + pricing), LMArena text/vision leaderboards, and OpenRouter usage
- * rankings. Re-scan periodically — this tier moves fast.
+ * rankings. Re-scan periodically — this tier moves fast. Default moved to
+ * gemini-3.6-flash on its release, July 2026.
  */
 export const MODEL_PROFILES: ModelProfile[] = [
   {
     id: "balanced",
     label: "Balanced (recommended)",
-    description: "Fast, proven with Dailies, inexpensive",
-    supervisor: "google/gemini-2.5-flash",
+    description: "Fast, inexpensive, current Gemini Flash",
+    supervisor: "google/gemini-3.6-flash",
     supervisorHigh: "meta/muse-spark-1.1",
   },
   {

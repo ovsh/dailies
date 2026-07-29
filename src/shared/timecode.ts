@@ -11,6 +11,7 @@
  */
 
 const TC_RE = /^(\d{1,2})[:;](\d{1,2})[:;](\d{1,2})[:;](\d{1,2})$/;
+export const UNKNOWN_SOURCE_RATE_FALLBACK_FPS = 30;
 
 /** Nominal (rounded) fps used for all frame-count math. */
 function nominalFps(fps: number): number {
@@ -181,6 +182,29 @@ export function sourceTcAtOffset(
   dropFrame: boolean,
 ): string {
   return fps > 0 ? tcAddSeconds(startTc, offsetS, fps, dropFrame) : formatElapsedOffset(offsetS);
+}
+
+export interface DerivedSourceTimecode {
+  tc: string;
+  sourceRateFallback: boolean;
+}
+
+export function deriveSourceTimecode(
+  startTc: string,
+  offsetS: number,
+  fps: number,
+  dropFrame: boolean,
+): DerivedSourceTimecode {
+  const sourceRateFallback = !(fps > 0);
+  return {
+    tc: tcAddSeconds(
+      startTc,
+      offsetS,
+      sourceRateFallback ? UNKNOWN_SOURCE_RATE_FALLBACK_FPS : fps,
+      sourceRateFallback ? false : dropFrame,
+    ),
+    sourceRateFallback,
+  };
 }
 
 /**

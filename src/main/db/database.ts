@@ -7,6 +7,7 @@ import { SCHEMA_SQL } from "./schema";
 import { cachedBetterSqlite3Binding, repairBetterSqlite3Binding } from "./native-binding";
 import type {
   AnswerHit,
+  ChatScope,
   ChatMessageRecord,
   ChatSummary,
   DocumentHit,
@@ -26,12 +27,13 @@ import type {
   Scene,
   SceneInput,
   SegmentInput,
+  StructuredAgentAnswer,
   TranscriptHit,
   TranscriptSegment,
   WordTiming,
 } from "../../shared/types";
 import { sourceTcAtOffset } from "../../shared/timecode";
-import type { DailiesDB } from "./types";
+import type { DailiesDB, PipelineFileFacts, SemanticSearchScope } from "./types";
 
 const fileStatusWriters = new WeakMap<
   DailiesDB,
@@ -74,6 +76,7 @@ interface FileRow {
   clip_key: string | null;
   video_unplayable: number;
   discovery_failed: number;
+  discovery_error: string | null;
   episode_id: number | null;
 }
 
@@ -134,6 +137,7 @@ interface ChatRow {
   id: number;
   title: string;
   created_at: string;
+  episode_id: number | null;
 }
 
 interface ChatMessageRow {
@@ -143,6 +147,11 @@ interface ChatMessageRow {
   content: string;
   hits: string | null;
   created_at: string;
+}
+
+interface StoredStructuredAnswerEnvelope {
+  v: 2;
+  answer: StructuredAgentAnswer;
 }
 
 interface TranscriptSearchRow {
@@ -190,6 +199,15 @@ interface EmbeddingRow {
   kind: string;
   ref_id: number;
   vector: Buffer;
+}
+
+interface PipelineFactsRow extends FileRow {
+  job_id: number | null;
+  job_stage: string | null;
+  job_status: string | null;
+  job_attempts: number | null;
+  job_error: string | null;
+  job_updated_at: string | null;
 }
 
 // ---------- row -> domain mapping helpers ----------
@@ -290,16 +308,34 @@ function mapChat(row: ChatRow): ChatSummary {
     id: row.id,
     title: row.title,
     createdAt: row.created_at,
+    episodeId: row.episode_id,
   };
 }
 
 function mapChatMessage(row: ChatMessageRow): ChatMessageRecord {
+  let hits: AnswerHit[] | null = null;
+  let answer: StructuredAgentAnswer | undefined;
+  if (row.hits) {
+    const parsed: unknown = JSON.parse(row.hits);
+    if (Array.isArray(parsed)) {
+      hits = parsed as AnswerHit[];
+    } else if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "v" in parsed &&
+      parsed.v === 2 &&
+      "answer" in parsed
+    ) {
+      answer = parsed.answer as StructuredAgentAnswer;
+    }
+  }
   return {
     id: row.id,
     chatId: row.chat_id,
     role: row.role as "user" | "assistant",
     content: row.content,
-    hits: row.hits ? (JSON.parse(row.hits) as AnswerHit[]) : null,
+    hits,
+    ...(answer ? { answer } : {}),
     createdAt: row.created_at,
   };
 }
@@ -441,6 +477,10 @@ function migrate(db: BetterSqlite3Database): void {
     ["has_video", "INTEGER"],
     ["video_unplayable", "INTEGER NOT NULL DEFAULT 0"],
     ["discovery_failed", "INTEGER NOT NULL DEFAULT 0"],
+    ["discovery_error", "TEXT"],
+    ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
+  ]);
+  addMissingColumns(db, "chats", [
     ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
   ]);
   addMissingColumns(db, "documents", [
@@ -450,6 +490,7 @@ function migrate(db: BetterSqlite3Database): void {
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_files_episode_id ON files(episode_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_chats_episode_id ON chats(episode_id)");
   const visualCleanupDone = db
     .prepare<[string], { value: string }>("SELECT value FROM settings WHERE key = ?")
     .get(VISUAL_CLEANUP_MIGRATION_KEY);
@@ -550,7 +591,7 @@ export function openDatabase(dbPath: string): DailiesDB {
   >(
     `UPDATE files SET path = ?, filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?,
        role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?, has_video = ?,
-       discovery_failed = 0, episode_id = ?
+       discovery_failed = 0, discovery_error = NULL, episode_id = ?
      WHERE id = ?
      RETURNING *`,
   );
@@ -566,8 +607,13 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtSetFileHasVideo = db.prepare<[number | null, number]>(
     "UPDATE files SET has_video = ? WHERE id = ?",
   );
-  const stmtSetDiscoveryFailed = db.prepare<[number, number]>(
-    "UPDATE files SET discovery_failed = ? WHERE id = ?",
+  const stmtSetDiscoveryFailed = db.prepare<[number, number, number]>(
+    `UPDATE files
+     SET discovery_failed = ?, discovery_error = CASE WHEN ? = 0 THEN NULL ELSE discovery_error END
+     WHERE id = ?`,
+  );
+  const stmtSetDiscoveryFailure = db.prepare<[number, string | null, number]>(
+    "UPDATE files SET discovery_failed = ?, discovery_error = ? WHERE id = ?",
   );
   const stmtBackfillDiscoveryFailures = db.prepare(
     `UPDATE files SET discovery_failed = 1
@@ -747,9 +793,6 @@ export function openDatabase(dbPath: string): DailiesDB {
      )
      LIMIT ?`,
   );
-  const stmtListEmbeddingsByKind = db.prepare<[string], EmbeddingRow>(
-    "SELECT kind, ref_id, vector FROM embeddings WHERE kind = ?",
-  );
   const stmtDeleteAllEmbeddings = db.prepare("DELETE FROM embeddings");
 
   const stmtEnqueueJob = db.prepare<[{ fileId: number; stage: string; now: string }]>(
@@ -813,11 +856,57 @@ export function openDatabase(dbPath: string): DailiesDB {
      WHERE jobs.file_id = ?
      ORDER BY jobs.id DESC`,
   );
-
-  const stmtInsertChat = db.prepare<[string, string], ChatRow>(
-    "INSERT INTO chats (title, created_at) VALUES (?, ?) RETURNING *",
+  const stmtListPipelineFacts = db.prepare<[], PipelineFactsRow>(
+    `SELECT
+       files.*,
+       jobs.id AS job_id,
+       jobs.stage AS job_stage,
+       jobs.status AS job_status,
+       jobs.attempts AS job_attempts,
+       jobs.error AS job_error,
+       jobs.updated_at AS job_updated_at
+     FROM files
+     LEFT JOIN jobs ON jobs.file_id = files.id
+       AND NOT EXISTS (
+         SELECT 1 FROM jobs AS newer
+         WHERE newer.file_id = jobs.file_id
+           AND newer.stage = jobs.stage
+           AND newer.id > jobs.id
+       )
+     ORDER BY files.id ASC, jobs.stage ASC`,
   );
+  const stmtListPipelineFactsByEpisode = db.prepare<[number], PipelineFactsRow>(
+    `SELECT
+       files.*,
+       jobs.id AS job_id,
+       jobs.stage AS job_stage,
+       jobs.status AS job_status,
+       jobs.attempts AS job_attempts,
+       jobs.error AS job_error,
+       jobs.updated_at AS job_updated_at
+     FROM files
+     LEFT JOIN jobs ON jobs.file_id = files.id
+       AND NOT EXISTS (
+         SELECT 1 FROM jobs AS newer
+         WHERE newer.file_id = jobs.file_id
+           AND newer.stage = jobs.stage
+           AND newer.id > jobs.id
+       )
+     WHERE files.episode_id = ?
+     ORDER BY files.id ASC, jobs.stage ASC`,
+  );
+
+  const stmtInsertChat = db.prepare<[string, string, number | null], ChatRow>(
+    "INSERT INTO chats (title, created_at, episode_id) VALUES (?, ?, ?) RETURNING *",
+  );
+  const stmtGetChat = db.prepare<[number], ChatRow>("SELECT * FROM chats WHERE id = ?");
   const stmtListChats = db.prepare<[], ChatRow>("SELECT * FROM chats ORDER BY created_at DESC");
+  const stmtListChatsByEpisode = db.prepare<[number], ChatRow>(
+    "SELECT * FROM chats WHERE episode_id = ? ORDER BY created_at DESC",
+  );
+  const stmtListChatsWithoutEpisode = db.prepare<[], ChatRow>(
+    "SELECT * FROM chats WHERE episode_id IS NULL ORDER BY created_at DESC",
+  );
   const stmtInsertChatMessage = db.prepare<
     [number, string, string, string | null, string],
     ChatMessageRow
@@ -927,6 +1016,63 @@ export function openDatabase(dbPath: string): DailiesDB {
       stmtInsertTranscriptFts.run(seg.text, fileId, row.id);
     }
   });
+
+  function listPipelineFileFacts(scope?: SemanticSearchScope): PipelineFileFacts[] {
+    const rows = scope?.episodeId === null || scope === undefined
+      ? stmtListPipelineFacts.all()
+      : stmtListPipelineFactsByEpisode.all(scope.episodeId);
+    const factsByFile = new Map<number, PipelineFileFacts>();
+
+    for (const row of rows) {
+      let facts = factsByFile.get(row.id);
+      if (!facts) {
+        facts = {
+          file: mapFile(row),
+          latestJobsByStage: new Map(),
+          discoveryError: row.discovery_error,
+        };
+        factsByFile.set(row.id, facts);
+      }
+      if (
+        row.job_id !== null &&
+        row.job_stage !== null &&
+        row.job_status !== null &&
+        row.job_attempts !== null &&
+        row.job_updated_at !== null
+      ) {
+        const job = mapJob({
+          id: row.job_id,
+          file_id: row.id,
+          filename: row.filename,
+          stage: row.job_stage,
+          status: row.job_status,
+          attempts: row.job_attempts,
+          error: row.job_error,
+          updated_at: row.job_updated_at,
+        } satisfies JobRow);
+        facts.latestJobsByStage.set(job.stage, job);
+      }
+    }
+
+    return [...factsByFile.values()];
+  }
+
+  function buildSemanticSearchStmt(kind: EmbeddingKind, scope?: SemanticSearchScope) {
+    const joins = kind === "segment"
+      ? "JOIN transcript_segments ON transcript_segments.id = embeddings.ref_id JOIN files ON files.id = transcript_segments.file_id"
+      : "JOIN doc_chunks ON doc_chunks.id = embeddings.ref_id JOIN documents ON documents.id = doc_chunks.doc_id";
+    const episodeColumn = kind === "segment" ? "files.episode_id" : "documents.episode_id";
+    const clauses = ["embeddings.kind = ?"];
+    if (scope?.episodeId !== null && scope !== undefined) {
+      clauses.push(`${episodeColumn} = ?`);
+    }
+    return db.prepare<unknown[], EmbeddingRow>(
+      `SELECT embeddings.kind, embeddings.ref_id, embeddings.vector
+       FROM embeddings
+       ${joins}
+       WHERE ${clauses.join(" AND ")}`,
+    );
+  }
 
   const claimNextJobTx = db.transaction((): Job | null => {
     const next = stmtClaimNextJobId.get();
@@ -1144,7 +1290,11 @@ export function openDatabase(dbPath: string): DailiesDB {
     },
 
     setDiscoveryFailed(id: number, failed: boolean): void {
-      stmtSetDiscoveryFailed.run(failed ? 1 : 0, id);
+      stmtSetDiscoveryFailed.run(failed ? 1 : 0, failed ? 1 : 0, id);
+    },
+
+    setDiscoveryFailure(id: number, reason: string | null): void {
+      stmtSetDiscoveryFailure.run(reason === null ? 0 : 1, reason, id);
     },
 
     backfillDiscoveryFailures(): number {
@@ -1225,7 +1375,15 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     // transcript
     replaceTranscript(fileId: number, segments: SegmentInput[]): void {
+      const startedAt = Date.now();
       replaceTranscriptTx(fileId, segments);
+      const wordCount = segments.reduce((count, segment) => count + segment.words.length, 0);
+      console.warn("[db] transcript replacement", {
+        fileId,
+        segmentCount: segments.length,
+        wordCount,
+        durationMs: Date.now() - startedAt,
+      });
     },
 
     listSegments(fileId: number): TranscriptSegment[] {
@@ -1359,8 +1517,13 @@ export function openDatabase(dbPath: string): DailiesDB {
       kind: EmbeddingKind,
       query: Float32Array,
       limit = 40,
+      scope?: SemanticSearchScope,
     ): Array<{ refId: number; score: number }> {
-      const rows = stmtListEmbeddingsByKind.all(kind);
+      const startedAt = Date.now();
+      const stmt = buildSemanticSearchStmt(kind, scope);
+      const params: unknown[] = [kind];
+      if (scope?.episodeId !== null && scope !== undefined) params.push(scope.episodeId);
+      const rows = stmt.all(...params);
       const scored = rows.map((row) => {
         const vector = new Float32Array(
           row.vector.buffer,
@@ -1370,10 +1533,17 @@ export function openDatabase(dbPath: string): DailiesDB {
         return { refId: row.ref_id, similarity: cosineSimilarity(query, vector) };
       });
       scored.sort((a, b) => b.similarity - a.similarity);
-      return scored
+      const results = scored
         .filter((row) => row.similarity >= SEMANTIC_RELEVANCE_FLOOR)
         .slice(0, limit)
         .map((row) => ({ refId: row.refId, score: row.similarity }));
+      console.warn("[db] semantic search", {
+        kind,
+        vectorCount: rows.length,
+        resultCount: results.length,
+        durationMs: Date.now() - startedAt,
+      });
+      return results;
     },
 
     deleteAllEmbeddings(): void {
@@ -1448,28 +1618,45 @@ export function openDatabase(dbPath: string): DailiesDB {
       return stmtListJobsForFile.all(fileId).map(mapJob);
     },
 
+    listPipelineFileFacts(scope?: SemanticSearchScope): PipelineFileFacts[] {
+      return listPipelineFileFacts(scope);
+    },
+
     // chats
-    createChat(title: string): ChatSummary {
-      const row = stmtInsertChat.get(title, new Date().toISOString());
+    createChat(title: string, scope?: ChatScope): ChatSummary {
+      const row = stmtInsertChat.get(title, new Date().toISOString(), scope?.episodeId ?? null);
       if (!row) throw new Error("createChat: insert failed");
       return mapChat(row);
     },
 
-    listChats(): ChatSummary[] {
-      return stmtListChats.all().map(mapChat);
+    getChat(chatId: number): ChatSummary | null {
+      const row = stmtGetChat.get(chatId);
+      return row ? mapChat(row) : null;
+    },
+
+    listChats(scope?: ChatScope): ChatSummary[] {
+      if (scope === undefined) return stmtListChats.all().map(mapChat);
+      if (scope.episodeId === null) return stmtListChatsWithoutEpisode.all().map(mapChat);
+      return stmtListChatsByEpisode.all(scope.episodeId).map(mapChat);
     },
 
     addChatMessage(
       chatId: number,
       role: "user" | "assistant",
       content: string,
-      hits?: AnswerHit[] | null,
+      answer?: AnswerHit[] | StructuredAgentAnswer | null,
     ): ChatMessageRecord {
+      const storedPayload: AnswerHit[] | StoredStructuredAnswerEnvelope | null =
+        answer === null || answer === undefined
+          ? null
+          : Array.isArray(answer)
+            ? answer
+            : { v: 2, answer };
       const row = stmtInsertChatMessage.get(
         chatId,
         role,
         content,
-        hits ? JSON.stringify(hits) : null,
+        storedPayload ? JSON.stringify(storedPayload) : null,
         new Date().toISOString(),
       );
       if (!row) throw new Error("addChatMessage: insert failed");

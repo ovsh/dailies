@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   computeFileStatus,
+  computePipelineFileState,
+  computePipelineSnapshot,
   latestJobsByStage,
   STAGE_POLICY,
   type FileLifecycleFacts,
 } from "../src/main/pipeline/status";
-import type { Job, JobStage, JobStatus } from "../src/shared/types";
+import type { Job, JobStage, JobStatus, MediaFile } from "../src/shared/types";
+import type { PipelineFileFacts } from "../src/main/db/types";
 
 function makeJob(
   id: number,
@@ -35,6 +38,46 @@ function facts(overrides: Partial<FileLifecycleFacts> = {}): FileLifecycleFacts 
     probed: false,
     latestJobs: new Map(),
     ...overrides,
+  };
+}
+
+const pipelineFile: MediaFile = {
+  id: 1,
+  path: "/footage/clip.mov",
+  filename: "clip.mov",
+  durationS: 10,
+  fps: 24,
+  dropFrame: false,
+  startTc: "01:00:00:00",
+  codec: "prores",
+  audioChannels: 2,
+  fileHash: "clip",
+  status: "ready",
+  addedAt: new Date(0).toISOString(),
+  hasTranscript: true,
+  hasVideo: false,
+  proxyPath: null,
+  episodeId: null,
+  role: "raw",
+  clipName: null,
+  mediaKind: "standard",
+  memberPaths: null,
+  clipKey: null,
+  videoUnplayable: false,
+  discoveryFailed: false,
+};
+
+function pipelineFacts(
+  overrides: {
+    file?: Partial<MediaFile>;
+    latestJobsByStage?: Map<JobStage, Job>;
+    discoveryError?: string | null;
+  } = {},
+): PipelineFileFacts {
+  return {
+    file: { ...pipelineFile, ...overrides.file },
+    latestJobsByStage: overrides.latestJobsByStage ?? new Map(),
+    discoveryError: overrides.discoveryError ?? null,
   };
 }
 
@@ -187,5 +230,134 @@ describe("computeFileStatus", () => {
       transcribe: { blocksReadiness: true, failureImpact: "file-error" },
       embed: { blocksReadiness: false, failureImpact: "job-only" },
     });
+  });
+});
+
+describe("pipeline file state and snapshot", () => {
+  it.each([
+    {
+      name: "classifies a durable discovery reason as failed",
+      input: pipelineFacts({ discoveryError: "Permission denied" }),
+      expected: "failed",
+    },
+    {
+      name: "classifies a terminal embed failure as failed",
+      input: pipelineFacts({
+        latestJobsByStage: new Map([["embed", makeJob(1, "embed", "error")]]),
+      }),
+      expected: "failed",
+    },
+    {
+      name: "classifies a launched stage as processing",
+      input: pipelineFacts({
+        latestJobsByStage: new Map([["embed", makeJob(1, "embed", "running")]]),
+      }),
+      expected: "processing",
+    },
+    {
+      name: "classifies a paused prerequisite as queued",
+      input: pipelineFacts({
+        latestJobsByStage: new Map([["transcribe", makeJob(1, "transcribe", "waiting")]]),
+      }),
+      expected: "queued",
+    },
+    {
+      name: "keeps searchable footage queued while embedding remains",
+      input: pipelineFacts({
+        latestJobsByStage: new Map([["embed", makeJob(1, "embed", "queued")]]),
+      }),
+      expected: "queued",
+    },
+    {
+      name: "classifies completed searchable footage as done",
+      input: pipelineFacts(),
+      expected: "done",
+    },
+  ])("$name", ({ input, expected }) => {
+    expect(computePipelineFileState(input)).toBe(expected);
+  });
+
+  it("derives coverage, rate, and ETA from terminal file facts", () => {
+    const first = pipelineFacts({
+      file: { id: 1, filename: "first.mov" },
+      latestJobsByStage: new Map([["embed", {
+        ...makeJob(1, "embed", "done"),
+        updatedAt: new Date(0).toISOString(),
+      }]]),
+    });
+    const second = pipelineFacts({
+      file: { id: 2, filename: "second.mov" },
+      latestJobsByStage: new Map([["embed", {
+        ...makeJob(2, "embed", "done"),
+        updatedAt: new Date(60_000).toISOString(),
+      }]]),
+    });
+    const queued = pipelineFacts({
+      file: {
+        id: 3,
+        filename: "queued.mov",
+        status: "pending",
+        hasTranscript: false,
+        hasVideo: null,
+      },
+    });
+
+    const snapshot = computePipelineSnapshot([first, second, queued], 3, new Date(120_000));
+
+    expect(snapshot.counts).toEqual({ queued: 1, processing: 0, done: 2, failed: 0 });
+    expect(snapshot.coverage).toEqual({
+      totalFiles: 3,
+      searchableFiles: 2,
+      pendingFiles: 1,
+      failedFiles: 0,
+      producerNoteCount: 3,
+    });
+    expect(snapshot.percentProcessed).toBeCloseTo(2 / 3);
+    expect(snapshot.filesPerMinute).toBe(1);
+    expect(snapshot.etaSeconds).toBe(60);
+  });
+
+  it("leaves rate and ETA absent until terminal timestamps establish a rate", () => {
+    const snapshot = computePipelineSnapshot([
+      pipelineFacts({
+        latestJobsByStage: new Map([["embed", makeJob(1, "embed", "done")]]),
+      }),
+      pipelineFacts({
+        file: { id: 2, status: "pending", hasTranscript: false, hasVideo: null },
+      }),
+    ]);
+
+    expect(snapshot.filesPerMinute).toBeNull();
+    expect(snapshot.etaSeconds).toBeNull();
+  });
+
+  it("reports running work even when another stage classifies the file as failed", () => {
+    const failedWithRunningWork = pipelineFacts({
+      latestJobsByStage: new Map([
+        ["embed", makeJob(1, "embed", "error")],
+        ["scenes", makeJob(2, "scenes", "running")],
+      ]),
+    });
+
+    const snapshot = computePipelineSnapshot([failedWithRunningWork]);
+
+    expect(snapshot.counts.failed).toBe(1);
+    expect(snapshot.activeFiles).toEqual([{
+      fileId: 1,
+      filename: "clip.mov",
+      stage: "scenes",
+    }]);
+  });
+
+  it("reports file ids with queued, running, or waiting work", () => {
+    const queued = pipelineFacts({
+      latestJobsByStage: new Map([["embed", makeJob(1, "embed", "queued")]]),
+    });
+    const done = pipelineFacts({
+      file: { id: 2, filename: "done.mov" },
+      latestJobsByStage: new Map([["embed", makeJob(2, "embed", "done")]]),
+    });
+
+    expect(computePipelineSnapshot([queued, done]).pendingFileIds).toEqual([1]);
   });
 });

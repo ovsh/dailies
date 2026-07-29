@@ -1,7 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC, type DailiesAPI } from "../shared/ipc";
 import type {
-  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, IndexUpdate, MediaRole, UpdaterState } from "../shared/types";
+  ChatEvent,
+  ChatScope,
+  ExportItem,
+  ExportKind,
+  IndexUpdate,
+  MediaRole,
+  ModelDownloadProgress,
+  UpdaterState,
+} from "../shared/types";
 
 const api: DailiesAPI = {
   // projects
@@ -39,8 +47,12 @@ const api: DailiesAPI = {
   setApiKey: (provider: "openrouter", key: string) => ipcRenderer.invoke(IPC.setApiKey, provider, key),
 
   // chat
-  listChats: () => ipcRenderer.invoke(IPC.listChats),
-  getChat: (chatId: number) => ipcRenderer.invoke(IPC.getChat, chatId),
+  listChats: (scope?: ChatScope) => ipcRenderer.invoke(IPC.listChats, scope),
+  getChat: (scopeOrChatId: ChatScope | number, maybeChatId?: number) => {
+    if (typeof scopeOrChatId === "number") return ipcRenderer.invoke(IPC.getChat, scopeOrChatId);
+    if (maybeChatId === undefined) throw new Error("getChat requires a chat id with a scope");
+    return ipcRenderer.invoke(IPC.getChat, scopeOrChatId, maybeChatId);
+  },
   sendChatMessage: (chatId: number | null, text: string, episodeId: number | null, turnId: string) =>
     ipcRenderer.invoke(IPC.sendChatMessage, chatId, text, episodeId, turnId),
   onChatEvent: (cb: (ev: ChatEvent) => void) => {
@@ -52,6 +64,12 @@ const api: DailiesAPI = {
   // export
   exportHits: (kind: ExportKind, items: ExportItem[]) =>
     ipcRenderer.invoke(IPC.exportHits, kind, items),
+  getPipelineSnapshot: (scope: ChatScope) => ipcRenderer.invoke(IPC.getPipelineSnapshot, scope),
+  getProjectActivities: () => ipcRenderer.invoke(IPC.getProjectActivities),
+  retryPipelineFailures: (fileIds: number[]) => ipcRenderer.invoke(IPC.retryPipelineFailures, fileIds),
+  exportPipelineFailures: (scope: ChatScope) => ipcRenderer.invoke(IPC.exportPipelineFailures, scope),
+  exportLocators: (scope: ChatScope, items: ExportItem[]) =>
+    ipcRenderer.invoke(IPC.exportLocators, scope, items),
   revealInFinder: (path: string) => ipcRenderer.invoke(IPC.revealInFinder, path),
   openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url),
 

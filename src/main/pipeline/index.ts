@@ -11,8 +11,10 @@ import type {
   TextEmbedder,
 } from "../../shared/types";
 import { createDiscovery } from "./discovery";
-import { createQueue } from "./queue";
+import { createQueue, PipelineBudget, type StopMode } from "./queue";
 import { createStages } from "./stages";
+
+export { PipelineBudget, type StopMode } from "./queue";
 
 export interface PipelineOptions {
   db: DailiesDB;
@@ -23,6 +25,7 @@ export interface PipelineOptions {
   embedder: () => TextEmbedder | null;
   /** fires after any job/file state change so the renderer can refresh. */
   onUpdate: () => void;
+  budget?: PipelineBudget;
 }
 
 export interface Pipeline {
@@ -42,17 +45,29 @@ export interface Pipeline {
   /** Requeue prerequisite-blocked and otherwise missing derived stages. */
   refreshPrerequisites(kind: "whisper" | "openrouter" | "all"): Promise<void>;
   start(): void;
-  stop(): Promise<void>;
+  stop(mode?: StopMode): Promise<void>;
 }
 
 const UPDATE_DEBOUNCE_MS = 300;
+
+type StopResult =
+  | { kind: "fulfilled" }
+  | { kind: "rejected"; error: unknown };
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function settleStop(task: Promise<void>): Promise<StopResult> {
+  return task.then(
+    () => ({ kind: "fulfilled" }),
+    (error: unknown) => ({ kind: "rejected", error }),
+  );
+}
+
 export function createPipeline(opts: PipelineOptions): Pipeline {
   let updateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const budget = opts.budget ?? new PipelineBudget();
 
   function scheduleUpdate(): void {
     if (updateDebounceTimer) return;
@@ -81,6 +96,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
 
   const queue = createQueue({
     db: opts.db,
+    budget,
     runStage: stages.run,
     reconcile: stages.reconcile,
     ensureWork: stages.ensureWork,
@@ -89,18 +105,22 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     delay,
   });
 
-  async function stop(): Promise<void> {
-    const jobsStopped = queue.stop();
+  async function stop(mode: StopMode = "drain"): Promise<void> {
+    const jobsStopped = queue.stop(mode);
     if (updateDebounceTimer) {
       clearTimeout(updateDebounceTimer);
       updateDebounceTimer = null;
     }
-    await discovery.close();
-    await jobsStopped;
+    const [discoveryResult, jobsResult] = await Promise.all([
+      settleStop(discovery.close()),
+      settleStop(jobsStopped),
+    ]);
     if (updateDebounceTimer) {
       clearTimeout(updateDebounceTimer);
       updateDebounceTimer = null;
     }
+    if (jobsResult.kind === "rejected") throw jobsResult.error;
+    if (discoveryResult.kind === "rejected") throw discoveryResult.error;
   }
 
   return {

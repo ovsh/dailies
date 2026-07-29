@@ -1,6 +1,6 @@
 /**
  * Projects: each is one show with its own SQLite database, media dir, and
- * pipeline instance. Exactly one project is open at a time.
+ * pipeline instance. One retained project is active at a time.
  *
  * Registry: ${dataDir}/projects.json. Project data: ${dataDir}/projects/<id>/.
  * A pre-projects installation (${dataDir}/dailies.db) is adopted as a project
@@ -13,7 +13,7 @@ import type { Project, ProjectState } from "../shared/types";
 import { EMBEDDING_MODEL } from "../shared/types";
 import { openDatabase } from "./db/database";
 import type { DailiesDB } from "./db/types";
-import { createPipeline, type Pipeline } from "./pipeline";
+import { createPipeline, PipelineBudget, type Pipeline } from "./pipeline";
 import type { AppSettingsStore } from "./app-settings";
 import { createOpenRouterClient } from "./agents/openrouter-client";
 import { createOpenRouterEmbedder } from "./agents/openrouter";
@@ -33,6 +33,18 @@ export interface ProjectContext {
   db: DailiesDB;
   pipeline: Pipeline;
   mediaDir: string;
+  beginChatTurn(): () => void;
+}
+
+interface DeferredStartTask {
+  cancel(): void;
+  done: Promise<void>;
+}
+
+interface RetainedProjectContext extends ProjectContext {
+  lastActive: number;
+  deferredStart: DeferredStartTask | null;
+  inFlightChatTurns: number;
 }
 
 export interface ProjectManager {
@@ -42,6 +54,8 @@ export interface ProjectManager {
   openLastProject(): Promise<ProjectState | null>;
   currentState(): ProjectState | null;
   current(): ProjectContext | null;
+  /** Every retained context, most recently active first. */
+  retained(): ProjectContext[];
   closeCurrent(): Promise<void>;
 }
 
@@ -50,8 +64,15 @@ export function createProjectManager(opts: {
   settings: AppSettingsStore;
   onUpdate: () => void;
 }): ProjectManager {
+  const MAX_RETAINED_CONTEXTS = 3;
   const registryFile = path.join(opts.dataDir, "projects.json");
-  let ctx: ProjectContext | null = null;
+  const contexts = new Map<string, RetainedProjectContext>();
+  const backgroundCloses = new Map<string, Promise<void>>();
+  const budget = new PipelineBudget();
+  let activeProjectId: string | null = null;
+  let activitySequence = 0;
+  let closing = false;
+  let closeTask: Promise<void> | null = null;
   let contextChangeTail: Promise<void> = Promise.resolve();
 
   function serializeContextChange<T>(change: () => Promise<T>): Promise<T> {
@@ -106,27 +127,174 @@ export function createProjectManager(opts: {
     };
   }
 
-  async function openRecord(record: ProjectRecord): Promise<ProjectState> {
-    // Close whatever is open before replacing its database connection.
-    if (ctx) {
-      const old = ctx;
-      ctx = null;
-      await old.pipeline.stop();
-      old.db.close();
+  function logOpen(fields: {
+    projectId: string;
+    kind: "new" | "retained";
+    phase: "interactive" | "deferred-start";
+    durationMs: number;
+    outcome: "ready" | "started" | "cancelled" | "failed";
+  }): void {
+    console.warn("[project] open", JSON.stringify({
+      ...fields,
+      retainedContextCount: contexts.size,
+    }));
+  }
+
+  function markOpened(context: RetainedProjectContext): void {
+    const now = new Date().toISOString();
+    context.lastActive = ++activitySequence;
+    context.project = { ...context.project, lastOpenedAt: now };
+    activeProjectId = context.project.id;
+    const reg = readRegistry();
+    const entry = reg.projects.find((project) => project.id === context.project.id);
+    if (entry) entry.lastOpenedAt = now;
+    reg.lastOpenedId = context.project.id;
+    writeRegistry(reg);
+  }
+
+  function scheduleDeferredStart(
+    context: RetainedProjectContext,
+    folders: ProjectState["folders"],
+  ): DeferredStartTask {
+    const scheduledAt = Date.now();
+    let cancelled = false;
+    let reported = false;
+    let handle: ReturnType<typeof setImmediate> | null = null;
+    let finish: () => void = () => {};
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+
+    function report(outcome: "started" | "cancelled" | "failed"): void {
+      if (reported) return;
+      reported = true;
+      logOpen({
+        projectId: context.project.id,
+        kind: "new",
+        phase: "deferred-start",
+        durationMs: Date.now() - scheduledAt,
+        outcome,
+      });
     }
+
+    handle = setImmediate(() => {
+      handle = null;
+      if (
+        cancelled ||
+        closing ||
+        contexts.get(context.project.id) !== context
+      ) {
+        report("cancelled");
+        finish();
+        return;
+      }
+
+      try {
+        const storedEmbeddingModel = context.db.getMeta("embedding_model");
+        if (storedEmbeddingModel === null) {
+          context.db.setMeta("embedding_model", EMBEDDING_MODEL);
+        } else if (storedEmbeddingModel !== EMBEDDING_MODEL) {
+          context.db.deleteAllEmbeddings();
+          context.db.setMeta("embedding_model", EMBEDDING_MODEL);
+        }
+        for (const folder of folders) {
+          context.pipeline.watchFolder(folder);
+          void context.pipeline.scanFolder(folder);
+        }
+        context.pipeline.start();
+        report("started");
+      } catch (err) {
+        console.warn("[project] deferred start failed", {
+          projectId: context.project.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        report("failed");
+      } finally {
+        finish();
+      }
+    });
+
+    return {
+      cancel() {
+        if (cancelled) return;
+        cancelled = true;
+        if (handle) {
+          clearImmediate(handle);
+          handle = null;
+          report("cancelled");
+          finish();
+        }
+      },
+      done,
+    };
+  }
+
+  async function abortAndClose(context: RetainedProjectContext): Promise<void> {
+    try {
+      await context.pipeline.stop("abort");
+    } catch (err) {
+      console.warn("[project] abort close failed", {
+        projectId: context.project.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      await context.deferredStart?.done;
+      context.db.close();
+    }
+  }
+
+  function beginEviction(context: RetainedProjectContext): void {
+    contexts.delete(context.project.id);
+    context.deferredStart?.cancel();
+    const task = abortAndClose(context);
+    backgroundCloses.set(context.project.id, task);
+    const clearTask = () => {
+      if (backgroundCloses.get(context.project.id) === task) {
+        backgroundCloses.delete(context.project.id);
+      }
+    };
+    void task.then(clearTask, clearTask);
+  }
+
+  function evictOverflow(): void {
+    if (contexts.size <= MAX_RETAINED_CONTEXTS) return;
+    let candidate: RetainedProjectContext | null = null;
+    for (const context of contexts.values()) {
+      if (context.project.id === activeProjectId) continue;
+      if (context.inFlightChatTurns > 0) continue;
+      if (!candidate || context.lastActive < candidate.lastActive) {
+        candidate = context;
+      }
+    }
+    if (candidate) beginEviction(candidate);
+  }
+
+  async function openRecord(record: ProjectRecord): Promise<ProjectState> {
+    if (closing) throw new Error("Project manager is closing");
+    const startedAt = Date.now();
+    const retained = contexts.get(record.id);
+    if (retained) {
+      markOpened(retained);
+      const state = stateFor(retained);
+      evictOverflow();
+      logOpen({
+        projectId: record.id,
+        kind: "retained",
+        phase: "interactive",
+        durationMs: Date.now() - startedAt,
+        outcome: "ready",
+      });
+      return state;
+    }
+
+    const pendingClose = backgroundCloses.get(record.id);
+    if (pendingClose) await pendingClose;
+    if (closing) throw new Error("Project manager is closing");
 
     fs.mkdirSync(path.dirname(record.dbPath), { recursive: true });
     fs.mkdirSync(record.mediaDir, { recursive: true });
     const db = openDatabase(record.dbPath);
     db.resetRunningJobs();
-
-    const storedEmbeddingModel = db.getMeta("embedding_model");
-    if (storedEmbeddingModel === null) {
-      db.setMeta("embedding_model", EMBEDDING_MODEL);
-    } else if (storedEmbeddingModel !== EMBEDDING_MODEL) {
-      db.deleteAllEmbeddings();
-      db.setMeta("embedding_model", EMBEDDING_MODEL);
-    }
 
     const client = createOpenRouterClient(() => opts.settings.getOpenRouterKey());
     const textEmbedder = createOpenRouterEmbedder(client);
@@ -139,28 +307,43 @@ export function createProjectManager(opts: {
         return opts.settings.hasOpenRouterKey() ? textEmbedder : null;
       },
       onUpdate: opts.onUpdate,
+      budget,
     });
 
-    for (const folder of db.listFolders()) {
-      pipeline.watchFolder(folder);
-      void pipeline.scanFolder(folder);
-    }
-    pipeline.start();
-
-    const now = new Date().toISOString();
-    const reg = readRegistry();
-    const entry = reg.projects.find((p) => p.id === record.id);
-    if (entry) entry.lastOpenedAt = now;
-    reg.lastOpenedId = record.id;
-    writeRegistry(reg);
-
-    ctx = {
-      project: { ...toProject(record), lastOpenedAt: now },
+    const context: RetainedProjectContext = {
+      project: toProject(record),
       db,
       pipeline,
       mediaDir: record.mediaDir,
+      lastActive: 0,
+      deferredStart: null,
+      inFlightChatTurns: 0,
+      beginChatTurn() {
+        context.inFlightChatTurns += 1;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          context.inFlightChatTurns -= 1;
+        };
+      },
     };
-    return stateFor(ctx);
+    const state = stateFor(context);
+    contexts.set(record.id, context);
+    markOpened(context);
+    context.deferredStart = scheduleDeferredStart(context, state.folders);
+    evictOverflow();
+    logOpen({
+      projectId: record.id,
+      kind: "new",
+      phase: "interactive",
+      durationMs: Date.now() - startedAt,
+      outcome: "ready",
+    });
+    return {
+      ...state,
+      project: context.project,
+    };
   }
 
   adoptLegacy();
@@ -209,21 +392,56 @@ export function createProjectManager(opts: {
     },
 
     currentState() {
-      return ctx ? stateFor(ctx) : null;
+      const context = activeProjectId ? contexts.get(activeProjectId) : null;
+      return context ? stateFor(context) : null;
     },
 
     current() {
-      return ctx;
+      return activeProjectId ? contexts.get(activeProjectId) ?? null : null;
+    },
+
+    retained() {
+      return [...contexts.values()].sort((a, b) => b.lastActive - a.lastActive);
     },
 
     closeCurrent() {
-      return serializeContextChange(async () => {
-        if (!ctx) return;
-        const old = ctx;
-        ctx = null;
-        await old.pipeline.stop();
-        old.db.close();
-      });
+      if (closeTask) return closeTask;
+      closing = true;
+      activeProjectId = null;
+      const retained = [...contexts.values()];
+      contexts.clear();
+      for (const context of retained) context.deferredStart?.cancel();
+      const stopped = retained.map((context) => ({
+        context,
+        task: context.pipeline.stop("abort"),
+      }));
+      const evictions = [...backgroundCloses.values()];
+      closeTask = Promise.all([
+        ...stopped.map(async ({ context, task }) => {
+          await Promise.allSettled([
+            task,
+            context.deferredStart?.done ?? Promise.resolve(),
+          ]);
+          try {
+            context.db.close();
+          } catch (err) {
+            console.warn("[project] database close failed", {
+              projectId: context.project.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }),
+        ...evictions,
+      ].map(async (task) => {
+        try {
+          await task;
+        } catch (err) {
+          console.warn("[project] background close failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })).then(() => undefined);
+      return closeTask;
     },
   };
 }

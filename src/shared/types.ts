@@ -176,6 +176,57 @@ export interface IndexUpdate {
   revision: number;
 }
 
+export type PipelineFileState = "queued" | "processing" | "done" | "failed";
+
+export interface PipelineCounts {
+  queued: number;
+  processing: number;
+  done: number;
+  failed: number;
+}
+
+export interface SearchCoverage {
+  totalFiles: number;
+  searchableFiles: number;
+  pendingFiles: number;
+  failedFiles: number;
+  producerNoteCount: number;
+}
+
+export interface PipelineActiveFile {
+  fileId: number;
+  filename: string;
+  stage: JobStage;
+}
+
+export interface PipelineFailure {
+  fileId: number;
+  filename: string;
+  stage: JobStage | "discovery";
+  reason: string;
+  attempts: number;
+  updatedAt: string;
+}
+
+export interface PipelineSnapshot {
+  counts: PipelineCounts;
+  percentProcessed: number;
+  filesPerMinute: number | null;
+  etaSeconds: number | null;
+  activeFiles: PipelineActiveFile[];
+  pendingFileIds: number[];
+  failures: PipelineFailure[];
+  coverage: SearchCoverage;
+  updatedAt: string;
+}
+
+export interface ProjectActivity {
+  projectId: string;
+  projectName: string;
+  counts: PipelineCounts;
+  activeFiles: PipelineActiveFile[];
+}
+
 // ---------- search ----------
 
 export interface TranscriptHit {
@@ -211,6 +262,8 @@ export interface AnswerHit {
   description?: string;
   confidence: Confidence;
   keyframePath?: string | null;
+  segmentId?: number;
+  sourceRateFallback?: boolean;
 }
 
 export interface AgentAnswer {
@@ -218,19 +271,39 @@ export interface AgentAnswer {
   hits: AnswerHit[];
 }
 
+export interface GroundedAnswerHit extends AnswerHit {
+  segmentId: number;
+  supportsSummary: boolean;
+}
+
+export type StructuredAgentAnswer =
+  | { kind: "message"; text: string }
+  | { kind: "empty"; coverage: SearchCoverage }
+  | {
+      kind: "results";
+      summary: string | null;
+      hits: [GroundedAnswerHit, ...GroundedAnswerHit[]];
+    };
+
 /** Events emitted while a chat turn runs (main -> renderer). */
 export type ChatEvent =
   | { type: "activity"; chatId: number; turnId: string; agent: string; status: string }
-  | { type: "answer"; chatId: number; turnId: string; answer: AgentAnswer }
+  | { type: "answer"; chatId: number; turnId: string; answer: AgentAnswer | StructuredAgentAnswer }
   | { type: "error"; chatId: number; turnId: string; message: string }
   | { type: "done"; chatId: number; turnId: string };
 
 // ---------- chat persistence ----------
 
+export interface ChatScope {
+  episodeId: number | null;
+}
+
 export interface ChatSummary {
   id: number;
   title: string;
   createdAt: string;
+  /** Undefined only in pre-scope browser preview data. */
+  episodeId?: number | null;
 }
 
 export interface ChatMessageRecord {
@@ -239,6 +312,7 @@ export interface ChatMessageRecord {
   role: "user" | "assistant";
   content: string;
   hits: AnswerHit[] | null;
+  answer?: StructuredAgentAnswer;
   createdAt: string;
 }
 
@@ -264,6 +338,20 @@ export interface ExportResult {
   kind: ExportKind;
   count: number;
 }
+
+export type ExportWriteOutcome =
+  | { kind: "written"; result: ExportResult }
+  | { kind: "blocked"; reason: "no-hits" | "no-valid-sources" };
+
+export type LocatorExportOutcome =
+  | {
+      kind: "written";
+      markerCount: number;
+      clipCount: number;
+      paths: string[];
+      revealPath: string;
+    }
+  | { kind: "blocked"; reason: "no-hits" | "no-valid-sources" };
 
 // ---------- settings ----------
 

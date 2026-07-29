@@ -46,6 +46,11 @@ CREATE TABLE jobs (
   status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
   error TEXT, updated_at TEXT NOT NULL
 );
+CREATE TABLE chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
@@ -59,6 +64,10 @@ describe("legacy database migration", () => {
     const verify = new Database(dbPath);
     const columns = verify.pragma("table_info(files)") as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).not.toContain("has_visual_index");
+    const chatColumns = verify.pragma("table_info(chats)") as Array<{ name: string }>;
+    const chatIndexes = verify.pragma("index_list(chats)") as Array<{ name: string }>;
+    expect(chatColumns.map((column) => column.name)).toContain("episode_id");
+    expect(chatIndexes.map((index) => index.name)).toContain("idx_chats_episode_id");
     verify.close();
   });
 
@@ -78,6 +87,9 @@ describe("legacy database migration", () => {
     raw
       .prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
       .run("watchedFolders", JSON.stringify(["/footage/raw"]));
+    raw
+      .prepare("INSERT INTO chats (title, created_at) VALUES (?, ?)")
+      .run("old chat", new Date(0).toISOString());
     raw.close();
 
     // Opening through the real code path must NOT throw "no such column: clip_key".
@@ -91,6 +103,9 @@ describe("legacy database migration", () => {
     expect(files[0].mediaKind).toBe("standard");
     expect(files[0].hasVideo).toBeNull();
     expect(files[0].discoveryFailed).toBe(false);
+    expect(db.listChats({ episodeId: null })).toEqual([
+      expect.objectContaining({ title: "old chat", episodeId: null }),
+    ]);
 
     // New tables exist and the new query surface works.
     expect(db.searchTranscripts(["anything"])).toEqual([]);
@@ -105,10 +120,14 @@ describe("legacy database migration", () => {
     const columns = verify.pragma("table_info(files)") as Array<{ name: string }>;
     const indexes = verify.pragma("index_list(files)") as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).toEqual(
-      expect.arrayContaining(["has_video", "discovery_failed"]),
+      expect.arrayContaining(["has_video", "discovery_failed", "discovery_error"]),
     );
     expect(columns.map((column) => column.name)).toContain("has_visual_index");
     expect(indexes.map((index) => index.name)).toContain("idx_files_file_hash");
+    const chatColumns = verify.pragma("table_info(chats)") as Array<{ name: string }>;
+    const chatIndexes = verify.pragma("index_list(chats)") as Array<{ name: string }>;
+    expect(chatColumns.map((column) => column.name)).toContain("episode_id");
+    expect(chatIndexes.map((index) => index.name)).toContain("idx_chats_episode_id");
     verify.close();
   });
 

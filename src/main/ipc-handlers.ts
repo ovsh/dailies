@@ -7,11 +7,17 @@ import type {
   AppSettings,
   ApiKeyStatus,
   ChatEvent,
+  ChatScope,
   ExportItem,
   ExportKind,
   FileDetail,
+  LocatorExportOutcome,
   MediaRole,
+  PipelineSnapshot,
+  ProjectActivity,
+  StructuredAgentAnswer,
 } from "../shared/types";
+import type { DailiesDB } from "./db/types";
 import type { ProjectManager } from "./project-manager";
 import type { AppSettingsStore } from "./app-settings";
 import type { UpdaterService } from "./updater";
@@ -20,8 +26,63 @@ import { DOC_EXTENSIONS } from "./pipeline/docs";
 import { runChatTurn } from "./agents/supervisor";
 import { createOpenRouterClient, validateOpenRouterKey } from "./agents/openrouter-client";
 import { createOpenRouterEmbedder } from "./agents/openrouter";
-import { writeExport } from "./export";
+import { writeExport, writeLocatorExport } from "./export";
 import { resolvePlaybackPath } from "./playback-path";
+import { computePipelineSnapshot } from "./pipeline/status";
+
+/** Builds the derived pipeline snapshot for a scope from fact + document queries. */
+function projectSnapshot(db: DailiesDB, scope: ChatScope): PipelineSnapshot {
+  const facts = db.listPipelineFileFacts(scope);
+  const producerNoteCount = db
+    .listDocuments()
+    .filter((doc) => scope.episodeId === null || doc.episodeId === scope.episodeId)
+    .length;
+  return computePipelineSnapshot(facts, producerNoteCount);
+}
+
+interface FailureExportRow {
+  clip: string;
+  path: string;
+  stage: string;
+  reason: string;
+  attempts: number;
+  updatedAt: string;
+}
+
+function csvField(value: string | number): string {
+  const s = String(value);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function buildFailureCsv(rows: FailureExportRow[]): string {
+  const header = ["Clip", "Path", "Stage", "Reason", "Attempts", "Updated At"];
+  const lines = [header.join(",")];
+  for (const row of rows) {
+    lines.push(
+      [row.clip, row.path, row.stage, row.reason, row.attempts, row.updatedAt]
+        .map(csvField)
+        .join(","),
+    );
+  }
+  return lines.join("\n");
+}
+
+function exportTimestamp(): string {
+  const d = new Date();
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function structuredAnswerContent(answer: StructuredAgentAnswer): string {
+  switch (answer.kind) {
+    case "message":
+      return answer.text;
+    case "empty":
+      return "";
+    case "results":
+      return answer.summary ?? "";
+  }
+}
 
 export interface IpcContext {
   manager: ProjectManager;
@@ -123,14 +184,25 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
   ipcMain.handle(IPC.clearProjectCache, async () => {
     const c = requireProject();
-    await c.pipeline.stop();
+    const folders = c.db.listFolders();
     const files = c.db.listFiles();
-    for (const file of files) {
-      await fs.promises.rm(path.join(c.mediaDir, String(file.id)), { recursive: true, force: true });
-      c.db.clearDerivedState(file.id);
-      c.db.enqueueJob(file.id, "probe");
+    try {
+      await c.pipeline.stop("abort");
+      for (const file of files) {
+        await fs.promises.rm(path.join(c.mediaDir, String(file.id)), { recursive: true, force: true });
+        c.db.clearDerivedState(file.id);
+        c.db.enqueueJob(file.id, "probe");
+      }
+    } finally {
+      try {
+        for (const folder of folders) {
+          c.pipeline.watchFolder(folder);
+          void c.pipeline.scanFolder(folder);
+        }
+      } finally {
+        c.pipeline.start();
+      }
     }
-    c.pipeline.start();
     emitProjectUpdate();
     return { clearedFiles: files.length };
   });
@@ -229,18 +301,47 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     return saved ? "connected" : "invalid";
   });
   // ---- chat ----
-  ipcMain.handle(IPC.listChats, () => requireProject().db.listChats());
-  ipcMain.handle(IPC.getChat, (_e, chatId: number) => requireProject().db.getChatMessages(chatId));
+  ipcMain.handle(IPC.listChats, (_e, scope?: ChatScope) => {
+    const { db } = requireProject();
+    return scope === undefined ? db.listChats() : db.listChats(scope);
+  });
+
+  ipcMain.handle(IPC.getChat, (_e, arg1: ChatScope | number, arg2?: number) => {
+    const { db } = requireProject();
+    if (typeof arg1 === "number") return db.getChatMessages(arg1);
+    const chatId = arg2;
+    if (chatId === undefined) throw new Error("getChat requires a chat id with a scope");
+    const chat = db.getChat(chatId);
+    if (!chat || chat.episodeId !== arg1.episodeId) {
+      throw new Error(`Chat ${chatId} is not bound to this scope`);
+    }
+    return db.getChatMessages(chatId);
+  });
 
   ipcMain.handle(
     IPC.sendChatMessage,
     (_e, chatId: number | null, text: string, episodeId: number | null, turnId: string) => {
       const c = requireProject();
-      const chat =
-        chatId !== null && c.db.listChats().some((ch) => ch.id === chatId)
-          ? { id: chatId }
-          : c.db.createChat(text.slice(0, 48));
-      const id = chat.id;
+
+      // A chat's episode binding is immutable. New chats bind to the
+      // renderer's current scope; an existing chat always runs in its
+      // stored scope, never the renderer's — a stale renderer scope for an
+      // existing chat is a bug, not a silent retarget.
+      let id: number;
+      let boundEpisodeId: number | null;
+      if (chatId === null) {
+        const created = c.db.createChat(text.slice(0, 48), { episodeId });
+        id = created.id;
+        boundEpisodeId = episodeId;
+      } else {
+        const existing = c.db.getChat(chatId);
+        if (!existing) throw new Error(`Unknown chat ${chatId}`);
+        if (existing.episodeId !== episodeId) {
+          throw new Error(`Chat ${chatId} is bound to a different scope`);
+        }
+        id = chatId;
+        boundEpisodeId = existing.episodeId;
+      }
 
       c.db.addChatMessage(id, "user", text);
 
@@ -256,6 +357,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
           emitChatEvent({ type: "done", chatId: id, turnId });
           return;
         }
+        const endChatTurn = c.beginChatTurn();
         try {
           const client = createOpenRouterClient(() => apiKey);
           const answer = await runChatTurn({
@@ -264,11 +366,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
             userText: text,
             apiKey,
             embedder: createOpenRouterEmbedder(client),
-            episodeId,
+            episodeId: boundEpisodeId,
             emit: (ev) => emitChatEvent({ ...ev, chatId: id, turnId }),
             client,
           });
-          c.db.addChatMessage(id, "assistant", answer.prose, answer.hits);
+          c.db.addChatMessage(id, "assistant", structuredAnswerContent(answer), answer);
           emitChatEvent({ type: "answer", chatId: id, turnId, answer });
         } catch (err) {
           emitChatEvent({
@@ -278,6 +380,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
             message: err instanceof Error ? err.message : String(err),
           });
         } finally {
+          endChatTurn();
           emitChatEvent({ type: "done", chatId: id, turnId });
         }
       })();
@@ -293,6 +396,26 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     return writeExport(kind, items, (fid) => db.getFile(fid), outDir);
   });
 
+  // Scoped locator export for Board A/C: every item must resolve to a real
+  // file still bound to the active scope, or the whole export is blocked —
+  // a stale file or scope mismatch is never a silently dropped marker.
+  ipcMain.handle(
+    IPC.exportLocators,
+    (_e, scope: ChatScope, items: ExportItem[]): LocatorExportOutcome => {
+      const { db } = requireProject();
+      if (items.length === 0) return { kind: "blocked", reason: "no-hits" };
+      const allValid = items.every((item) => {
+        const file = db.getFile(item.fileId);
+        if (!file) return false;
+        if (scope.episodeId !== null && file.episodeId !== scope.episodeId) return false;
+        return true;
+      });
+      if (!allValid) return { kind: "blocked", reason: "no-valid-sources" };
+      const outDir = path.join(app.getPath("documents"), "Dailies Exports");
+      return writeLocatorExport(items, (fid) => db.getFile(fid), outDir);
+    },
+  );
+
   ipcMain.handle(IPC.revealInFinder, (_e, p: string) => {
     shell.showItemInFolder(p);
   });
@@ -300,6 +423,71 @@ export function registerIpcHandlers(ctx: IpcContext): void {
   ipcMain.handle(IPC.openExternal, (_e, url: string) => {
     // https-only: never let the renderer launch arbitrary protocols/apps.
     if (/^https:\/\//.test(url)) void shell.openExternal(url);
+  });
+
+  // ---- pipeline visibility ----
+  ipcMain.handle(IPC.getPipelineSnapshot, (_e, scope: ChatScope): PipelineSnapshot => {
+    const { db } = requireProject();
+    const t0 = Date.now();
+    const facts = db.listPipelineFileFacts(scope);
+    const tFacts = Date.now();
+    const producerNoteCount = db
+      .listDocuments()
+      .filter((doc) => scope.episodeId === null || doc.episodeId === scope.episodeId)
+      .length;
+    const snapshot = computePipelineSnapshot(facts, producerNoteCount);
+    const tDone = Date.now();
+    console.log(
+      `[pipeline-snapshot] rows=${facts.length} derivMs=${tDone - tFacts} ` +
+        `ipcMs=${tDone - t0} bytes=${JSON.stringify(snapshot).length}`,
+    );
+    return snapshot;
+  });
+
+  ipcMain.handle(IPC.getProjectActivities, (): ProjectActivity[] => {
+    return manager.retained().map((c) => {
+      const snapshot = projectSnapshot(c.db, { episodeId: null });
+      return {
+        projectId: c.project.id,
+        projectName: c.project.name,
+        counts: snapshot.counts,
+        activeFiles: snapshot.activeFiles,
+      };
+    });
+  });
+
+  ipcMain.handle(IPC.retryPipelineFailures, async (_e, fileIds: number[]): Promise<PipelineSnapshot> => {
+    const { db, pipeline } = requireProject();
+    const validIds = fileIds.filter((id) => db.getFile(id) !== null);
+    for (const fileId of validIds) {
+      await pipeline.retryFile(fileId);
+    }
+    emitProjectUpdate();
+    return projectSnapshot(db, { episodeId: null });
+  });
+
+  ipcMain.handle(IPC.exportPipelineFailures, (_e, scope: ChatScope) => {
+    const { db } = requireProject();
+    const snapshot = projectSnapshot(db, scope);
+    if (snapshot.failures.length === 0) {
+      return { kind: "blocked" as const, reason: "no-failures" as const };
+    }
+    const rows: FailureExportRow[] = snapshot.failures.map((failure) => {
+      const file = db.getFile(failure.fileId);
+      return {
+        clip: file?.clipName ?? failure.filename,
+        path: file?.path ?? "",
+        stage: failure.stage,
+        reason: failure.reason,
+        attempts: failure.attempts,
+        updatedAt: failure.updatedAt,
+      };
+    });
+    const outDir = path.join(app.getPath("documents"), "Dailies Exports");
+    fs.mkdirSync(outDir, { recursive: true });
+    const filePath = path.join(outDir, `dailies-failures-${exportTimestamp()}.csv`);
+    fs.writeFileSync(filePath, buildFailureCsv(rows), "utf8");
+    return { kind: "written" as const, path: filePath, count: rows.length };
   });
 
   // ---- software update ----

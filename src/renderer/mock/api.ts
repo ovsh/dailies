@@ -4,14 +4,21 @@
 import type { DailiesAPI } from "../../shared/ipc";
 import type { ModelDownloadProgress,
   ChatEvent,
+  ChatScope,
   Episode,
   ExportItem,
   ExportKind,
-  ExportResult,
+  ExportWriteOutcome,
   FileDetail,
   IndexUpdate,
+  LocatorExportOutcome,
   MediaRole,
+  PipelineActiveFile,
+  PipelineCounts,
+  PipelineFailure,
+  PipelineSnapshot,
   Project,
+  ProjectActivity,
   ProjectFolder,
   ProjectState,
   UpdaterState,
@@ -177,6 +184,80 @@ export function createMockApi(): DailiesAPI {
     };
   }
 
+  function filesForScope(scope: ChatScope) {
+    return scope.episodeId === null
+      ? MOCK_FILES
+      : MOCK_FILES.filter((file) => file.episodeId === scope.episodeId);
+  }
+
+  function buildPipelineSnapshot(scope: ChatScope): PipelineSnapshot {
+    const files = filesForScope(scope);
+    const fileIds = new Set(files.map((file) => file.id));
+    const counts: PipelineCounts = { queued: 0, processing: 0, done: 0, failed: 0 };
+    for (const file of files) {
+      if (file.status === "error") counts.failed += 1;
+      else if (file.status === "ready") counts.done += 1;
+      else if (file.status === "processing") counts.processing += 1;
+      else counts.queued += 1;
+    }
+    const activeFiles: PipelineActiveFile[] = MOCK_JOBS
+      .filter((job) => job.status === "running" && fileIds.has(job.fileId))
+      .map((job) => ({ fileId: job.fileId, filename: job.filename, stage: job.stage }));
+    const pendingFileIds = [...new Set(
+      MOCK_JOBS
+        .filter((job) =>
+          fileIds.has(job.fileId) &&
+          (job.status === "queued" || job.status === "running" || job.status === "waiting")
+        )
+        .map((job) => job.fileId),
+    )];
+    const failures: PipelineFailure[] = MOCK_JOBS
+      .filter((job) => job.status === "error" && fileIds.has(job.fileId))
+      .map((job) => ({
+        fileId: job.fileId,
+        filename: job.filename,
+        stage: job.stage,
+        reason: job.error ?? `${job.stage} failed`,
+        attempts: job.attempts,
+        updatedAt: job.updatedAt,
+      }));
+    const searchableFiles = files.filter((file) => file.hasTranscript).length;
+    const failedFiles = counts.failed;
+    const pendingFiles = files.filter((file) => !file.hasTranscript && file.status !== "error").length;
+    return {
+      counts,
+      percentProcessed: files.length === 0 ? 0 : (counts.done + counts.failed) / files.length,
+      filesPerMinute: null,
+      etaSeconds: null,
+      activeFiles,
+      pendingFileIds,
+      failures,
+      coverage: {
+        totalFiles: files.length,
+        searchableFiles,
+        pendingFiles,
+        failedFiles,
+        producerNoteCount: 0,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  function retryMockFile(fileId: number): void {
+    const file = MOCK_FILES.find((candidate) => candidate.id === fileId);
+    if (!file) throw new Error(`Unknown file ${fileId}`);
+    const failedJobs = MOCK_JOBS.filter((job) => job.fileId === fileId && job.status === "error");
+    if (failedJobs.length === 0) return;
+    const updatedAt = new Date().toISOString();
+    for (const job of failedJobs) {
+      job.status = "queued";
+      job.attempts = 0;
+      job.error = null;
+      job.updatedAt = updatedAt;
+    }
+    if (file.status === "error") file.status = "processing";
+  }
+
   return {
     // ---------- projects ----------
 
@@ -300,20 +381,7 @@ export function createMockApi(): DailiesAPI {
     },
 
     async retryFile(fileId: number) {
-      const file = MOCK_FILES.find((candidate) => candidate.id === fileId);
-      if (!file) throw new Error(`Unknown file ${fileId}`);
-      const failedJobs = MOCK_JOBS.filter((job) =>
-        job.fileId === fileId && job.status === "error"
-      );
-      if (failedJobs.length === 0) return;
-      const updatedAt = new Date().toISOString();
-      for (const job of failedJobs) {
-        job.status = "queued";
-        job.attempts = 0;
-        job.error = null;
-        job.updatedAt = updatedAt;
-      }
-      if (file.status === "error") file.status = "processing";
+      retryMockFile(fileId);
       notifyIndexUpdate();
     },
 
@@ -354,19 +422,26 @@ export function createMockApi(): DailiesAPI {
 
     // ---------- chat ----------
 
-    async listChats() {
-      return MOCK_CHATS;
+    async listChats(scope?: ChatScope) {
+      if (scope === undefined) return MOCK_CHATS;
+      return MOCK_CHATS.filter((chat) => (chat.episodeId ?? null) === scope.episodeId);
     },
 
-    async getChat(chatId: number) {
+    async getChat(scopeOrChatId: ChatScope | number, maybeChatId?: number) {
+      const chatId = typeof scopeOrChatId === "number" ? scopeOrChatId : maybeChatId;
+      if (chatId === undefined) throw new Error("getChat requires a chat id with a scope");
+      if (typeof scopeOrChatId !== "number") {
+        const chat = MOCK_CHATS.find((candidate) => candidate.id === chatId);
+        if (!chat || (chat.episodeId ?? null) !== scopeOrChatId.episodeId) return [];
+      }
       return MOCK_CHAT_MESSAGES[chatId] ?? [];
     },
 
-    async sendChatMessage(chatId: number | null, text: string, _episodeId: number | null, turnId: string) {
+    async sendChatMessage(chatId: number | null, text: string, episodeId: number | null, turnId: string) {
       const existingChat = chatId !== null && MOCK_CHATS.some((chat) => chat.id === chatId);
       const id = existingChat ? chatId : nextChatId++;
       if (!existingChat) {
-        MOCK_CHATS.unshift({ id, title: text.slice(0, 48), createdAt: new Date().toISOString() });
+        MOCK_CHATS.unshift({ id, title: text.slice(0, 48), createdAt: new Date().toISOString(), episodeId });
       }
       const existing = MOCK_CHAT_MESSAGES[id] ?? [];
       const userMsg = {
@@ -412,13 +487,66 @@ export function createMockApi(): DailiesAPI {
 
     // ---------- export ----------
 
-    async exportHits(kind: ExportKind, items: ExportItem[]): Promise<ExportResult> {
+    async exportHits(kind: ExportKind, items: ExportItem[]): Promise<ExportWriteOutcome> {
       await new Promise((r) => setTimeout(r, 400));
+      if (items.length === 0) return { kind: "blocked", reason: "no-hits" };
+      const fileIds = new Set(MOCK_FILES.map((file) => file.id));
+      if (items.some((item) => !fileIds.has(item.fileId))) {
+        return { kind: "blocked", reason: "no-valid-sources" };
+      }
       const ext = kind === "edl" ? "edl" : "txt";
       return {
-        path: `/Users/editor/Desktop/dailies_export_${Date.now()}.${ext}`,
-        kind,
-        count: items.length,
+        kind: "written",
+        result: {
+          path: `/Users/editor/Desktop/dailies_export_${Date.now()}.${ext}`,
+          kind,
+          count: items.length,
+        },
+      };
+    },
+
+    async getPipelineSnapshot(scope: ChatScope) {
+      return buildPipelineSnapshot(scope);
+    },
+
+    async getProjectActivities(): Promise<ProjectActivity[]> {
+      const project = projects.find((candidate) => candidate.id === currentProjectId);
+      if (!project) return [];
+      const snapshot = buildPipelineSnapshot({ episodeId: null });
+      return [{
+        projectId: project.id,
+        projectName: project.name,
+        counts: snapshot.counts,
+        activeFiles: snapshot.activeFiles,
+      }];
+    },
+
+    async retryPipelineFailures(fileIds: number[]) {
+      for (const fileId of fileIds) retryMockFile(fileId);
+      notifyIndexUpdate();
+      return buildPipelineSnapshot({ episodeId: null });
+    },
+
+    async exportPipelineFailures(scope: ChatScope) {
+      const snapshot = buildPipelineSnapshot(scope);
+      if (snapshot.failures.length === 0) return { kind: "blocked", reason: "no-failures" };
+      return {
+        kind: "written",
+        path: `/Users/editor/Desktop/dailies_failures_${Date.now()}.csv`,
+        count: snapshot.failures.length,
+      };
+    },
+
+    async exportLocators(scope: ChatScope, items: ExportItem[]): Promise<LocatorExportOutcome> {
+      const visibleFileIds = new Set(filesForScope(scope).map((file) => file.id));
+      const validItems = items.filter((item) => visibleFileIds.has(item.fileId));
+      if (validItems.length === 0) return { kind: "blocked", reason: "no-hits" };
+      return {
+        kind: "written",
+        markerCount: validItems.length,
+        clipCount: new Set(validItems.map((item) => item.fileId)).size,
+        paths: [`/Users/editor/Desktop/dailies_locators_${Date.now()}`],
+        revealPath: "/Users/editor/Desktop",
       };
     },
 

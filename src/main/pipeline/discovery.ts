@@ -12,11 +12,12 @@ import { findFfprobeBinary } from "./binaries";
 import { DOC_EXTENSIONS, extractDocument } from "./docs";
 import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo, type OpAtomClip } from "./opatom";
 import { computeFileIdentity } from "./probe";
-import { createWatcher } from "./watcher";
+import { createWatcher, type Watcher } from "./watcher";
 
 const VIDEO_EXTENSIONS = new Set([".mov", ".mp4", ".mxf", ".avi", ".m4v", ".mts"]);
 const DOC_EXTENSIONS_SET = new Set(DOC_EXTENSIONS);
 const SCAN_STABILITY_WINDOW_MS = 3000;
+export const DISCOVERY_CLOSE_TIMEOUT_MS = 10_000;
 
 export interface DiscoveryOptions {
   db: DailiesDB;
@@ -90,11 +91,33 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     delay,
   } = opts;
 
-  // Watched project folders, used to resolve a discovered file's/document's
-  // role and episodeId by longest-prefix match. Default role "raw",
-  // default episodeId null.
   const watchedFolders: ProjectFolder[] = [];
+  const discoveryTasks = new Set<Promise<void>>();
   const opAtomClipTails = new Map<string, Promise<void>>();
+  const pendingOpAtomClips = new Map<string, OpAtomClip>();
+  let lifecycle: "open" | "closing" | "closed" = "open";
+  let watcher: Watcher | null = null;
+  let grouper: OpAtomGrouper | null = null;
+  let closeTask: Promise<void> | null = null;
+
+  function openTaskIntake(): boolean {
+    if (lifecycle === "closing") return false;
+    if (lifecycle === "closed") {
+      lifecycle = "open";
+      closeTask = null;
+    }
+    return true;
+  }
+
+  function trackTask<T>(task: Promise<T>): Promise<T> {
+    const owned = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    discoveryTasks.add(owned);
+    void owned.then(() => discoveryTasks.delete(owned));
+    return task;
+  }
 
   /** Longest-prefix-matching watched folder for `path`, if any. */
   function folderForPath(path: string): ProjectFolder | null {
@@ -136,7 +159,7 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
    * path), this always (re-)ingests: upsertDocument replaces any existing
    * record at the same path.
    */
-  async function ingestDocument(path: string, episodeId: number | null): Promise<boolean> {
+  async function ingestDocumentTask(path: string, episodeId: number | null): Promise<boolean> {
     try {
       const doc = await extractDocument(path, episodeId);
       if (!doc) return false;
@@ -151,11 +174,30 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     }
   }
 
-  const grouper = new OpAtomGrouper({
-    onClip: (clip) => {
-      queueOpAtomClip(clip);
-    },
-  });
+  function ensureGrouper(): OpAtomGrouper {
+    if (grouper) return grouper;
+    grouper = new OpAtomGrouper({
+      onClip: (clip) => {
+        pendingOpAtomClips.delete(clip.clipKey);
+        queueOpAtomClip(clip);
+      },
+    });
+    return grouper;
+  }
+
+  function addOpAtom(atom: MxfAtomInfo): void {
+    const pending = pendingOpAtomClips.get(atom.clipKey);
+    const atoms = pending ? [...pending.atoms] : [];
+    const matchingIndex = atoms.findIndex((candidate) => candidate.path === atom.path);
+    if (matchingIndex >= 0) atoms[matchingIndex] = atom;
+    else atoms.push(atom);
+    pendingOpAtomClips.set(atom.clipKey, {
+      clipKey: atom.clipKey,
+      clipName: atoms.find((candidate) => candidate.clipName)?.clipName ?? null,
+      atoms,
+    });
+    ensureGrouper().addAtom(atom);
+  }
 
   function queueOpAtomClip(clip: OpAtomClip): void {
     const previous = opAtomClipTails.get(clip.clipKey) ?? Promise.resolve();
@@ -256,19 +298,19 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
 
   async function onFileFound(path: string): Promise<void> {
     const ext = extname(path).toLowerCase();
+    const existing = db.getFileByPath(path);
 
     if (ext === ".mxf") {
       const ffprobeBin = findFfprobeBinary();
       const atomInfo: MxfAtomInfo | null = await analyzeMxf(ffprobeBin, path);
       if (atomInfo) {
-        grouper.addAtom(atomInfo);
+        if (existing?.discoveryFailed) db.setDiscoveryFailure(existing.id, null);
+        addOpAtom(atomInfo);
         return;
       }
       // Not OP-Atom (e.g. carries both audio and video) — fall through to
       // standard ingest below.
     }
-
-    const existing = db.getFileByPath(path);
 
     let identity: Awaited<ReturnType<typeof computeFileIdentity>>;
     try {
@@ -294,13 +336,14 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
           episodeId: episodeIdForPath(path),
         });
       }
-      db.setDiscoveryFailed(unreadable.id, true);
+      const message = err instanceof Error ? err.message : String(err);
+      db.setDiscoveryFailure(unreadable.id, message);
       reconcile(unreadable.id);
       scheduleUpdate();
       console.warn(`onFileFound: unreadable media ${path}:`, err);
       return;
     }
-    if (existing?.discoveryFailed) db.setDiscoveryFailed(existing.id, false);
+    if (existing?.discoveryFailed) db.setDiscoveryFailure(existing.id, null);
 
     if (!existing) {
       const byHash = db.getFileByHash(identity.fileHash);
@@ -345,24 +388,39 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     scheduleUpdate();
   }
 
-  const watcher = createWatcher({
-    onFileFound: (path) => {
-      void onFileFound(path);
-    },
-    onDocFound: (path) => {
-      void onDocFound(path);
-    },
-  });
+  function ensureWatcher(): Watcher {
+    if (watcher) return watcher;
+    watcher = createWatcher({
+      onFileFound: (path) => {
+        if (lifecycle !== "open") return;
+        void trackTask(onFileFound(path)).catch((err: unknown) => {
+          console.warn(`onFileFound: failed on ${path}:`, err);
+        });
+      },
+      onDocFound: (path) => {
+        if (lifecycle !== "open") return;
+        void trackTask(onDocFound(path));
+      },
+    });
+    for (const folder of watchedFolders) watcher.watchFolder(folder.path);
+    return watcher;
+  }
 
   function watchFolder(folder: ProjectFolder): void {
-    watchedFolders.push(folder);
-    watcher.watchFolder(folder.path);
+    if (!openTaskIntake()) return;
+    const existingIndex = watchedFolders.findIndex((candidate) =>
+      candidate.path === folder.path);
+    if (existingIndex >= 0) watchedFolders[existingIndex] = folder;
+    else watchedFolders.push(folder);
+    const existingWatcher = watcher;
+    const activeWatcher = ensureWatcher();
+    if (existingWatcher) activeWatcher.watchFolder(folder.path);
   }
 
   function unwatchFolder(path: string): void {
     const idx = watchedFolders.findIndex((f) => f.path === path);
     if (idx >= 0) watchedFolders.splice(idx, 1);
-    watcher.unwatchFolder(path);
+    watcher?.unwatchFolder(path);
   }
 
   async function isStableForScan(path: string): Promise<boolean> {
@@ -377,7 +435,7 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     }
   }
 
-  async function scanFolder(folder: ProjectFolder): Promise<void> {
+  async function scanFolderTask(folder: ProjectFolder): Promise<void> {
     // A missing folder (unmounted drive, deleted path) must never take the
     // app down — skip quietly; the watcher recovers when it reappears.
     let files: string[];
@@ -407,10 +465,80 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     }
   }
 
-  async function close(): Promise<void> {
-    grouper.close();
-    await watcher.close();
-    await Promise.all(opAtomClipTails.values());
+  function scanFolder(folder: ProjectFolder): Promise<void> {
+    if (!openTaskIntake()) return Promise.resolve();
+    return trackTask(scanFolderTask(folder));
+  }
+
+  function ingestDocument(path: string, episodeId: number | null): Promise<boolean> {
+    if (!openTaskIntake()) return Promise.resolve(false);
+    return trackTask(ingestDocumentTask(path, episodeId));
+  }
+
+  async function waitForCloseTasks(
+    tasks: Promise<unknown>[],
+    label: string,
+    deadline: number,
+  ): Promise<void> {
+    if (tasks.length === 0) return;
+    const remainingMs = Math.max(0, deadline - Date.now());
+    const settled = Promise.all(tasks).then(
+      () => ({ kind: "done" as const }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const result = await Promise.race([
+      settled,
+      new Promise<{ kind: "timed-out" }>((resolve) => {
+        timeout = setTimeout(() => resolve({ kind: "timed-out" }), remainingMs);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    if (result.kind === "timed-out") {
+      console.warn(`[pipeline] discovery close timed out waiting for ${label}`);
+      return;
+    }
+    if (result.kind === "failed") throw result.error;
+  }
+
+  function close(): Promise<void> {
+    if (lifecycle === "closing" && closeTask) return closeTask;
+    if (lifecycle === "closed") return Promise.resolve();
+    lifecycle = "closing";
+    const activeWatcher = watcher;
+    watcher = null;
+    closeTask = (async () => {
+      const deadline = Date.now() + DISCOVERY_CLOSE_TIMEOUT_MS;
+      let closeError: unknown;
+      try {
+        await waitForCloseTasks(
+          activeWatcher ? [activeWatcher.close()] : [],
+          "folder watcher",
+          deadline,
+        );
+      } catch (err) {
+        closeError = err;
+      }
+      try {
+        await waitForCloseTasks([...discoveryTasks], "folder scans", deadline);
+      } catch (err) {
+        closeError ??= err;
+      }
+
+      const activeGrouper = grouper;
+      grouper = null;
+      for (const clip of pendingOpAtomClips.values()) queueOpAtomClip(clip);
+      pendingOpAtomClips.clear();
+      activeGrouper?.close();
+      try {
+        await waitForCloseTasks([...opAtomClipTails.values()], "OP-Atom updates", deadline);
+      } catch (err) {
+        closeError ??= err;
+      }
+      lifecycle = "closed";
+      if (closeError !== undefined) throw closeError;
+    })();
+    return closeTask;
   }
 
   return {

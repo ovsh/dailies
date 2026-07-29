@@ -1,0 +1,825 @@
+{
+  "version": "0.4",
+  "cases": [
+    {
+      "id": "landscape-keyword-retention-pond",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find the clearest line that explains what a retention pond does.",
+      "tags": ["explicit-keyword-synonym", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "pond that retains water",
+          "startS": 65,
+          "endS": 72
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "retention pond",
+          "startS": 0,
+          "endS": 1562
+        }
+      ],
+      "forbiddenHits": [
+        { "kind": "clip", "clipName": "06252025/06" }
+      ],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Reviewed against the indexed Evan yard transcript."
+    },
+    {
+      "id": "landscape-keyword-storm-water-plan",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Where do they say new construction needs a storm-water management plan?",
+      "tags": ["explicit-keyword-synonym", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "all new construction has to have a storm water",
+          "startS": 311,
+          "endS": 319
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "storm water management",
+          "startS": 220,
+          "endS": 1516
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The required line states the construction rule."
+    },
+    {
+      "id": "landscape-keyword-chicago-bricks",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find the part about reused vintage bricks from Chicago.",
+      "tags": ["explicit-keyword-synonym", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "vintage bricks all the way from chicago",
+          "startS": 965,
+          "endS": 970
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "bricks",
+          "startS": 950,
+          "endS": 1270
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Reviewed against the brick-reuse section of clip 05."
+    },
+    {
+      "id": "landscape-keyword-yaupon-tea",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find the yaupon holly tea explanation.",
+      "tags": ["explicit-keyword-synonym", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "only caffeinated tea",
+          "startS": 32,
+          "endS": 41
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "yaupon",
+          "startS": 28,
+          "endS": 950
+        },
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "yopon",
+          "startS": 28,
+          "endS": 950
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The transcript uses both yaupon and yopon spellings."
+    },
+    {
+      "id": "landscape-keyword-cigarette-butts",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Where does she say cigarette butts are common beach trash?",
+      "tags": ["explicit-keyword-synonym", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/01",
+          "quoteSubstring": "most popular beach trash we pick up are cigarette butts",
+          "startS": 494,
+          "endS": 501
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/01",
+          "quoteSubstring": "cigarette butts",
+          "startS": 140,
+          "endS": 720
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Reviewed against the beach cleanup walk in clip 01."
+    },
+    {
+      "id": "landscape-keyword-seagrove-beach",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find the line that names Seagrove Beach in Florida.",
+      "tags": ["explicit-keyword-synonym", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "It's Seagrove Beach, Florida",
+          "startS": 110,
+          "endS": 112
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "Seagrove Beach",
+          "startS": 70,
+          "endS": 160
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Reviewed location statement from clip 02."
+    },
+    {
+      "id": "landscape-semantic-yard-flood-basin",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Which moment explains the shallow basin that keeps the front yard from flooding?",
+      "tags": ["semantic-paraphrase", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "yard used to all flood and now the water runs in here",
+          "startS": 541,
+          "endS": 550
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "flood",
+          "startS": 140,
+          "endS": 950
+        },
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "water",
+          "startS": 140,
+          "endS": 950
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Paraphrases retention-pond language without naming the pond."
+    },
+    {
+      "id": "landscape-semantic-local-caffeinated-drink",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find the locally gathered plant that can replace a caffeinated morning drink.",
+      "tags": ["semantic-paraphrase", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "only caffeinated tea",
+          "startS": 32,
+          "endS": 41
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "yaupon",
+          "startS": 28,
+          "endS": 950
+        },
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "yopon",
+          "startS": 28,
+          "endS": 950
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Semantic wording avoids the plant name."
+    },
+    {
+      "id": "landscape-semantic-dunes-storm-buffer",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Where do they explain how shoreline ridges help when storms arrive?",
+      "tags": ["semantic-paraphrase", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "when the hurricanes come in, these dunes",
+          "startS": 629,
+          "endS": 634
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "dunes",
+          "startS": 610,
+          "endS": 735
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Semantic wording maps shoreline ridges to dunes."
+    },
+    {
+      "id": "landscape-semantic-plastic-wildlife-risk",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find why synthetic litter is dangerous to nesting wildlife.",
+      "tags": ["semantic-paraphrase", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "plastic trash because that kind of looks like food",
+          "startS": 192,
+          "endS": 200
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "turtles",
+          "startS": 175,
+          "endS": 205
+        },
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "plastic trash",
+          "startS": 175,
+          "endS": 205
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Reviewed turtle-nesting and plastic-food comparison."
+    },
+    {
+      "id": "landscape-implicit-where-evan",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [
+        { "role": "user", "text": "Find the part where they inspect Evan's retention pond." },
+        { "role": "assistant", "text": "I found the retention-pond discussion." }
+      ],
+      "question": "Where are they?",
+      "tags": ["implicit-location-person", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "Evan's yard he's not here",
+          "startS": 18,
+          "endS": 26
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "Evan's",
+          "startS": 18,
+          "endS": 1510
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Approved failed question with Evan resolved from prior turns."
+    },
+    {
+      "id": "landscape-implicit-where-beach",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [
+        { "role": "user", "text": "Find her beach-cleanup introduction." },
+        { "role": "assistant", "text": "She introduces the cleanup location before looking for trash." }
+      ],
+      "question": "Where is she?",
+      "tags": ["implicit-location-person", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "here we are at Seagrove Beach",
+          "startS": 88,
+          "endS": 94
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "Seagrove Beach",
+          "startS": 70,
+          "endS": 160
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Location resolves from the beach-cleanup context."
+    },
+    {
+      "id": "landscape-implicit-which-plant",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [
+        { "role": "user", "text": "Find the part where she makes the caffeinated tea." },
+        { "role": "assistant", "text": "I found the garden tea sequence." }
+      ],
+      "question": "What plant is she using?",
+      "tags": ["implicit-location-person", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "This is the yaupon holly",
+          "startS": 28,
+          "endS": 33
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "yaupon",
+          "startS": 28,
+          "endS": 950
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The object reference resolves to yaupon from prior turns."
+    },
+    {
+      "id": "landscape-implicit-whose-house",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [
+        { "role": "user", "text": "Find the group-tone setup before they move to the backyard." },
+        { "role": "assistant", "text": "I found the setup chatter." }
+      ],
+      "question": "Whose house is it?",
+      "tags": ["implicit-location-person", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/09",
+          "quoteSubstring": "group tone at Evan and Whitney's house",
+          "startS": 6,
+          "endS": 12
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/09",
+          "quoteSubstring": "backyard",
+          "startS": 29,
+          "endS": 41
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The person reference is explicit in the group-tone slate."
+    },
+    {
+      "id": "landscape-implicit-where-debris-ends",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [
+        { "role": "user", "text": "Find the explanation about debris washing ashore." },
+        { "role": "assistant", "text": "I found a line about its route from the water." }
+      ],
+      "question": "Where does it end up?",
+      "tags": ["implicit-location-person", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "comes up through the ocean and ends up in the dunes",
+          "startS": 903,
+          "endS": 906
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "dunes",
+          "startS": 895,
+          "endS": 1010
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The pronoun resolves to debris from the preceding turn."
+    },
+    {
+      "id": "landscape-implicit-where-seagrove",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [
+        { "role": "user", "text": "They mention morning cleanup rules at Seagrove Beach." },
+        { "role": "assistant", "text": "I found that section." }
+      ],
+      "question": "Where is that?",
+      "tags": ["implicit-location-person", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "It's Seagrove Beach, Florida",
+          "startS": 110,
+          "endS": 112
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "Walton County, Florida",
+          "startS": 85,
+          "endS": 95
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The demonstrative resolves to Seagrove Beach."
+    },
+    {
+      "id": "second-show-scope-pair-a-episode-one",
+      "projectKey": "second-show",
+      "placeholder": true,
+      "tags": ["episode-isolation", "placeholder"],
+      "reviewNote": "Release input must add the first reviewed question in episode one."
+    },
+    {
+      "id": "second-show-scope-pair-a-episode-two",
+      "projectKey": "second-show",
+      "placeholder": true,
+      "tags": ["episode-isolation", "placeholder"],
+      "reviewNote": "Release input must repeat pair A in episode two."
+    },
+    {
+      "id": "second-show-scope-pair-b-episode-one",
+      "projectKey": "second-show",
+      "placeholder": true,
+      "tags": ["episode-isolation", "placeholder"],
+      "reviewNote": "Release input must add the second reviewed question in episode one."
+    },
+    {
+      "id": "second-show-scope-pair-b-episode-two",
+      "projectKey": "second-show",
+      "placeholder": true,
+      "tags": ["episode-isolation", "placeholder"],
+      "reviewNote": "Release input must repeat pair B in episode two."
+    },
+    {
+      "id": "landscape-empty-penguins",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find footage where they discuss penguins.",
+      "tags": ["honest-no-hit-clarification"],
+      "expectedDisposition": "empty",
+      "requiredHits": [],
+      "allowedHits": [],
+      "forbiddenHits": [],
+      "summaryRequired": false,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "No landscaping transcript contains penguins."
+    },
+    {
+      "id": "landscape-empty-pool",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Where do they talk about building a swimming pool?",
+      "tags": ["honest-no-hit-clarification"],
+      "expectedDisposition": "empty",
+      "requiredHits": [],
+      "allowedHits": [],
+      "forbiddenHits": [
+        { "kind": "clip", "clipName": "06252025/05" }
+      ],
+      "summaryRequired": false,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "A retention pond must not be promoted as a swimming pool."
+    },
+    {
+      "id": "landscape-clarify-unresolved-pronoun",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Where are they?",
+      "tags": ["honest-no-hit-clarification"],
+      "expectedDisposition": "clarify",
+      "requiredHits": [],
+      "allowedHits": [],
+      "forbiddenHits": [],
+      "summaryRequired": false,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "No history resolves the pronoun."
+    },
+    {
+      "id": "landscape-clarify-generic",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find me some footage.",
+      "tags": ["honest-no-hit-clarification"],
+      "expectedDisposition": "clarify",
+      "requiredHits": [],
+      "allowedHits": [],
+      "forbiddenHits": [],
+      "summaryRequired": false,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Generic footage language has no concrete search facet."
+    },
+    {
+      "id": "landscape-multiclip-water-and-beach",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Compare the yard's rainwater solution with the beach cleanup advice.",
+      "tags": ["multi-clip-comparison", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "pond that retains water",
+          "startS": 65,
+          "endS": 72
+        },
+        {
+          "clipName": "06252025/01",
+          "quoteSubstring": "even if it's not your trash it's your planet",
+          "startS": 254,
+          "endS": 271
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "retention pond",
+          "startS": 0,
+          "endS": 1562
+        },
+        {
+          "clipName": "06252025/01",
+          "quoteSubstring": "trash",
+          "startS": 0,
+          "endS": 726
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Requires evidence from clips 05 and 01."
+    },
+    {
+      "id": "landscape-multiclip-wet-grass-and-tea-herbs",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Compare the plant chosen for the wet pond with the herbs used for tea.",
+      "tags": ["multi-clip-comparison", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "blue-eyed grass is a must",
+          "startS": 1544,
+          "endS": 1552
+        },
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "lemongrass, oregano, mints",
+          "startS": 342,
+          "endS": 352
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "blue-eyed grass",
+          "startS": 40,
+          "endS": 1562
+        },
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "herbs",
+          "startS": 340,
+          "endS": 800
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "Requires plant evidence from clips 05 and 06."
+    },
+    {
+      "id": "landscape-notes-lead-water-plan",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Use any relevant producer note as a lead, then find the footage line about grading the yard for its water plan.",
+      "tags": ["notes-assisted-search", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "graded his yard so the water is running into this pond",
+          "startS": 605,
+          "endS": 629
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "graded",
+          "startS": 250,
+          "endS": 630
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The footage evidence is reviewed; a release database must include the reviewed producer-note corpus."
+    },
+    {
+      "id": "landscape-notes-lead-garden-herbs",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Use any relevant producer note as a lead, then find the footage about making tea from garden herbs.",
+      "tags": ["notes-assisted-search", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "fun thing about growing herbs is that you can make your own tea",
+          "startS": 383,
+          "endS": 389
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "herbs",
+          "startS": 340,
+          "endS": 800
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The footage evidence is reviewed; a release database must include the reviewed producer-note corpus."
+    },
+    {
+      "id": "landscape-partial-stormwater-options",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find the supported storm-water options and say when the transcript does not compare their performance.",
+      "tags": ["low-confidence-partial-coverage", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "a swale if you're not going to do that you have a retention pond",
+          "startS": 692,
+          "endS": 699
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "dry well",
+          "startS": 690,
+          "endS": 790
+        },
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "rain barrel",
+          "startS": 690,
+          "endS": 790
+        },
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "french drain",
+          "startS": 690,
+          "endS": 790
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The transcript lists options but does not provide a complete performance comparison."
+    },
+    {
+      "id": "landscape-partial-beach-protection",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Find supported ways people protect this beach and make clear that the footage does not prove complete cleanup coverage.",
+      "tags": ["low-confidence-partial-coverage", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "locals are out here picking it up all the time",
+          "startS": 183,
+          "endS": 193
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "clean the beach at 5:30",
+          "startS": 59,
+          "endS": 70
+        },
+        {
+          "clipName": "06252025/01",
+          "quoteSubstring": "even if it's not your trash it's your planet",
+          "startS": 254,
+          "endS": 271
+        },
+        {
+          "clipName": "06252025/02",
+          "quoteSubstring": "protect these dunes",
+          "startS": 617,
+          "endS": 634
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The answer must distinguish examples in footage from complete coverage."
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
-  ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder, UpdaterState } from "../../shared/types";
+  ModelDownloadProgress, AppSettings, Episode, Job, PipelineSnapshot, ProjectFolder, UpdaterState } from "../../shared/types";
 import { InlineError } from "../components/InlineError";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { runIpc } from "../lib/async";
@@ -54,6 +54,20 @@ function waitingMessage(job: Job): string {
   return job.error ?? "Waiting for a required setup step.";
 }
 
+function formatEta(seconds: number | null): string {
+  if (seconds === null) return "—";
+  if (seconds < 60) return `~${Math.max(1, Math.round(seconds))}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `~${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes > 0 ? `~${hours}h ${remMinutes}m` : `~${hours}h`;
+}
+
+function formatRate(filesPerMinute: number | null): string {
+  return filesPerMinute === null ? "—" : filesPerMinute.toFixed(1);
+}
+
 interface JobsSettingsScreenProps {
   onSettingsChanged?: () => void;
   folders: ProjectFolder[];
@@ -87,6 +101,13 @@ export function JobsSettingsScreen({
   const [actionError, setActionError] = useState<string | null>(null);
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
   const [retryingFileIds, setRetryingFileIds] = useState<Set<number>>(() => new Set());
+  const [snapshot, setSnapshot] = useState<PipelineSnapshot | null>(null);
+  const [snapshotLoading, setSnapshotLoading] = useState(true);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [selectedFailureIds, setSelectedFailureIds] = useState<Set<number>>(() => new Set());
+  const [bulkRetryPending, setBulkRetryPending] = useState(false);
+  const [csvExportPending, setCsvExportPending] = useState(false);
 
   const refreshJobs = useCallback(async () => {
     const result = await runIpc(api.listJobs, {
@@ -95,6 +116,22 @@ export function JobsSettingsScreen({
       fallback: "Could not refresh indexing jobs.",
     });
     if (result.ok) setJobs(result.value);
+  }, []);
+
+  const refreshSnapshot = useCallback(async () => {
+    const result = await runIpc(() => api.getPipelineSnapshot({ episodeId: null }), {
+      setPending: setSnapshotLoading,
+      setError: setSnapshotError,
+      fallback: "Could not refresh the indexing snapshot.",
+    });
+    if (result.ok) {
+      setSnapshot(result.value);
+      setSelectedFailureIds((current) => {
+        const validIds = new Set(result.value.failures.map((f) => f.fileId));
+        const next = new Set([...current].filter((id) => validIds.has(id)));
+        return next.size === current.size ? current : next;
+      });
+    }
   }, []);
 
   const refreshSettings = useCallback(async () => {
@@ -109,9 +146,11 @@ export function JobsSettingsScreen({
   useEffect(() => {
     void refreshJobs();
     void refreshSettings();
-  }, [refreshJobs, refreshSettings]);
+    void refreshSnapshot();
+  }, [refreshJobs, refreshSettings, refreshSnapshot]);
 
   useLiveRefresh(refreshJobs);
+  useLiveRefresh(refreshSnapshot);
 
   useEffect(() => {
     const unsub = api.onModelProgress((p) => {
@@ -216,7 +255,7 @@ export function JobsSettingsScreen({
     const result = await runIpc(
       async () => {
         await api.retryFile(fileId);
-        await Promise.all([refreshJobs(), onRefresh()]);
+        await Promise.all([refreshJobs(), refreshSnapshot(), onRefresh()]);
       },
       {
         setPending: (pending) => setRetryingFileIds((current) => {
@@ -230,6 +269,54 @@ export function JobsSettingsScreen({
       },
     );
     if (result.ok) setRetryAction(null);
+  }
+
+  function toggleFailureSelected(fileId: number) {
+    setSelectedFailureIds((current) => {
+      const next = new Set(current);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  }
+
+  function toggleAllFailuresSelected() {
+    const failures = snapshot?.failures ?? [];
+    setSelectedFailureIds((current) =>
+      current.size === failures.length ? new Set() : new Set(failures.map((f) => f.fileId)),
+    );
+  }
+
+  async function handleBulkRetry() {
+    const fileIds = [...selectedFailureIds];
+    if (fileIds.length === 0) return;
+    setRetryAction(() => () => void handleBulkRetry());
+    const result = await runIpc(
+      async () => {
+        const nextSnapshot = await api.retryPipelineFailures(fileIds);
+        setSnapshot(nextSnapshot);
+        await Promise.all([refreshJobs(), onRefresh()]);
+      },
+      { setPending: setBulkRetryPending, setError: setActionError, fallback: "Could not retry the selected files." },
+    );
+    if (result.ok) {
+      setSelectedFailureIds(new Set());
+      setRetryAction(null);
+    }
+  }
+
+  async function handleExportFailuresCsv() {
+    const result = await runIpc(() => api.exportPipelineFailures({ episodeId: null }), {
+      setPending: setCsvExportPending,
+      setError: setActionError,
+      fallback: "Could not export failures.",
+    });
+    if (!result.ok) return;
+    if (result.value.kind === "blocked") {
+      setActionError("There are no failures to export.");
+      return;
+    }
+    await api.revealInFinder(result.value.path);
   }
 
   const waitingCount = jobs?.filter((job) => job.status === "waiting").length ?? 0;
@@ -355,66 +442,218 @@ export function JobsSettingsScreen({
             <div className="panel-body">
               <h2 className="display panel-title">Indexing queue</h2>
 
-              {waitingCount > 0 && (
-                <p className="jobs-waiting-summary mono" role="status">
-                  {waitingCount} {waitingCount === 1 ? "job is" : "jobs are"} paused until setup is complete. No retry is needed.
-                </p>
-              )}
-              {jobsError && (
-                <InlineError message={jobsError} onRetry={() => void refreshJobs()} retrying={jobsLoading} />
+              {snapshotError && (
+                <InlineError message={snapshotError} onRetry={() => void refreshSnapshot()} retrying={snapshotLoading} />
               )}
 
-              <table className="jobs-table mono">
-                <thead>
-                  <tr>
-                    <th>File</th>
-                    <th>Stage</th>
-                    <th>Status</th>
-                    <th>Attempts</th>
-                    <th>Details</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {jobs?.map((job) => (
-                    <tr key={job.id}>
-                      <td className="jobs-filename" title={job.filename}>
-                        {job.filename}
-                      </td>
-                      <td>{job.stage}</td>
-                      <td>
-                        <span className="job-status">
-                          <span className="job-status-dot" style={{ background: STATUS_COLOR[job.status] }} />
-                          {job.status}
-                        </span>
-                      </td>
-                      <td>{job.attempts}</td>
-                      <td className={`job-detail${job.status === "waiting" ? " waiting" : job.status === "error" ? " error" : ""}`}>
-                        <span>{job.status === "waiting" ? waitingMessage(job) : job.error ?? "—"}</span>
-                        {job.status === "error" && (
+              {snapshot && (
+                <>
+                  <div className="rollup-bar mono">
+                    <div className="rollup-stat">
+                      <span className="rollup-value">{snapshot.counts.done}</span>
+                      <span className="rollup-label">done</span>
+                    </div>
+                    <div className="rollup-stat">
+                      <span className="rollup-value">{snapshot.counts.processing}</span>
+                      <span className="rollup-label">processing</span>
+                    </div>
+                    <div className="rollup-stat">
+                      <span className="rollup-value">{snapshot.counts.queued}</span>
+                      <span className="rollup-label">queued</span>
+                    </div>
+                    <div className="rollup-stat">
+                      <span className="rollup-value rollup-value-fail">{snapshot.counts.failed}</span>
+                      <span className="rollup-label">failed</span>
+                    </div>
+                    <div className="rollup-stat">
+                      <span className="rollup-value">{Math.round(snapshot.percentProcessed * 100)}%</span>
+                      <span className="rollup-label">processed</span>
+                    </div>
+                    <div className="rollup-stat">
+                      <span className="rollup-value">{formatRate(snapshot.filesPerMinute)}</span>
+                      <span className="rollup-label">files / min</span>
+                    </div>
+                    <div className="rollup-stat">
+                      <span className="rollup-value">{formatEta(snapshot.etaSeconds)}</span>
+                      <span className="rollup-label">ETA</span>
+                    </div>
+                  </div>
+
+                  {snapshot.activeFiles.length > 0 && (
+                    <div className="active-block">
+                      <h3 className="jobs-subhead label">Active now</h3>
+                      <ul className="active-file-list mono">
+                        {snapshot.activeFiles.map((file) => (
+                          <li key={file.fileId}>
+                            <span className="job-status-dot" style={{ background: "var(--accent)" }} />
+                            <span className="active-file-name" title={file.filename}>
+                              {file.filename}
+                            </span>
+                            <span className="active-file-stage">{file.stage}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {waitingCount > 0 && (
+                    <p className="jobs-waiting-summary mono" role="status">
+                      {waitingCount} {waitingCount === 1 ? "job is" : "jobs are"} paused until setup is complete. No retry is needed.
+                    </p>
+                  )}
+
+                  <div className="failures-block">
+                    <div className="failures-head">
+                      <h3 className="jobs-subhead label">Failed ({snapshot.failures.length})</h3>
+                      {snapshot.failures.length > 0 && (
+                        <div className="failures-actions">
                           <button
                             type="button"
-                            className="job-retry label"
-                            onClick={() => void handleRetryFile(job.fileId)}
-                            disabled={retryingFileIds.has(job.fileId)}
+                            className="ghost-btn label"
+                            onClick={() => void handleBulkRetry()}
+                            disabled={selectedFailureIds.size === 0 || bulkRetryPending}
                           >
-                            {retryingFileIds.has(job.fileId) ? "Retrying…" : "Retry failed jobs"}
+                            {bulkRetryPending ? "Retrying…" : `Retry selected (${selectedFailureIds.size})`}
                           </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {jobs?.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="jobs-empty">
-                        Queue is empty.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-              <button className="ghost-btn label" onClick={() => void refreshJobs()} disabled={jobsLoading} style={{ marginTop: 14 }}>
-                {jobsLoading ? "Refreshing…" : "Refresh"}
+                          <button
+                            type="button"
+                            className="ghost-btn label"
+                            onClick={() => void handleExportFailuresCsv()}
+                            disabled={csvExportPending}
+                          >
+                            {csvExportPending ? "Exporting…" : "Export CSV"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {snapshot.failures.length === 0 ? (
+                      <p className="jobs-empty mono">No failures.</p>
+                    ) : (
+                      <table className="jobs-table mono">
+                        <thead>
+                          <tr>
+                            <th className="jobs-select-col">
+                              <input
+                                type="checkbox"
+                                checked={selectedFailureIds.size === snapshot.failures.length}
+                                onChange={toggleAllFailuresSelected}
+                                aria-label="Select all failed files"
+                              />
+                            </th>
+                            <th>File</th>
+                            <th>Stage</th>
+                            <th>Reason</th>
+                            <th>Attempts</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {snapshot.failures.map((failure) => (
+                            <tr key={failure.fileId}>
+                              <td className="jobs-select-col">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedFailureIds.has(failure.fileId)}
+                                  onChange={() => toggleFailureSelected(failure.fileId)}
+                                  aria-label={`Select ${failure.filename}`}
+                                />
+                              </td>
+                              <td className="jobs-filename" title={failure.filename}>
+                                {failure.filename}
+                              </td>
+                              <td>{failure.stage}</td>
+                              <td className="job-detail error">
+                                <span>{failure.reason}</span>
+                              </td>
+                              <td>{failure.attempts}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="job-retry label"
+                                  onClick={() => void handleRetryFile(failure.fileId)}
+                                  disabled={retryingFileIds.has(failure.fileId)}
+                                >
+                                  {retryingFileIds.has(failure.fileId) ? "Retrying…" : "Retry"}
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {!snapshot && snapshotLoading && <p className="jobs-hint mono">Loading indexing snapshot…</p>}
+
+              <button
+                type="button"
+                className="ghost-btn label jobs-history-toggle"
+                onClick={() => setHistoryExpanded((v) => !v)}
+              >
+                {historyExpanded ? "Hide job history" : "Show job history"}
               </button>
+
+              {historyExpanded && (
+                <div className="jobs-history">
+                  {jobsError && (
+                    <InlineError message={jobsError} onRetry={() => void refreshJobs()} retrying={jobsLoading} />
+                  )}
+                  <table className="jobs-table mono">
+                    <thead>
+                      <tr>
+                        <th>File</th>
+                        <th>Stage</th>
+                        <th>Status</th>
+                        <th>Attempts</th>
+                        <th>Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {jobs?.map((job) => (
+                        <tr key={job.id}>
+                          <td className="jobs-filename" title={job.filename}>
+                            {job.filename}
+                          </td>
+                          <td>{job.stage}</td>
+                          <td>
+                            <span className="job-status">
+                              <span className="job-status-dot" style={{ background: STATUS_COLOR[job.status] }} />
+                              {job.status}
+                            </span>
+                          </td>
+                          <td>{job.attempts}</td>
+                          <td className={`job-detail${job.status === "waiting" ? " waiting" : job.status === "error" ? " error" : ""}`}>
+                            <span>{job.status === "waiting" ? waitingMessage(job) : job.error ?? "—"}</span>
+                            {job.status === "error" && (
+                              <button
+                                type="button"
+                                className="job-retry label"
+                                onClick={() => void handleRetryFile(job.fileId)}
+                                disabled={retryingFileIds.has(job.fileId)}
+                              >
+                                {retryingFileIds.has(job.fileId) ? "Retrying…" : "Retry failed jobs"}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {jobs?.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="jobs-empty">
+                            Queue is empty.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                  <button className="ghost-btn label" onClick={() => void refreshJobs()} disabled={jobsLoading} style={{ marginTop: 14 }}>
+                    {jobsLoading ? "Refreshing…" : "Refresh"}
+                  </button>
+                </div>
+              )}
             </div>
           </section>
 
@@ -863,6 +1102,101 @@ export function JobsSettingsScreen({
         .jobs-empty {
           color: var(--ink-faint);
           padding: 16px 0;
+        }
+        .jobs-select-col {
+          width: 28px;
+        }
+        .jobs-select-col input {
+          accent-color: var(--accent);
+        }
+        .rollup-bar {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 1px;
+          background: var(--chrome-lo);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          margin-bottom: 18px;
+        }
+        .rollup-stat {
+          flex: 1;
+          min-width: 84px;
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          background: #fff;
+          padding: 10px 12px;
+        }
+        .rollup-value {
+          font-size: 18px;
+          font-weight: 700;
+          color: var(--ink);
+        }
+        .rollup-value-fail {
+          color: var(--status-error);
+        }
+        .rollup-label {
+          font-size: 9.5px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--ink-faint);
+        }
+        .jobs-subhead {
+          font-size: 10.5px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: var(--ink-dim);
+          margin: 0;
+        }
+        .active-block {
+          margin-bottom: 18px;
+        }
+        .active-file-list {
+          list-style: none;
+          margin: 8px 0 0;
+          padding: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .active-file-list li {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 11.5px;
+          color: var(--ink-dim);
+        }
+        .active-file-name {
+          flex: 1;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .active-file-stage {
+          color: var(--ink-faint);
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+        }
+        .failures-block {
+          margin-top: 4px;
+        }
+        .failures-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 10px;
+        }
+        .failures-actions {
+          display: flex;
+          gap: 8px;
+        }
+        .jobs-history-toggle {
+          margin-top: 20px;
+        }
+        .jobs-history {
+          margin-top: 14px;
         }
         .folder-list {
           display: flex;

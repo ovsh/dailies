@@ -4,6 +4,7 @@
  */
 import type {
   AnswerHit,
+  ChatScope,
   Episode,
   ChatMessageRecord,
   ChatSummary,
@@ -20,10 +21,21 @@ import type {
   Scene,
   SceneInput,
   SegmentInput,
+  StructuredAgentAnswer,
   TranscriptHit,
   TranscriptSegment,
   WordTiming,
 } from "../../shared/types";
+
+export interface SemanticSearchScope {
+  episodeId: number | null;
+}
+
+export interface PipelineFileFacts {
+  file: MediaFile;
+  latestJobsByStage: Map<JobStage, Job>;
+  discoveryError: string | null;
+}
 
 export interface DailiesDB {
   // files
@@ -42,6 +54,7 @@ export interface DailiesDB {
   listFiles(episodeId?: number): MediaFile[];
   setFileHasVideo(id: number, hasVideo: boolean | null): void;
   setDiscoveryFailed(id: number, failed: boolean): void;
+  setDiscoveryFailure(id: number, reason: string | null): void;
   /** Backfill legacy unreadable stubs. Returns the number of changed rows. */
   backfillDiscoveryFailures(): number;
   setFileProxy(id: number, proxyPath: string): void;
@@ -87,7 +100,12 @@ export interface DailiesDB {
   listUnembeddedSegments(fileId: number): Array<{ refId: number; text: string }>;
   listUnembeddedDocChunks(limit?: number): Array<{ refId: number; text: string }>;
   /** Brute-force cosine over stored vectors; relevant hits only, with absolute cosine scores. */
-  semanticSearch(kind: EmbeddingKind, query: Float32Array, limit?: number): Array<{ refId: number; score: number }>;
+  semanticSearch(
+    kind: EmbeddingKind,
+    query: Float32Array,
+    limit?: number,
+    scope?: SemanticSearchScope,
+  ): Array<{ refId: number; score: number }>;
   deleteAllEmbeddings(): void;
 
   // project metadata (stored in the existing key-value table)
@@ -115,15 +133,19 @@ export interface DailiesDB {
   listJobs(limit?: number): Job[];
   /** Complete uncapped history for one file, newest first. */
   listJobsForFile(fileId: number): Job[];
+  listPipelineFileFacts(scope?: SemanticSearchScope): PipelineFileFacts[];
 
   // chats
   createChat(title: string): ChatSummary;
+  createChat(title: string, scope: ChatScope): ChatSummary;
+  getChat(chatId: number): ChatSummary | null;
   listChats(): ChatSummary[];
+  listChats(scope: ChatScope): ChatSummary[];
   addChatMessage(
     chatId: number,
     role: "user" | "assistant",
     content: string,
-    hits?: AnswerHit[] | null,
+    answer?: AnswerHit[] | StructuredAgentAnswer | null,
   ): ChatMessageRecord;
   getChatMessages(chatId: number): ChatMessageRecord[];
 

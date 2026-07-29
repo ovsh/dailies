@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, mediaUrl } from "../api";
-import type { Episode, MediaFile, MediaRole, ProjectFolder } from "../../shared/types";
+import type {
+  Episode,
+  MediaFile,
+  MediaRole,
+  PipelineSnapshot,
+  ProjectFolder,
+} from "../../shared/types";
 import { ClipCard } from "../components/ClipCard";
 import { EpisodeBar } from "../components/EpisodeBar";
 import { Toast } from "../components/Toast";
@@ -8,14 +14,25 @@ import { InlineError } from "../components/InlineError";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { runIpc } from "../lib/async";
 
+/** One request to bring a specific card into view and focus, e.g. from Chat's "Open in library". */
+export interface LibraryFocusRequest {
+  fileId: number;
+  requestId: number;
+}
+
 interface LibraryScreenProps {
   onOpenClip: (fileId: number) => void;
+  focusRequest?: LibraryFocusRequest | null;
   episodeId: number | null;
   episodes: Episode[];
   folders: ProjectFolder[];
   onEpisodeChange: (id: number | null) => void;
   onCreateEpisode: (code: string) => Promise<void>;
   onRefresh: () => Promise<unknown>;
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
 type RoleFilter = "all" | MediaRole;
@@ -31,6 +48,7 @@ function formatScanTime(iso: string): string {
 
 export function LibraryScreen({
   onOpenClip,
+  focusRequest,
   episodeId,
   episodes,
   folders,
@@ -39,6 +57,7 @@ export function LibraryScreen({
   onRefresh,
 }: LibraryScreenProps) {
   const [files, setFiles] = useState<MediaFile[] | null>(null);
+  const [pipelineSnapshot, setPipelineSnapshot] = useState<PipelineSnapshot | null>(null);
   const [keyframes, setKeyframes] = useState<Record<number, string | null>>({});
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
   const [importing, setImporting] = useState(false);
@@ -50,14 +69,22 @@ export function LibraryScreen({
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
   const [retryingFileIds, setRetryingFileIds] = useState<Set<number>>(() => new Set());
   const [toast, setToast] = useState<string | null>(null);
+  const [focusedFileId, setFocusedFileId] = useState<number | null>(null);
+  const [focusNotice, setFocusNotice] = useState<string | null>(null);
   const keyframesRef = useRef<Record<number, string | null>>({});
   const detailSignaturesRef = useRef<Record<number, string>>({});
+  const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const handledFocusRequestRef = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     await runIpc(
       async () => {
-        const f = await api.listFiles(episodeId ?? undefined);
+        const [f, snapshot] = await Promise.all([
+          api.listFiles(episodeId ?? undefined),
+          api.getPipelineSnapshot({ episodeId }),
+        ]);
         setFiles(f);
+        setPipelineSnapshot(snapshot);
 
         // Detail calls are limited to clips whose indexing signature changed.
         // This keeps frequent job revisions cheap even in large libraries.
@@ -160,9 +187,37 @@ export function LibraryScreen({
   const isEmpty = files !== null && files.length === 0;
   const visibleFiles = files?.filter((f) => roleFilter === "all" || f.role === roleFilter) ?? null;
 
+  // A request from Chat's "Open in library" may arrive before the target file's
+  // role is visible under the current filter, or before the grid has rendered
+  // it at all — retry every render until the wrapper ref actually exists.
+  useEffect(() => {
+    if (!focusRequest || handledFocusRequestRef.current === focusRequest.requestId || !files) return;
+    const match = files.find((f) => f.id === focusRequest.fileId);
+    if (!match) {
+      handledFocusRequestRef.current = focusRequest.requestId;
+      setFocusNotice("Clip is no longer in the library");
+      return;
+    }
+    setFocusNotice(null);
+    if (roleFilter !== "all" && match.role !== roleFilter) {
+      setRoleFilter("all");
+      return;
+    }
+    const wrapper = cardRefs.current.get(focusRequest.fileId);
+    if (!wrapper) return;
+    handledFocusRequestRef.current = focusRequest.requestId;
+    setFocusedFileId(focusRequest.fileId);
+    wrapper.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    wrapper.querySelector<HTMLButtonElement>(".clip-card")?.focus();
+  }, [focusRequest, files, roleFilter]);
+
   const scopedFolders = episodeId === null ? folders : folders.filter((f) => f.episodeId === episodeId);
   const scanTimes = scopedFolders.map((f) => f.lastScannedAt).filter((t): t is string => t !== null);
   const latestScan = scanTimes.length > 0 ? scanTimes.sort().at(-1)! : null;
+  const pendingFileIds = new Set(pipelineSnapshot?.pendingFileIds ?? []);
+  const failedFileIds = new Set(
+    pipelineSnapshot?.failures.map((failure) => failure.fileId) ?? [],
+  );
 
   return (
     <div className="library-screen">
@@ -235,6 +290,7 @@ export function LibraryScreen({
       <div className="library-scroll">
         {!files && loading && <p className="library-loading mono">Loading…</p>}
         {loadError && <InlineError message={loadError} onRetry={() => void load()} retrying={loading} />}
+        {focusNotice && <p className="library-focus-notice mono">{focusNotice}</p>}
 
         {isEmpty && (
           <div className="library-empty">
@@ -257,14 +313,27 @@ export function LibraryScreen({
         {visibleFiles && visibleFiles.length > 0 && (
           <div className="library-grid">
             {visibleFiles.map((f) => (
-              <ClipCard
+              <div
                 key={f.id}
-                file={f}
-                keyframe={mediaUrl(keyframes[f.id]) ?? null}
-                onOpen={() => onOpenClip(f.id)}
-                onRetry={() => void handleRetryFile(f.id)}
-                retrying={retryingFileIds.has(f.id)}
-              />
+                ref={(el) => {
+                  if (el) cardRefs.current.set(f.id, el);
+                  else cardRefs.current.delete(f.id);
+                }}
+                className={`clip-focus-wrap${focusedFileId === f.id ? " selected" : ""}`}
+              >
+                <ClipCard
+                  file={f}
+                  keyframe={mediaUrl(keyframes[f.id]) ?? null}
+                  onOpen={() => {
+                    setFocusedFileId(f.id);
+                    onOpenClip(f.id);
+                  }}
+                  onRetry={() => void handleRetryFile(f.id)}
+                  retrying={retryingFileIds.has(f.id)}
+                  finishing={pendingFileIds.has(f.id)}
+                  pipelineFailed={failedFileIds.has(f.id)}
+                />
+              </div>
             ))}
           </div>
         )}
@@ -394,6 +463,15 @@ export function LibraryScreen({
           color: var(--ink-dimmer);
           font-size: 12px;
         }
+        .library-focus-notice {
+          display: inline-block;
+          margin: 0 0 16px;
+          padding: 6px 8px;
+          background: var(--paper-alt);
+          border: 1px solid var(--status-warn);
+          color: var(--status-warn);
+          font-size: 10.5px;
+        }
         .library-empty {
           padding-top: 16vh;
           text-align: center;
@@ -419,6 +497,19 @@ export function LibraryScreen({
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
           gap: 18px;
+        }
+        .clip-focus-wrap.selected .clip-card {
+          background: var(--select-bg);
+          border-color: var(--select-bg);
+          box-shadow: var(--shadow-card);
+        }
+        .clip-focus-wrap.selected .clip-filename,
+        .clip-focus-wrap.selected .clip-dur {
+          color: var(--select-ink);
+        }
+        .clip-focus-wrap.selected .clip-glyphs {
+          color: var(--select-ink);
+          opacity: 0.85;
         }
       `}</style>
     </div>

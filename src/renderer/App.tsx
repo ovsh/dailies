@@ -1,21 +1,40 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
-import type { AppSettings, ProjectState } from "../shared/types";
+import type { AppSettings, ProjectActivity, ProjectState } from "../shared/types";
 import { Rail } from "./components/Rail";
 import { Welcome } from "./components/Welcome";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ChatScreen } from "./screens/ChatScreen";
-import { LibraryScreen } from "./screens/LibraryScreen";
+import { LibraryScreen, type LibraryFocusRequest } from "./screens/LibraryScreen";
 import { ClipScreen } from "./screens/ClipScreen";
 import { JobsSettingsScreen } from "./screens/JobsSettingsScreen";
 import { ProjectScreen } from "./screens/ProjectScreen";
 import { useUpdateState } from "./hooks/useUpdateState";
+import { useLiveRefresh } from "./hooks/useLiveRefresh";
 
 export type Screen = "chat" | "library" | "jobs" | "clip";
 
 interface ClipTarget {
   fileId: number;
   seekS: number;
+}
+
+/** Summed across every project the main process is still indexing in the background. */
+interface GlobalActivity {
+  activeProjects: number;
+  queuedFiles: number;
+  processingFiles: number;
+}
+
+function summarizeActivity(activities: ProjectActivity[]): GlobalActivity {
+  return activities.reduce<GlobalActivity>(
+    (acc, a) => ({
+      activeProjects: acc.activeProjects + (a.counts.queued + a.counts.processing > 0 ? 1 : 0),
+      queuedFiles: acc.queuedFiles + a.counts.queued,
+      processingFiles: acc.processingFiles + a.counts.processing,
+    }),
+    { activeProjects: 0, queuedFiles: 0, processingFiles: 0 },
+  );
 }
 
 export function App() {
@@ -29,6 +48,8 @@ export function App() {
   const [projectLoaded, setProjectLoaded] = useState(false);
   const [episodeId, setEpisodeId] = useState<number | null>(null);
   const [showProjects, setShowProjects] = useState(false);
+  const [libraryFocusRequest, setLibraryFocusRequest] = useState<LibraryFocusRequest | null>(null);
+  const [activities, setActivities] = useState<ProjectActivity[]>([]);
 
   const updateState = useUpdateState();
   const [updateDismissed, setUpdateDismissed] = useState(false);
@@ -48,9 +69,31 @@ export function App() {
     });
   }, []);
 
+  // Background-indexing signal: independent of the open screen or episode, and
+  // of which project is selected — retained projects keep indexing while
+  // another is active, and that work is safe to resume after a quit.
+  const refreshActivities = useCallback(async () => {
+    try {
+      setActivities(await api.getProjectActivities());
+    } catch {
+      // Chrome-level indicator only; a failed poll just keeps the last value.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshActivities();
+  }, [refreshActivities, projectState]);
+
+  useLiveRefresh(refreshActivities);
+
+  // Runs once on mount. A restored project on launch gets the same "select
+  // the first real episode" treatment as an explicit open (handleProjectOpened)
+  // — All Episodes is a visible choice, never a silent initial value.
   useEffect(() => {
     refreshSettings();
-    void refreshProjectState();
+    void refreshProjectState().then((state) => {
+      if (state) setEpisodeId(state.episodes[0]?.id ?? null);
+    });
   }, [refreshSettings, refreshProjectState]);
 
   // Subscribe to project metadata updates exactly once. File/job revisions
@@ -75,14 +118,23 @@ export function App() {
     setScreen("clip");
   }
 
+  // Chat's inline preview never navigates; "Open in library" is the one hop
+  // it offers, and it lands on a focused card rather than full ClipScreen.
+  function openInLibrary(fileId: number) {
+    setLibraryFocusRequest({ fileId, requestId: Date.now() });
+    setScreen("library");
+  }
+
   function navigate(next: Screen) {
     setScreen(next);
   }
 
+  const globalActivity = summarizeActivity(activities);
+
   function handleProjectOpened(state: ProjectState) {
     setProjectState(state);
     setProjectLoaded(true);
-    setEpisodeId(null);
+    setEpisodeId(state.episodes[0]?.id ?? null);
     setShowProjects(false);
     setScreen("chat");
   }
@@ -142,10 +194,19 @@ export function App() {
             onDismiss={dismissUpdate}
           />
         )}
+        {globalActivity.queuedFiles + globalActivity.processingFiles > 0 && (
+          <div className="global-activity" role="status">
+            <span className="global-activity-dot" aria-hidden="true" />
+            Indexing {globalActivity.processingFiles + globalActivity.queuedFiles}{" "}
+            {globalActivity.processingFiles + globalActivity.queuedFiles === 1 ? "file" : "files"}
+            {globalActivity.activeProjects > 1 ? ` across ${globalActivity.activeProjects} projects` : ""} — safe to
+            quit, work resumes
+          </div>
+        )}
         <div className="app-screen-area">
           {screen === "chat" && (
             <ChatScreen
-              onOpenClip={(fileId, seekS) => openClip(fileId, seekS, "chat")}
+              onOpenInLibrary={openInLibrary}
               apiKeySet={settings ? settings.apiKeyStatus === "connected" : null}
               onOpenSettings={() => setScreen("jobs")}
               episodeId={episodeId}
@@ -160,6 +221,7 @@ export function App() {
           {screen === "library" && (
             <LibraryScreen
               onOpenClip={(fileId) => openClip(fileId, 0, "library")}
+              focusRequest={libraryFocusRequest}
               episodeId={episodeId}
               episodes={projectState.episodes}
               folders={projectState.folders}
@@ -216,6 +278,35 @@ export function App() {
           flex: 1;
           min-height: 0;
           position: relative;
+        }
+        .global-activity {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex: none;
+          padding: 6px 20px;
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--ink-dim);
+          background: var(--ground-card);
+          border-bottom: 1px solid var(--hairline);
+        }
+        .global-activity-dot {
+          flex: none;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--accent);
+          animation: global-activity-pulse 1.4s steps(2, end) infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .global-activity-dot {
+            animation: none;
+          }
+        }
+        @keyframes global-activity-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.35; }
         }
       `}</style>
     </div>

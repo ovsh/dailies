@@ -5,7 +5,7 @@
  * model. No Electron, no UI — this is the engine under test.
  *
  * Usage:
- *   npx tsx scripts/e2e-pipeline.mts "<folder>" <model> <modelsDir> [maxClips]
+ *   npx tsx scripts/e2e-pipeline.mts "<folder>" <model> <modelsDir> [maxClips] [--db-out <path>]
  */
 import path from "node:path";
 import fs from "node:fs";
@@ -18,7 +18,27 @@ import type { ProjectFolder } from "../src/shared/types";
 const folder = process.argv[2] ?? "";
 const model = process.argv[3] ?? "tiny";
 const modelsDir = process.argv[4] ?? "/tmp/dailies-e2e-models";
-const maxClips = process.argv[5] ? Number(process.argv[5]) : Infinity;
+let maxClips = Infinity;
+let dbOut: string | null = null;
+const extraArgs = process.argv.slice(5);
+for (let index = 0; index < extraArgs.length; index += 1) {
+  const arg = extraArgs[index];
+  if (arg === "--db-out") {
+    const value = extraArgs[index + 1];
+    if (!value) throw new Error("--db-out requires a path");
+    dbOut = path.resolve(value);
+    index += 1;
+    continue;
+  }
+  if (arg === undefined || maxClips !== Infinity) {
+    throw new Error(`unexpected argument: ${arg ?? ""}`);
+  }
+  const parsed = Number(arg);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`invalid maxClips: ${arg}`);
+  }
+  maxClips = parsed;
+}
 const fixtureMode = path.basename(path.resolve(folder)) === "landscaping test" && maxClips === Infinity;
 
 if (!folder || !fs.existsSync(folder)) {
@@ -29,7 +49,12 @@ if (!folder || !fs.existsSync(folder)) {
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "dailies-e2e-"));
 setGlobalModelsDir(modelsDir);
 
-const db = openDatabase(path.join(workDir, "e2e.db"));
+const dbPath = dbOut ?? path.join(workDir, "e2e.db");
+if (dbOut) {
+  if (fs.existsSync(dbOut)) throw new Error(`--db-out already exists: ${dbOut}`);
+  fs.mkdirSync(path.dirname(dbOut), { recursive: true });
+}
+const db = openDatabase(dbPath);
 db.resetRunningJobs();
 
 const pipeline = createPipeline({
@@ -67,6 +92,7 @@ function statusLine(): { line: string; done: boolean; anyRunning: boolean } {
 async function main() {
   console.log(`[e2e] folder: ${folder}`);
   console.log(`[e2e] model: ${model}  workDir: ${workDir}`);
+  console.log(`[e2e] database: ${dbPath}`);
 
   pipeline.watchFolder(projFolder);
   const scanStart = Date.now();

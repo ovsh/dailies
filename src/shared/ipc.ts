@@ -7,19 +7,23 @@
  */
 import type {
   AppSettings,
+  ChatScope,
   ChatEvent,
   ChatMessageRecord,
   ChatSummary,
   Episode,
   ExportItem,
   ExportKind,
-  ExportResult,
+  ExportWriteOutcome,
   FileDetail,
   IndexUpdate,
   Job,
   MediaFile,
   ModelDownloadProgress,
   MediaRole,
+  LocatorExportOutcome,
+  PipelineSnapshot,
+  ProjectActivity,
   Project,
   ProjectFolder,
   ProjectState,
@@ -68,7 +72,9 @@ export interface DailiesAPI {
 
   // chat (current project; episodeId scopes the search, null = whole project)
   listChats(): Promise<ChatSummary[]>;
+  listChats(scope: ChatScope): Promise<ChatSummary[]>;
   getChat(chatId: number): Promise<ChatMessageRecord[]>;
+  getChat(scope: ChatScope, chatId: number): Promise<ChatMessageRecord[]>;
   /** Starts a chat turn. Progress and the answer arrive via onChatEvent. */
   sendChatMessage(
     chatId: number | null,
@@ -79,7 +85,15 @@ export interface DailiesAPI {
   onChatEvent(cb: (ev: ChatEvent) => void): () => void;
 
   // export (current project)
-  exportHits(kind: ExportKind, items: ExportItem[]): Promise<ExportResult>;
+  exportHits(kind: ExportKind, items: ExportItem[]): Promise<ExportWriteOutcome>;
+  getPipelineSnapshot(scope: ChatScope): Promise<PipelineSnapshot>;
+  getProjectActivities(): Promise<ProjectActivity[]>;
+  retryPipelineFailures(fileIds: number[]): Promise<PipelineSnapshot>;
+  exportPipelineFailures(scope: ChatScope): Promise<
+    | { kind: "written"; path: string; count: number }
+    | { kind: "blocked"; reason: "no-failures" }
+  >;
+  exportLocators(scope: ChatScope, items: ExportItem[]): Promise<LocatorExportOutcome>;
   revealInFinder(path: string): Promise<void>;
   /** Opens an https:// URL in the system browser (e.g. the OpenRouter key page). */
   openExternal(url: string): Promise<void>;
@@ -128,6 +142,11 @@ export const IPC = {
   sendChatMessage: "dailies:sendChatMessage",
   chatEvent: "dailies:chatEvent",
   exportHits: "dailies:exportHits",
+  getPipelineSnapshot: "dailies:getPipelineSnapshot",
+  getProjectActivities: "dailies:getProjectActivities",
+  retryPipelineFailures: "dailies:retryPipelineFailures",
+  exportPipelineFailures: "dailies:exportPipelineFailures",
+  exportLocators: "dailies:exportLocators",
   revealInFinder: "dailies:revealInFinder",
   openExternal: "dailies:openExternal",
   projectUpdate: "dailies:projectUpdate",

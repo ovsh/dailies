@@ -35,14 +35,122 @@ const STOPWORDS = new Set([
   "from",
 ]);
 
-export function expandTerms(query: string): string[] {
-  const tokens = query
+const SEARCH_NOISE = new Set([
+  "about",
+  "anything",
+  "best",
+  "can",
+  "clip",
+  "clips",
+  "content",
+  "cool",
+  "could",
+  "did",
+  "does",
+  "everyone",
+  "find",
+  "footage",
+  "generic",
+  "good",
+  "great",
+  "guys",
+  "he",
+  "hello",
+  "her",
+  "here",
+  "hers",
+  "him",
+  "his",
+  "how",
+  "it",
+  "its",
+  "just",
+  "like",
+  "me",
+  "moment",
+  "moments",
+  "maybe",
+  "nice",
+  "okay",
+  "person",
+  "please",
+  "random",
+  "really",
+  "scene",
+  "scenes",
+  "she",
+  "show",
+  "should",
+  "something",
+  "somebody",
+  "someone",
+  "stuff",
+  "thanks",
+  "tell",
+  "that",
+  "their",
+  "theirs",
+  "them",
+  "there",
+  "these",
+  "they",
+  "thing",
+  "things",
+  "this",
+  "those",
+  "us",
+  "video",
+  "videos",
+  "we",
+  "well",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "why",
+  "would",
+  "use",
+  "you",
+  "your",
+  "yours",
+]);
+
+export type SearchDisposition = "search" | "clarify" | "message";
+
+export interface SearchPlan {
+  semanticQuery: string;
+  concreteTerms: string[];
+  disposition: SearchDisposition;
+}
+
+function searchableTokens(value: string): string[] {
+  return value
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 0 && !STOPWORDS.has(t));
+    .filter((token) =>
+      token.length >= 3 &&
+      !STOPWORDS.has(token) &&
+      !SEARCH_NOISE.has(token)
+    );
+}
+
+export function expandTerms(query: string): string[] {
+  const trimmed = query.trim();
+  const tokens = searchableTokens(trimmed);
+  if (tokens.length === 0) return [];
   const terms = [...new Set(tokens)];
-  terms.push(query);
+  terms.push(trimmed);
   return terms;
+}
+
+export function isSearchablePlan(plan: SearchPlan): boolean {
+  return (
+    plan.disposition === "search" &&
+    [plan.semanticQuery, ...plan.concreteTerms].some(
+      (value) => searchableTokens(value).length > 0,
+    )
+  );
 }
 
 const HYBRID_LIMIT = 40;
@@ -77,9 +185,11 @@ function fuseRanked<T>(lists: T[][], keyOf: (item: T) => number | string, limit:
   const ranked = [...rrfScore.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
   const maxScore = ranked.length > 0 ? ranked[0][1] : 1;
 
-  return ranked.map(([key, score]) => {
-    const item = itemByKey.get(key) as T;
-    return { ...item, score: maxScore > 0 ? score / maxScore : 0 };
+  return ranked.flatMap(([key, score]) => {
+    const item = itemByKey.get(key);
+    return item === undefined
+      ? []
+      : [{ ...item, score: maxScore > 0 ? score / maxScore : 0 }];
   });
 }
 
@@ -90,10 +200,11 @@ async function semanticHydrate<T>(
   query: string,
   hydrate: (refId: number) => T | null,
   limit: number,
+  episodeId: number | null,
 ): Promise<T[]> {
   const [vector] = await embedder.embed([query]);
   if (!vector) return [];
-  const semanticHits = db.semanticSearch(kind, vector, limit);
+  const semanticHits = db.semanticSearch(kind, vector, limit, { episodeId });
   const hydrated: T[] = [];
   for (const { refId } of semanticHits) {
     const hit = hydrate(refId);
@@ -104,12 +215,16 @@ async function semanticHydrate<T>(
 
 export async function searchTranscriptsTool(
   db: DailiesDB,
-  query: string,
-  extraTerms: string[],
+  plan: SearchPlan,
   embedder: TextEmbedder | null,
   episodeId: number | null,
 ): Promise<TranscriptToolHit[]> {
-  const ftsHits = db.searchTranscripts([...expandTerms(query), ...extraTerms], undefined, episodeId ?? undefined);
+  if (!isSearchablePlan(plan)) return [];
+  const terms = [
+    ...expandTerms(plan.semanticQuery),
+    ...plan.concreteTerms.flatMap(expandTerms),
+  ];
+  const ftsHits = db.searchTranscripts(terms, undefined, episodeId ?? undefined);
   let hits = ftsHits;
 
   if (embedder) {
@@ -118,13 +233,12 @@ export async function searchTranscriptsTool(
         db,
         embedder,
         "segment",
-        query,
+        plan.semanticQuery,
         (refId) => db.getTranscriptHit(refId),
         HYBRID_LIMIT,
+        episodeId,
       );
-      const scopedSemanticHits =
-        episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
-      hits = fuseRanked([ftsHits, scopedSemanticHits], (h) => h.segmentId, HYBRID_LIMIT);
+      hits = fuseRanked([ftsHits, semanticHits], (h) => h.segmentId, HYBRID_LIMIT);
     } catch {
       hits = ftsHits;
     }
@@ -140,7 +254,17 @@ export async function searchNotesTool(
   embedder: TextEmbedder | null,
   episodeId: number | null,
 ): Promise<DocumentHit[]> {
-  const ftsHits = db.searchDocuments([...expandTerms(query), ...extraTerms], undefined, episodeId ?? undefined);
+  const plan = {
+    semanticQuery: query,
+    concreteTerms: extraTerms,
+    disposition: "search",
+  } satisfies SearchPlan;
+  if (!isSearchablePlan(plan)) return [];
+  const terms = [
+    ...expandTerms(query),
+    ...extraTerms.flatMap(expandTerms),
+  ];
+  const ftsHits = db.searchDocuments(terms, undefined, episodeId ?? undefined);
   if (!embedder) return ftsHits;
 
   try {
@@ -151,10 +275,9 @@ export async function searchNotesTool(
       query,
       (refId) => db.getDocChunk(refId),
       HYBRID_LIMIT,
+      episodeId,
     );
-    const scopedSemanticHits =
-      episodeId === null ? semanticHits : semanticHits.filter((h) => h.episodeId === episodeId);
-    return fuseRanked([ftsHits, scopedSemanticHits], (h) => h.chunkId, HYBRID_LIMIT);
+    return fuseRanked([ftsHits, semanticHits], (h) => h.chunkId, HYBRID_LIMIT);
   } catch {
     return ftsHits;
   }
@@ -219,9 +342,16 @@ export function getTranscriptWindowTool(
   return hits;
 }
 
-export function getFileInfoTool(db: DailiesDB, fileId: number): object {
+export function getFileInfoTool(
+  db: DailiesDB,
+  fileId: number,
+  episodeId: number | null,
+): object {
   const file = db.getFile(fileId);
   if (!file) return { error: `file ${fileId} not found` };
+  if (episodeId !== null && file.episodeId !== episodeId) {
+    return { error: `file ${fileId} is outside the selected episode` };
+  }
   return {
     id: file.id,
     filename: file.filename,

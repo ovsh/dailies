@@ -9,6 +9,8 @@ interface ClipCardProps {
   onOpen: (file: MediaFile) => void;
   onRetry: (file: MediaFile) => void;
   retrying: boolean;
+  finishing: boolean;
+  pipelineFailed: boolean;
 }
 
 function formatDuration(durationS: number): string {
@@ -29,8 +31,24 @@ function TranscriptGlyph({ active }: { active: boolean }) {
   );
 }
 
-export function ClipCard({ file, keyframe, onOpen, onRetry, retrying }: ClipCardProps) {
+export function ClipCard({
+  file,
+  keyframe,
+  onOpen,
+  onRetry,
+  retrying,
+  finishing,
+  pipelineFailed,
+}: ClipCardProps) {
   const audioOnly = isAudioOnly(file);
+  const failed = file.status === "error" || pipelineFailed;
+  const status = failed
+    ? "error"
+    : file.status !== "ready"
+      ? file.status
+      : finishing
+        ? "finishing"
+        : null;
 
   return (
     <div className="clip-card-shell">
@@ -46,7 +64,7 @@ export function ClipCard({ file, keyframe, onOpen, onRetry, retrying }: ClipCard
           ) : (
             <div className="clip-thumb-empty" />
           )}
-          {file.status !== "ready" && <span className="clip-status label">{file.status}</span>}
+          {status && <span className="clip-status label">{status}</span>}
           {file.role === "final" && <span className="clip-final-tag label">FINAL</span>}
         </div>
         <div className="clip-meta">
@@ -60,7 +78,7 @@ export function ClipCard({ file, keyframe, onOpen, onRetry, retrying }: ClipCard
           </div>
         </div>
       </button>
-      {file.status === "error" && (
+      {failed && (
         <button
           type="button"
           className="clip-retry label"

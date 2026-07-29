@@ -6,6 +6,129 @@ import { openDatabase } from "../src/main/db/database";
 import { parseTc } from "../src/shared/timecode";
 
 describe("db end-to-end smoke", () => {
+  it("keeps chat bindings exact and scopes semantic candidates before limiting", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-scope-"));
+    const db = openDatabase(path.join(dir, "scope.db"));
+    const input = {
+      path: "/footage/base.mov",
+      filename: "base.mov",
+      durationS: 10,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "base",
+    };
+    const legacy = db.createChat("legacy");
+    const firstEpisode = db.createEpisode("201");
+    const secondEpisode = db.createEpisode("202");
+    const firstChat = db.createChat("first", { episodeId: firstEpisode.id });
+    const secondChat = db.createChat("second", { episodeId: secondEpisode.id });
+
+    expect(legacy.episodeId).toBeNull();
+    expect(db.getChat(firstChat.id)?.episodeId).toBe(firstEpisode.id);
+    expect(db.listChats({ episodeId: null }).map((chat) => chat.id)).toEqual([legacy.id]);
+    expect(db.listChats({ episodeId: firstEpisode.id }).map((chat) => chat.id)).toEqual([firstChat.id]);
+    expect(db.listChats({ episodeId: secondEpisode.id }).map((chat) => chat.id)).toEqual([secondChat.id]);
+
+    const scopedFile = db.upsertFile({
+      ...input,
+      path: "/footage/scoped.mov",
+      filename: "scoped.mov",
+      fileHash: "scoped",
+      episodeId: firstEpisode.id,
+    });
+    db.replaceTranscript(scopedFile.id, [{
+      startS: 0,
+      endS: 1,
+      text: "scoped target",
+      avgConf: 1,
+      words: [],
+    }]);
+    const scopedSegment = db.listSegments(scopedFile.id)[0];
+    if (!scopedSegment) throw new Error("Expected scoped transcript segment");
+    const scopedVector = new Float32Array(768).fill(0);
+    scopedVector[0] = 0.8;
+    scopedVector[1] = 0.6;
+    db.upsertEmbedding("segment", scopedSegment.id, scopedVector);
+
+    for (let index = 0; index < 41; index += 1) {
+      const file = db.upsertFile({
+        ...input,
+        path: `/footage/outside-${index}.mov`,
+        filename: `outside-${index}.mov`,
+        fileHash: `outside-${index}`,
+        episodeId: secondEpisode.id,
+      });
+      db.replaceTranscript(file.id, [{
+        startS: 0,
+        endS: 1,
+        text: `outside ${index}`,
+        avgConf: 1,
+        words: [],
+      }]);
+      const segment = db.listSegments(file.id)[0];
+      if (!segment) throw new Error("Expected out-of-scope transcript segment");
+      const vector = new Float32Array(768).fill(0);
+      vector[0] = 1;
+      db.upsertEmbedding("segment", segment.id, vector);
+    }
+
+    const query = new Float32Array(768).fill(0);
+    query[0] = 1;
+    const semanticHits = db.semanticSearch("segment", query, 40, { episodeId: firstEpisode.id });
+    expect(semanticHits).toHaveLength(1);
+    expect(semanticHits[0]?.refId).toBe(scopedSegment.id);
+    expect(semanticHits[0]?.score).toBeCloseTo(0.8, 5);
+    db.close();
+  });
+
+  it("returns complete pipeline facts beyond the job history limit", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-facts-"));
+    const db = openDatabase(path.join(dir, "facts.db"));
+    const input = {
+      path: "/footage/active.mov",
+      filename: "active.mov",
+      durationS: 10,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "active",
+    };
+    const activeFile = db.upsertFile(input);
+    db.enqueueJob(activeFile.id, "probe");
+    const activeJob = db.claimNextJob();
+    expect(activeJob?.status).toBe("running");
+
+    for (let index = 0; index < 101; index += 1) {
+      const file = db.upsertFile({
+        ...input,
+        path: `/footage/history-${index}.mov`,
+        filename: `history-${index}.mov`,
+        fileHash: `history-${index}`,
+      });
+      db.enqueueJob(file.id, "embed");
+    }
+
+    expect(db.listJobs().some((job) => job.id === activeJob?.id)).toBe(false);
+    const activeFacts = db.listPipelineFileFacts().find((facts) => facts.file.id === activeFile.id);
+    expect(activeFacts?.latestJobsByStage.get("probe")?.status).toBe("running");
+
+    const unreadableFile = db.upsertFile({
+      ...input,
+      path: "/footage/unreadable.mov",
+      filename: "unreadable.mov",
+      fileHash: "unreadable",
+    });
+    db.setDiscoveryFailure(unreadableFile.id, "Permission denied");
+    expect(db.listPipelineFileFacts().find((facts) => facts.file.id === unreadableFile.id)?.discoveryError)
+      .toBe("Permission denied");
+    db.close();
+  });
+
   it("uses shared drop-frame math for search hits at minute boundaries", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-df-"));
     const db = openDatabase(path.join(dir, "drop-frame.db"));
@@ -231,6 +354,23 @@ describe("db end-to-end smoke", () => {
     const msgs = db.getChatMessages(chat.id);
     expect(msgs).toHaveLength(2);
     expect(msgs[1].hits?.[0].kind).toBe("visual");
+
+    const emptyAnswer = {
+      kind: "empty",
+      coverage: {
+        totalFiles: 4,
+        searchableFiles: 2,
+        pendingFiles: 1,
+        failedFiles: 1,
+        producerNoteCount: 3,
+      },
+    } as const;
+    db.addChatMessage(chat.id, "assistant", "", emptyAnswer);
+    expect(db.getChatMessages(chat.id).at(-1)).toMatchObject({
+      content: "",
+      hits: null,
+      answer: emptyAnswer,
+    });
 
     // roles + hit hydration
     expect(spoken[0].role).toBe("raw");

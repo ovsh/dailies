@@ -1,13 +1,17 @@
 /** One-loop chat agent with direct, bounded retrieval tools. */
 import type {
-  AgentAnswer,
   ChatMessageRecord,
   Confidence,
+  GroundedAnswerHit,
+  SearchCoverage,
+  StructuredAgentAnswer,
   TextEmbedder,
   TranscriptHit,
 } from "../../shared/types";
+import { deriveSourceTimecode } from "../../shared/timecode";
 import { CHAT_MODEL } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
+import { computePipelineSnapshot } from "../pipeline/status";
 import { createOpenRouterClient } from "./openrouter-client";
 import type { ChatMessage, OpenRouterClient, ToolCall, ToolDef } from "./openrouter-client";
 import {
@@ -16,7 +20,7 @@ import {
   searchNotesTool,
   searchTranscriptsTool,
 } from "./tools";
-import type { TranscriptWindowCenter } from "./tools";
+import type { SearchDisposition, SearchPlan, TranscriptWindowCenter } from "./tools";
 
 const MAX_ITERS = 16;
 
@@ -32,37 +36,37 @@ export interface ChatTurnOptions {
   client?: OpenRouterClient;
 }
 
-const SUPERVISOR_SYSTEM = `You are a conversational assistant for a professional documentary editor cutting in Avid. You help them find and understand footage in their library. You are a chat partner first and a researcher second — you talk with the editor, and you go dig through the footage ONLY when they actually ask you to find or analyze something.
+const SUPERVISOR_SYSTEM = `You are a conversational assistant for a professional documentary editor cutting in Avid. You help them find and understand footage in their library. You are a chat partner first and a researcher second.
 
-You are given a LIBRARY OVERVIEW at the start of every turn: the clips in the library, their durations, and a short transcript excerpt from each. Read it first — it tells you what footage exists and often lets you answer with no searching at all.
+You receive ordered chat history, a scoped LIBRARY OVERVIEW, and the editor's current question. Use all three to resolve references, but make footage claims only from transcript segment hits returned during this turn.
 
-## FIRST, decide what this turn is. Do not touch a single tool until you have.
+## Search rewrite policy
 
-**1. Conversational — a greeting, thanks, acknowledgement, or "are you there".** ("hi", "hello?", "hey", "thanks", "you there?", "cool") → Just reply, warmly and briefly. Orient them: say hi, mention what's in the library from the OVERVIEW ("I've got your 6 landscaping clips here"), and ask what they want to find. Call final_answer immediately with that short prose and an empty hits array. **Call NO other tools. Do not search. Do not invent things to look for.**
+Classify the turn before using a tool.
 
-**2. Vague or underspecified — they want something but haven't said what.** ("find me something good", "what should I use", "got anything interesting") → Don't guess and don't search. Ask ONE clarifying question — what subject, moment, or topic are they after? Call final_answer with that question as prose, empty hits, no other tools.
+- For an explicit footage request, keep the named subject in semantic_query and add close synonyms or alternate phrases as concrete_terms.
+- For an implicit location request, resolve people, places, and roles from the ordered chat history and scoped library overview. Search with the resolved subject plus concrete location phrases.
+- For an implicit person request, resolve the person's name or role from the ordered chat history and scoped library overview before searching.
+- If you cannot resolve at least one concrete person, place, role, object, action, or topic, do not search. Ask one clarification with a message answer.
+- For a greeting, thanks, acknowledgement, or presence check, do not search. Return a short message answer.
 
-**3. Overview / summary — they want to know what the footage IS.** ("what is this about", "summarize the shoot", "what happens", "who's in it") → Answer from the OVERVIEW; if you need more, use get_file_info and one or two bounded get_transcript_window calls on the most representative clips. Mostly prose; add a few illustrative hits only if specific moments matter.
+Every search_transcripts call is the rewrite result. Set disposition to "search". semantic_query preserves the editor's intent. concrete_terms contains the resolved concrete facets and useful close phrases. Never send blank, pronoun-only, interrogative-only, or generic plans such as "footage", "video", "clip", "thing", or "something".
 
-**4. Specific find/analysis — they named a concrete subject, topic, person, or moment.** ("where do they mention drainage", "when does she talk about the retention pond", "find the interview about the excavator") → NOW research. Use search_transcripts for what is spoken, get_transcript_window for surrounding context, and search_notes for relevant producer documents. Then final_answer with timecoded transcript hits.
+One precise search plan is better than several speculative searches. Use get_transcript_window only for bounded context around a real file and point. Producer notes can suggest another transcript search, but a note is never support for a footage claim.
 
-## Iron rules for searching (this is where you have been going wrong)
+## Grounded answer policy
 
-- Search ONLY for concrete subjects the editor EXPLICITLY named in THIS turn. If they didn't name a subject, you have nothing to search for — you are in case 1, 2, or 3, not case 4.
-- Expand the editor's concrete subject with alternate phrasings, synonyms, slang, and closely related terms in extra_terms. Do not invent a new subject. Do not fire off searches for words like "editor", "landscaper", "man", "lawn", "truck", a filename, or a date just because they might be in the footage.
-- NEVER search stopwords or generic words ("the", "hello", "footage", "video", "clip", "thing").
-- One precise query for the thing they asked about beats five speculative ones. Usually one or two tool calls is the whole job.
+Always finish by calling final_answer exactly once with one disposition.
 
-## Distinctions to keep straight
+- "message" is only for conversation or one clarification. Put the text in message and make no footage claim.
+- "empty" means no supported footage hit was found.
+- "results" requires one or more segment references returned by transcript search or a transcript window during this turn.
 
-- Search is grounded in spoken transcripts and ingested producer documents. Do not claim that an unspoken subject is visible on screen.
-- Hits carry a role: "raw" = camera media (source timecode); "final" = an exported cut where the timecode is the TIMELINE TC in the finished episode — describe those as "in the final at {tc}". Use search_notes to connect producer notes/scripts to footage ONLY when the OVERVIEW says documents were ingested and the editor's request relates to them.
-- Transcript windows are fixed, bounded reads around elapsed seconds or a source timecode. They return segment IDs and speaker labels. Use those IDs as candidates when a window contains the strongest answer.
+For results, reference only segment candidate IDs that appeared in transcript tool results during this turn. A hit contains only source "segment", its candidate ID, and confidence. Never write a clip name, quote, timecode, description, or other footage fact. The application reloads those facts from the database.
 
-## Every turn ends the same way
+An optional summary has text and source_segment_ids. Include it only when every factual statement in the summary is supported by every listed segment, and every listed segment is also a selected rendered hit. Otherwise omit the summary. Do not put factual prose anywhere else.
 
-Always finish by calling final_answer exactly once. For a conversation or a clarifying question, that's a short friendly line with empty hits. For research, it's clear prose plus references to the strongest candidates returned by search_transcripts or get_transcript_window. A hit reference is only the source type "segment", its candidate ID, and confidence. Never write filenames, timecodes, quotes, or descriptions into a hit: the application loads those facts from its database. Only reference IDs that appeared in tool results during this turn. If you searched and found nothing, say so plainly — never pad with weak or invented hits.
-Write the prose as plain text: the app renders it verbatim, so markdown syntax (#, **, backticks, bullet asterisks) shows up as literal characters. Use short paragraphs and simple dashes for lists.`;
+Search is grounded in spoken transcripts. Do not claim that an unspoken subject is visible on screen. A "raw" hit uses source timecode. A "final" hit uses timeline timecode in the finished episode.`;
 
 const EPISODE_SCOPE_NOTICE =
   "The editor has scoped this conversation to a single episode; all search results are already restricted to it.";
@@ -130,18 +134,22 @@ function toolDef(name: string, description: string, parameters: object): ToolDef
 const SUPERVISOR_TOOLS: ToolDef[] = [
   toolDef(
     "search_transcripts",
-    "Hybrid keyword and semantic search over spoken transcripts. Expand only the editor's named subject with useful synonyms and alternate phrasings in extra_terms.",
+    "Submit one resolved search rewrite for hybrid keyword and semantic transcript search.",
     {
       type: "object",
       properties: {
-        query: { type: "string", description: "Precise query for the editor's named subject" },
-        extra_terms: {
+        semantic_query: {
+          type: "string",
+          description: "The editor's search intent with resolved references",
+        },
+        concrete_terms: {
           type: "array",
           items: { type: "string" },
-          description: "Synonyms, slang, and alternate phrasings for the same subject",
+          description: "Concrete people, places, roles, objects, actions, topics, and close phrases",
         },
+        disposition: { type: "string", enum: ["search"] },
       },
-      required: ["query", "extra_terms"],
+      required: ["semantic_query", "concrete_terms", "disposition"],
     },
   ),
   toolDef(
@@ -180,11 +188,15 @@ const SUPERVISOR_TOOLS: ToolDef[] = [
   ),
   toolDef(
     "final_answer",
-    "Deliver the final answer to the editor. Call this exactly once, when you are done researching.",
+    "Deliver one grounded answer disposition. Call this exactly once.",
     {
       type: "object",
       properties: {
-        prose: { type: "string" },
+        disposition: { type: "string", enum: ["message", "empty", "results"] },
+        message: {
+          type: "string",
+          description: "Conversation or one clarification only; never footage facts",
+        },
         hits: {
           type: "array",
           items: {
@@ -197,8 +209,19 @@ const SUPERVISOR_TOOLS: ToolDef[] = [
             required: ["source", "id", "confidence"],
           },
         },
+        summary: {
+          type: "object",
+          properties: {
+            text: { type: "string" },
+            source_segment_ids: {
+              type: "array",
+              items: { type: "number" },
+            },
+          },
+          required: ["text", "source_segment_ids"],
+        },
       },
-      required: ["prose", "hits"],
+      required: ["disposition", "hits"],
     },
   ),
 ];
@@ -223,21 +246,57 @@ interface CandidateReference {
   confidence: Confidence;
 }
 
+interface GroundedSummary {
+  text: string;
+  sourceSegmentIds: number[];
+}
+
+function positiveInteger(value: unknown): number | null {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value.trim())
+        ? Number(value.trim())
+        : Number.NaN;
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
 function coerceCandidateReference(raw: unknown): CandidateReference | null {
   if (!isRecord(raw)) return null;
   const source = raw.source === "segment" ? raw.source : null;
-  const numericId =
-    typeof raw.id === "number"
-      ? raw.id
-      : typeof raw.id === "string" && /^\d+$/.test(raw.id.trim())
-        ? Number(raw.id.trim())
-        : Number.NaN;
-  const id = Number.isSafeInteger(numericId) && numericId > 0 ? numericId : null;
+  const id = positiveInteger(raw.id);
   const confidence =
     raw.confidence === "high" || raw.confidence === "medium" || raw.confidence === "low"
       ? raw.confidence
       : null;
   return source !== null && id !== null && confidence !== null ? { source, id, confidence } : null;
+}
+
+function coerceGroundedSummary(raw: unknown): GroundedSummary | null {
+  if (!isRecord(raw) || typeof raw.text !== "string" || !Array.isArray(raw.source_segment_ids)) {
+    return null;
+  }
+  const text = raw.text.trim();
+  const sourceSegmentIds: number[] = [];
+  for (const value of raw.source_segment_ids) {
+    const id = positiveInteger(value);
+    if (id === null) return null;
+    sourceSegmentIds.push(id);
+  }
+  return text.length > 0 && sourceSegmentIds.length > 0
+    ? { text, sourceSegmentIds: [...new Set(sourceSegmentIds)] }
+    : null;
+}
+
+function scopedCoverage(db: DailiesDB, episodeId: number | null): SearchCoverage {
+  const producerNoteCount = db
+    .listDocuments()
+    .filter((document) => episodeId === null || document.episodeId === episodeId)
+    .length;
+  return computePipelineSnapshot(
+    db.listPipelineFileFacts({ episodeId }),
+    producerNoteCount,
+  ).coverage;
 }
 
 function isValidStoredRange(startS: number, endS: number, durationS: number): boolean {
@@ -251,6 +310,12 @@ function isValidStoredRange(startS: number, endS: number, durationS: number): bo
   );
 }
 
+function firstSentence(text: string): string | null {
+  const [sentence = ""] = text.trim().split(/(?<=[.!?])\s+/, 1);
+  const trimmed = sentence.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 /**
  * Converts model-selected candidate IDs into cards using only current DB rows.
  * The model never supplies any exportable fact (file, role, range, or quote).
@@ -261,11 +326,20 @@ export function hydrateFinalAnswer(
   registry: CandidateRegistry,
   episodeId: number | null,
   warn: (message: string) => void = (message) => console.warn(message),
-): AgentAnswer {
+): StructuredAgentAnswer {
   const rec = isRecord(args) ? args : {};
-  const prose = typeof rec.prose === "string" ? rec.prose : "";
+  if (rec.disposition === "message") {
+    const text = typeof rec.message === "string" ? rec.message.trim() : "";
+    return text.length > 0
+      ? { kind: "message", text }
+      : { kind: "empty", coverage: scopedCoverage(db, episodeId) };
+  }
+  if (rec.disposition !== "results") {
+    return { kind: "empty", coverage: scopedCoverage(db, episodeId) };
+  }
+
   const rawRefs = Array.isArray(rec.hits) ? rec.hits : [];
-  const hits: AgentAnswer["hits"] = [];
+  const hits: GroundedAnswerHit[] = [];
   const emitted = new Set<string>();
 
   const drop = (ref: CandidateReference, reason: string): void => {
@@ -305,22 +379,63 @@ export function hydrateFinalAnswer(
       drop(ref, "stored range is outside the file duration");
       continue;
     }
+    const inTimecode = deriveSourceTimecode(
+      file.startTc,
+      row.startS,
+      file.fps,
+      file.dropFrame,
+    );
+    const outTimecode = deriveSourceTimecode(
+      file.startTc,
+      row.endS,
+      file.fps,
+      file.dropFrame,
+    );
     hits.push({
       fileId: file.id,
       filename: file.clipName ?? file.filename,
       role: file.role,
       kind: "spoken",
-      inTc: row.startTc,
-      outTc: row.endTc,
+      inTc: inTimecode.tc,
+      outTc: outTimecode.tc,
       inS: row.startS,
       outS: row.endS,
       quote: row.text,
       confidence: ref.confidence,
+      segmentId: row.segmentId,
+      supportsSummary: false,
+      sourceRateFallback: inTimecode.sourceRateFallback,
     });
     emitted.add(key);
   }
 
-  return { prose, hits };
+  const [firstHit, ...remainingHits] = hits;
+  if (!firstHit) {
+    return { kind: "empty", coverage: scopedCoverage(db, episodeId) };
+  }
+
+  const summary = coerceGroundedSummary(rec.summary);
+  const renderedIds = new Set(hits.map((hit) => hit.segmentId));
+  const summaryIsGrounded =
+    summary !== null &&
+    summary.sourceSegmentIds.every((segmentId) => renderedIds.has(segmentId));
+  if (rec.summary !== undefined && !summaryIsGrounded) {
+    warn("[chat-grounding] dropped summary with unsupported segment references");
+  }
+  const summaryText = summaryIsGrounded && summary !== null ? firstSentence(summary.text) : null;
+  const supportIds = summaryText !== null && summary !== null
+    ? new Set(summary.sourceSegmentIds)
+    : new Set<number>();
+  const withSupport = (hit: GroundedAnswerHit): GroundedAnswerHit => ({
+    ...hit,
+    supportsSummary: supportIds.has(hit.segmentId),
+  });
+
+  return {
+    kind: "results",
+    summary: summaryText,
+    hits: [withSupport(firstHit), ...remainingHits.map(withSupport)],
+  };
 }
 
 // ---------- library digest (grounds the supervisor) ----------
@@ -340,7 +455,10 @@ function buildLibraryDigest(db: DailiesDB, episodeId: number | null): string {
   const usable = files.filter((f) => f.status !== "error");
   const errored = files.length - usable.length;
   const transcribed = files.filter((f) => f.hasTranscript).length;
-  const docCount = db.listDocuments().length;
+  const docCount = db
+    .listDocuments()
+    .filter((document) => episodeId === null || document.episodeId === episodeId)
+    .length;
   const totalS = usable.reduce((sum, f) => sum + (f.durationS || 0), 0);
   const mins = Math.round(totalS / 60);
 
@@ -401,6 +519,19 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function searchDisposition(value: unknown): SearchDisposition {
+  if (value === "search" || value === "clarify" || value === "message") return value;
+  return "clarify";
+}
+
+function searchPlan(rec: Record<string, unknown>): SearchPlan {
+  return {
+    semanticQuery: typeof rec.semantic_query === "string" ? rec.semantic_query : "",
+    concreteTerms: stringArray(rec.concrete_terms),
+    disposition: searchDisposition(rec.disposition),
+  };
+}
+
 function transcriptWindowCenter(rec: Record<string, unknown>): TranscriptWindowCenter | null {
   if (typeof rec.center_s === "number" && Number.isFinite(rec.center_s)) {
     return { kind: "seconds", value: rec.center_s };
@@ -413,7 +544,7 @@ function transcriptWindowCenter(rec: Record<string, unknown>): TranscriptWindowC
 
 // ---------- main entry ----------
 
-export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
+export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgentAnswer> {
   const {
     db,
     history,
@@ -448,9 +579,9 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     const rec = isRecord(args) ? args : {};
 
     if (name === "search_transcripts") {
-      const query = typeof rec.query === "string" ? rec.query : "";
-      emit({ type: "activity", agent: "transcript scout", status: `transcript scout — searching spoken references for "${query}"` });
-      const hits = await searchTranscriptsTool(db, query, stringArray(rec.extra_terms), embedder, episodeId);
+      const plan = searchPlan(rec);
+      emit({ type: "activity", agent: "transcript scout", status: `transcript scout — searching spoken references for "${plan.semanticQuery}"` });
+      const hits = await searchTranscriptsTool(db, plan, embedder, episodeId);
       for (const hit of hits) registry.segments.set(hit.segmentId, hit);
       return JSON.stringify(hits);
     }
@@ -475,7 +606,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     if (name === "get_file_info") {
       const fileId = typeof rec.file_id === "number" ? rec.file_id : 0;
       emit({ type: "activity", agent: "file info", status: `file info — looking up file ${fileId}` });
-      return JSON.stringify(getFileInfoTool(db, fileId));
+      return JSON.stringify(getFileInfoTool(db, fileId, episodeId));
     }
 
     return `error: unknown tool ${name}`;
@@ -496,7 +627,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
   const generateForcedFinal = () => {
     messages.push({
       role: "user",
-      content: "You have gathered enough evidence. Stop searching and call final_answer now with your best prose and references to the strongest candidate segment IDs you found.",
+      content: "You have gathered enough evidence. Stop searching and call final_answer now with one disposition, supported segment references, and an optional fully supported summary.",
     });
     return client.chat({
       model: CHAT_MODEL,
@@ -524,10 +655,10 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
 
       if (calls.length === 0) {
         const parsedFinal = parseFinalAnswerText(response.message.content ?? "");
-        if (parsedFinal && (typeof parsedFinal.prose === "string" || Array.isArray(parsedFinal.hits))) {
+        if (parsedFinal) {
           return hydrateFinalAnswer(parsedFinal, db, registry, episodeId);
         }
-        return { prose: response.message.content ?? "", hits: [] };
+        return { kind: "empty", coverage: scopedCoverage(db, episodeId) };
       }
 
       iters += 1;
@@ -569,10 +700,10 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       );
     }
     const parsedFinal = parseFinalAnswerText(forced.message.content ?? "");
-    if (parsedFinal && (typeof parsedFinal.prose === "string" || Array.isArray(parsedFinal.hits))) {
+    if (parsedFinal) {
       return hydrateFinalAnswer(parsedFinal, db, registry, episodeId);
     }
-    return { prose: forced.message.content ?? response.message.content ?? "", hits: [] };
+    return { kind: "empty", coverage: scopedCoverage(db, episodeId) };
   } catch (err) {
     throw new Error(describeError(err));
   }

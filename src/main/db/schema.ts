@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS files (
   has_video INTEGER,
   video_unplayable INTEGER NOT NULL DEFAULT 0,
   discovery_failed INTEGER NOT NULL DEFAULT 0,
+  discovery_error TEXT,
   episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
 );
 
@@ -99,7 +100,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_file_id ON jobs(file_id);
 CREATE TABLE IF NOT EXISTS chats (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS chat_messages (

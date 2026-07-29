@@ -1,4 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { describe, it, expect, vi } from "vitest";
 
 import {
   parseTc,
@@ -11,7 +15,8 @@ import {
   isValidTc,
 } from "../src/shared/timecode";
 import { buildEdl, EdlIncompatibleSourceError } from "../src/main/export/edl";
-import { buildLocatorList } from "../src/main/export/locators";
+import { buildLocatorGroups, buildLocatorList } from "../src/main/export/locators";
+import { writeExport, writeLocatorExport } from "../src/main/export";
 import type { ExportItem, MediaFile } from "../src/shared/types";
 
 describe("isValidTc", () => {
@@ -394,6 +399,265 @@ describe("buildLocatorList", () => {
       { fileId: 999, inTc: "01:00:00:00", outTc: "01:00:01:00", comment: "orphan" },
     ];
     expect(buildLocatorList(items, getFile)).toBe("");
+  });
+});
+
+describe("grouped locator export", () => {
+  function makeOutDir(): string {
+    return mkdtempSync(path.join(tmpdir(), "dailies-locators-"));
+  }
+
+  const opAtom: MediaFile = {
+    ...fileA,
+    id: 10,
+    path: "/avid/06252025T0A01.E4E58D765A30A.mxf",
+    filename: "06252025T0A01.E4E58D765A30A.mxf",
+    clipName: "06252025/05",
+    fileHash: "opatom-10",
+    mediaKind: "opatom",
+  };
+  const thirdFile: MediaFile = {
+    ...fileA,
+    id: 11,
+    path: "/media/C001.mov",
+    filename: "C001.mov",
+    clipName: "C DISPLAY",
+    fileHash: "third-11",
+  };
+  const groupedFiles = new Map([
+    [fileA.id, fileA],
+    [fileB.id, fileB],
+    [opAtom.id, opAtom],
+    [thirdFile.id, thirdFile],
+  ]);
+  const resolveGroupedFile = (id: number): MediaFile | null => groupedFiles.get(id) ?? null;
+
+  it("blocks zero items without creating a filesystem entry", () => {
+    const outDir = makeOutDir();
+    const getFile = vi.fn(resolveGroupedFile);
+
+    expect(writeLocatorExport([], getFile, outDir)).toEqual({
+      kind: "blocked",
+      reason: "no-hits",
+    });
+    expect(getFile).not.toHaveBeenCalled();
+    expect(readdirSync(outDir)).toEqual([]);
+  });
+
+  it("blocks all missing sources without creating a filesystem entry", () => {
+    const outDir = makeOutDir();
+    const items: ExportItem[] = [{
+      fileId: 999,
+      inTc: "01:00:00:00",
+      outTc: "01:00:01:00",
+      comment: "missing",
+    }];
+
+    expect(writeLocatorExport(items, () => null, outDir)).toEqual({
+      kind: "blocked",
+      reason: "no-valid-sources",
+    });
+    expect(readdirSync(outDir)).toEqual([]);
+  });
+
+  it("writes one clip with exact marker and clip counts", () => {
+    const outDir = makeOutDir();
+    const items: ExportItem[] = [
+      {
+        fileId: fileA.id,
+        inTc: "01:00:05:00",
+        outTc: "01:00:06:00",
+        comment: "first",
+      },
+      {
+        fileId: fileA.id,
+        inTc: "01:00:10:00",
+        outTc: "01:00:11:00",
+        comment: "second",
+      },
+    ];
+
+    const outcome = writeLocatorExport(items, resolveGroupedFile, outDir);
+
+    expect(outcome.kind).toBe("written");
+    if (outcome.kind !== "written") throw new Error("expected written locator export");
+    expect(outcome.markerCount).toBe(2);
+    expect(outcome.clipCount).toBe(1);
+    expect(outcome.paths).toHaveLength(1);
+    expect(outcome.revealPath).toBe(outcome.paths[0]);
+    expect(readFileSync(outcome.paths[0]!, "utf8").split("\n")).toHaveLength(2);
+  });
+
+  it("writes three source clips into one directory with stable group order", () => {
+    const outDir = makeOutDir();
+    const items: ExportItem[] = [
+      {
+        fileId: thirdFile.id,
+        inTc: "01:00:20:00",
+        outTc: "01:00:21:00",
+        comment: "third",
+      },
+      {
+        fileId: fileB.id,
+        inTc: "06:30:01;00",
+        outTc: "06:30:02;00",
+        comment: "second",
+      },
+      {
+        fileId: fileA.id,
+        inTc: "01:00:05:00",
+        outTc: "01:00:06:00",
+        comment: "first",
+      },
+    ];
+
+    const outcome = writeLocatorExport(items, resolveGroupedFile, outDir);
+
+    expect(outcome.kind).toBe("written");
+    if (outcome.kind !== "written") throw new Error("expected written locator export");
+    expect(outcome.markerCount).toBe(3);
+    expect(outcome.clipCount).toBe(3);
+    expect(outcome.paths.map((filePath) => path.basename(filePath))).toEqual([
+      "A001.mov.txt",
+      "B001.mov.txt",
+      "C DISPLAY.txt",
+    ]);
+    expect(new Set(outcome.paths.map((filePath) => path.dirname(filePath))).size).toBe(1);
+  });
+
+  it("uses deterministic suffixes for sanitized display-name collisions", () => {
+    const outDir = makeOutDir();
+    const first: MediaFile = {
+      ...fileA,
+      id: 20,
+      path: "/media/first.mov",
+      filename: "first.mov",
+      clipName: "DUP/NAME",
+      fileHash: "duplicate-20",
+    };
+    const second: MediaFile = {
+      ...fileA,
+      id: 21,
+      path: "/media/second.mov",
+      filename: "second.mov",
+      clipName: "DUP:NAME",
+      fileHash: "duplicate-21",
+    };
+    const files = new Map([[first.id, first], [second.id, second]]);
+    const items: ExportItem[] = [
+      {
+        fileId: second.id,
+        inTc: "01:00:02:00",
+        outTc: "01:00:03:00",
+        comment: "second",
+      },
+      {
+        fileId: first.id,
+        inTc: "01:00:01:00",
+        outTc: "01:00:02:00",
+        comment: "first",
+      },
+    ];
+
+    const firstRun = writeLocatorExport(items, (id) => files.get(id) ?? null, outDir);
+    const secondRun = writeLocatorExport(items, (id) => files.get(id) ?? null, outDir);
+
+    expect(firstRun.kind).toBe("written");
+    expect(secondRun.kind).toBe("written");
+    if (firstRun.kind !== "written" || secondRun.kind !== "written") {
+      throw new Error("expected written locator exports");
+    }
+    expect(firstRun.paths.map((filePath) => path.basename(filePath))).toEqual([
+      "DUP-NAME.txt",
+      "DUP-NAME-2.txt",
+    ]);
+    expect(secondRun.paths.map((filePath) => path.basename(filePath))).toEqual([
+      "DUP-NAME.txt",
+      "DUP-NAME-2.txt",
+    ]);
+  });
+
+  it("uses the OP-Atom clip name in filenames and marker comments", () => {
+    const outDir = makeOutDir();
+    const item: ExportItem = {
+      fileId: opAtom.id,
+      inTc: "01:00:05:00",
+      outTc: "01:00:06:00",
+      comment: "pond",
+    };
+
+    const outcome = writeLocatorExport([item], resolveGroupedFile, outDir);
+
+    expect(outcome.kind).toBe("written");
+    if (outcome.kind !== "written") throw new Error("expected written locator export");
+    expect(path.basename(outcome.paths[0]!)).toBe("06252025-05.txt");
+    expect(readFileSync(outcome.paths[0]!, "utf8")).toContain(
+      "[06252025/05 01:00:05:00-01:00:06:00] pond",
+    );
+  });
+
+  it("sorts source timecodes within each file and resolves each file once", () => {
+    const items: ExportItem[] = [
+      {
+        fileId: fileA.id,
+        inTc: "01:00:10:00",
+        outTc: "01:00:11:00",
+        comment: "later",
+      },
+      {
+        fileId: fileA.id,
+        inTc: "01:00:02:00",
+        outTc: "01:00:03:00",
+        comment: "earlier",
+      },
+    ];
+    const getFile = vi.fn(resolveGroupedFile);
+
+    const groups = buildLocatorGroups(items, getFile);
+
+    expect(getFile).toHaveBeenCalledTimes(1);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.markerCount).toBe(2);
+    expect(groups[0]?.content.split("\n").map((line) => line.split("\t")[1])).toEqual([
+      "01:00:02:00",
+      "01:00:10:00",
+    ]);
+  });
+});
+
+describe("legacy flat export", () => {
+  it("blocks zero items without creating the output directory", () => {
+    const parent = mkdtempSync(path.join(tmpdir(), "dailies-legacy-empty-"));
+    const outDir = path.join(parent, "exports");
+
+    expect(writeExport("locators", [], () => fileA, outDir)).toEqual({
+      kind: "blocked",
+      reason: "no-hits",
+    });
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
+  it("blocks the full export when any source file is missing", () => {
+    const parent = mkdtempSync(path.join(tmpdir(), "dailies-legacy-missing-"));
+    const outDir = path.join(parent, "exports");
+    const items: ExportItem[] = [
+      {
+        fileId: fileA.id,
+        inTc: "01:00:05:00",
+        outTc: "01:00:06:00",
+        comment: "valid",
+      },
+      {
+        fileId: 999,
+        inTc: "01:00:10:00",
+        outTc: "01:00:11:00",
+        comment: "missing",
+      },
+    ];
+
+    expect(writeExport("locators", items, (fileId) => fileId === fileA.id ? fileA : null, outDir))
+      .toEqual({ kind: "blocked", reason: "no-valid-sources" });
+    expect(readdirSync(parent)).toEqual([]);
   });
 });
 

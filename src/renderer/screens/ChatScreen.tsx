@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import type { ReactNode } from "react";
+import { api, mediaUrl } from "../api";
 import type {
   AgentAnswer,
   AnswerHit,
@@ -7,15 +8,23 @@ import type {
   ChatSummary,
   Episode,
   ExportItem,
-  ExportKind,
+  FileDetail,
+  LocatorExportOutcome,
+  PipelineSnapshot,
+  SearchCoverage,
+  StructuredAgentAnswer,
 } from "../../shared/types";
 import { ActivityLine } from "../components/ActivityLine";
 import { EpisodeBar } from "../components/EpisodeBar";
 import { HitCard } from "../components/HitCard";
 import { Toast } from "../components/Toast";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
+import { runIpc } from "../lib/async";
+import { isAudioOnly } from "../lib/media";
 
 interface ChatScreenProps {
-  onOpenClip: (fileId: number, seekS: number) => void;
+  /** Preview's one hop out: switches to Library with the source card focused. */
+  onOpenInLibrary: (fileId: number) => void;
   /** null while settings are loading; false shows the setup hint. */
   apiKeySet?: boolean | null;
   onOpenSettings?: () => void;
@@ -24,6 +33,17 @@ interface ChatScreenProps {
   episodes: Episode[];
   onEpisodeChange: (id: number | null) => void;
   onCreateEpisode: (code: string) => Promise<void>;
+}
+
+/** Inline hit preview: Play loads detail, opens the pop-over, seeks, and plays — never navigates. */
+interface PreviewTarget {
+  hit: AnswerHit;
+  fileDetail: FileDetail;
+  returnFocusId: string;
+}
+
+function hitIdentity(hit: AnswerHit, index: number): string {
+  return `${hit.fileId}-${hit.segmentId ?? `legacy-${index}`}-${hit.inS}`;
 }
 
 interface ActivityEvent {
@@ -35,7 +55,7 @@ interface Turn {
   id: string;
   question: string;
   activity: ActivityEvent[];
-  answer: AgentAnswer | null;
+  answer: AgentAnswer | StructuredAgentAnswer | null;
   error: string | null;
   pending: boolean;
 }
@@ -45,14 +65,60 @@ interface ToastState {
   action?: { label: string; onClick: () => void };
 }
 
-function confidenceRank(c: AnswerHit["confidence"]): number {
-  return c === "high" ? 3 : c === "medium" ? 2 : 1;
+/**
+ * What a turn actually renders. Live and v2 historical turns arrive as
+ * StructuredAgentAnswer. Bare hit arrays remain the legacy history shape.
+ */
+type DisplayAnswer =
+  | { kind: "message"; text: string }
+  | { kind: "empty"; coverage: SearchCoverage }
+  | { kind: "results"; summary: string | null; hits: AnswerHit[] }
+  | { kind: "legacy-visual"; prose: string; hits: AnswerHit[] };
+
+function toDisplayAnswer(answer: AgentAnswer | StructuredAgentAnswer): DisplayAnswer {
+  if ("kind" in answer) {
+    if (answer.kind === "results") return { kind: "results", summary: answer.summary, hits: answer.hits };
+    return answer;
+  }
+  if (answer.hits.some((hit) => hit.kind === "visual")) {
+    return { kind: "legacy-visual", prose: answer.prose, hits: answer.hits };
+  }
+  if (answer.hits.length === 0) return { kind: "message", text: answer.prose };
+  return { kind: "results", summary: answer.prose.length > 0 ? answer.prose : null, hits: answer.hits };
 }
+
+/** Collapses a quote/description to one line for the copy contract below. */
+export function normalizeCopyLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** The one true copy format: `"line" · clip · timecode`, straight quotes, middle dots. */
+export function formatHitCopyLine(hit: AnswerHit): string {
+  const line = normalizeCopyLine(hit.quote ?? hit.description ?? "");
+  return `"${line}" · ${hit.filename} · ${hit.inTc}`;
+}
+
+export function formatHitsCopyAll(hits: AnswerHit[]): string {
+  return hits.map(formatHitCopyLine).join("\n");
+}
+
+const CONFIDENCE_DOT_COLOR: Record<AnswerHit["confidence"], string> = {
+  high: "var(--status-ok)",
+  medium: "var(--status-warn)",
+  low: "var(--ink-faint)",
+};
 
 function formatChatDate(iso: string): string {
   const date = new Date(iso);
   const year = date.getFullYear() === new Date().getFullYear() ? "" : ` ${date.getFullYear()}`;
   return `${date.toLocaleString("en-US", { day: "2-digit", month: "short" })}${year}`.toUpperCase();
+}
+
+/** The chip on a rail row: the chat's own bound scope, not the active scope. */
+function chatChipLabel(chat: ChatSummary, episodes: Episode[]): string {
+  const boundEpisodeId = chat.episodeId ?? null;
+  if (boundEpisodeId === null) return "ALL";
+  return episodes.find((e) => e.id === boundEpisodeId)?.code ?? "ALL";
 }
 
 function messagesToTurns(messages: ChatMessageRecord[]): Turn[] {
@@ -71,7 +137,7 @@ function messagesToTurns(messages: ChatMessageRecord[]): Turn[] {
       };
       historicalTurns.push(current);
     } else if (current && current.answer === null) {
-      current.answer = { prose: message.content, hits: message.hits ?? [] };
+      current.answer = message.answer ?? { prose: message.content, hits: message.hits ?? [] };
     }
   }
 
@@ -79,7 +145,7 @@ function messagesToTurns(messages: ChatMessageRecord[]): Turn[] {
 }
 
 export function ChatScreen({
-  onOpenClip,
+  onOpenInLibrary,
   apiKeySet,
   onOpenSettings,
   episodeId,
@@ -95,26 +161,146 @@ export function ChatScreen({
   const [chatsLoading, setChatsLoading] = useState(true);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [coverage, setCoverage] = useState<PipelineSnapshot["coverage"] | null>(null);
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
+  const [previewPendingHit, setPreviewPendingHit] = useState<AnswerHit | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewTcCopied, setPreviewTcCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const turnCounterRef = useRef(0);
   const runningTurnIdRef = useRef<string | null>(null);
   const historyGenerationRef = useRef(0);
+  const previewGenerationRef = useRef(0);
+  const previewReturnFocusRef = useRef<string | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
+  const previewAudioRef = useRef<HTMLAudioElement>(null);
+  const previewCloseBtnRef = useRef<HTMLButtonElement>(null);
+  const previewCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const previewOpen = preview !== null || previewPendingHit !== null || previewError !== null;
+
+  const openPreview = useCallback(async (hit: AnswerHit, returnFocusId: string) => {
+    const generation = ++previewGenerationRef.current;
+    previewReturnFocusRef.current = returnFocusId;
+    setPreview(null);
+    setPreviewError(null);
+    setPreviewTcCopied(false);
+    setPreviewPendingHit(hit);
+    try {
+      const fileDetail = await api.getFileDetail(hit.fileId);
+      if (generation !== previewGenerationRef.current) return;
+      setPreviewPendingHit(null);
+      setPreview({ hit, fileDetail, returnFocusId });
+    } catch {
+      if (generation !== previewGenerationRef.current) return;
+      setPreviewPendingHit(null);
+      setPreviewError("Could not load this clip.");
+    }
+  }, []);
+
+  const closePreview = useCallback(() => {
+    previewGenerationRef.current += 1;
+    if (previewCopyTimerRef.current) clearTimeout(previewCopyTimerRef.current);
+    const video = previewVideoRef.current;
+    const audio = previewAudioRef.current;
+    if (video) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    }
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
+    const returnFocusId = previewReturnFocusRef.current;
+    setPreview(null);
+    setPreviewPendingHit(null);
+    setPreviewError(null);
+    setPreviewTcCopied(false);
+    if (returnFocusId) {
+      requestAnimationFrame(() => document.getElementById(returnFocusId)?.focus());
+    }
+  }, []);
+
+  function copyPreviewTc(tc: string) {
+    void navigator.clipboard.writeText(tc);
+    setPreviewTcCopied(true);
+    if (previewCopyTimerRef.current) clearTimeout(previewCopyTimerRef.current);
+    previewCopyTimerRef.current = setTimeout(() => setPreviewTcCopied(false), 1000);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (previewCopyTimerRef.current) clearTimeout(previewCopyTimerRef.current);
+    };
+  }, []);
+
+  // Focus lands in the pop-over the instant it opens, even while the file
+  // detail is still loading — the close button is the one stable target.
+  useEffect(() => {
+    if (previewOpen) previewCloseBtnRef.current?.focus();
+  }, [previewOpen]);
+
+  useEffect(() => {
+    if (!previewOpen) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") closePreview();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewOpen, closePreview]);
 
   const refreshChats = useCallback(async () => {
     setChatsLoading(true);
     try {
-      setChats(await api.listChats());
+      setChats(await api.listChats({ episodeId }));
       setHistoryError(null);
     } catch {
       setHistoryError("Could not load conversations.");
     } finally {
       setChatsLoading(false);
     }
-  }, []);
+  }, [episodeId]);
 
   useEffect(() => {
     void refreshChats();
   }, [refreshChats]);
+
+  const refreshCoverage = useCallback(async () => {
+    const result = await runIpc(() => api.getPipelineSnapshot({ episodeId }), {
+      setError: () => {
+        // Non-critical banner data; a failed fetch just leaves it hidden.
+      },
+      fallback: "Could not load indexing coverage.",
+    });
+    if (result.ok) setCoverage(result.value.coverage);
+  }, [episodeId]);
+
+  useEffect(() => {
+    void refreshCoverage();
+  }, [refreshCoverage]);
+
+  useLiveRefresh(refreshCoverage);
+
+  // Scope changed: the rail is about to reload for the new episode. Drop the
+  // visible conversation now rather than let a stale one linger, and release
+  // the send lock — a turn already running keeps running in its own scope
+  // (see onChatEvent below, which only updates a turn still present in
+  // `turns`), it is just no longer the one on screen.
+  const previousEpisodeIdRef = useRef(episodeId);
+  useEffect(() => {
+    if (previousEpisodeIdRef.current === episodeId) return;
+    previousEpisodeIdRef.current = episodeId;
+    historyGenerationRef.current += 1;
+    runningTurnIdRef.current = null;
+    setChatId(null);
+    setTurns([]);
+    setInput("");
+    setHistoryError(null);
+    setConversationLoading(false);
+    closePreview();
+  }, [episodeId, closePreview]);
 
   useEffect(() => {
     const unsubscribe = api.onChatEvent((ev) => {
@@ -165,12 +351,13 @@ export function ChatScreen({
   async function handleSelectChat(selectedChatId: number) {
     if (runningTurnIdRef.current !== null || selectedChatId === chatId) return;
     const generation = ++historyGenerationRef.current;
+    closePreview();
     setChatId(selectedChatId);
     setTurns([]);
     setConversationLoading(true);
     setHistoryError(null);
     try {
-      const messages = await api.getChat(selectedChatId);
+      const messages = await api.getChat({ episodeId }, selectedChatId);
       if (generation === historyGenerationRef.current) setTurns(messagesToTurns(messages));
     } catch {
       if (generation === historyGenerationRef.current) setHistoryError("Could not open that conversation.");
@@ -182,6 +369,7 @@ export function ChatScreen({
   function handleNewChat() {
     if (runningTurnIdRef.current !== null) return;
     historyGenerationRef.current += 1;
+    closePreview();
     setChatId(null);
     setTurns([]);
     setInput("");
@@ -196,17 +384,48 @@ export function ChatScreen({
     }
   }
 
-  async function handleExport(kind: ExportKind, hits: AnswerHit[]) {
+  /** Board A/C export contract: scoped, validated by main, never a silent drop. */
+  async function handleExportLocators(hits: AnswerHit[]): Promise<LocatorExportOutcome> {
     const items: ExportItem[] = hits.map((h) => ({
       fileId: h.fileId,
       inTc: h.inTc,
       outTc: h.outTc,
       inS: h.inS,
       outS: h.outS,
-      comment: h.quote ?? h.description ?? "",
+      comment: formatHitCopyLine(h),
       color: h.confidence === "high" ? "green" : h.confidence === "medium" ? "yellow" : undefined,
     }));
-    const result = await api.exportHits(kind, items);
+    return api.exportLocators({ episodeId }, items);
+  }
+
+  function showLocatorExportToast(outcome: Extract<LocatorExportOutcome, { kind: "written" }>) {
+    setToast({
+      message: `Exported ${outcome.markerCount} ${outcome.markerCount === 1 ? "marker" : "markers"} · ${outcome.clipCount} ${outcome.clipCount === 1 ? "clip" : "clips"}`,
+      action: { label: "Reveal in Finder", onClick: () => api.revealInFinder(outcome.revealPath) },
+    });
+  }
+
+  /** Unscoped, pre-Phase-11 export path — kept only for legacy visual-hit history. */
+  async function handleLegacyExport(hits: AnswerHit[]) {
+    const items: ExportItem[] = hits.map((h) => ({
+      fileId: h.fileId,
+      inTc: h.inTc,
+      outTc: h.outTc,
+      inS: h.inS,
+      outS: h.outS,
+      comment: formatHitCopyLine(h),
+      color: h.confidence === "high" ? "green" : h.confidence === "medium" ? "yellow" : undefined,
+    }));
+    const outcome = await api.exportHits("locators", items);
+    if (outcome.kind === "blocked") {
+      setToast({
+        message: outcome.reason === "no-hits"
+          ? "Export stopped · no markers in this answer"
+          : "Export stopped · one or more source files are no longer available",
+      });
+      return;
+    }
+    const result = outcome.result;
     setToast({
       message: `Exported ${result.count} ${result.count === 1 ? "marker" : "markers"} · ${result.path.split("/").pop()}`,
       action: { label: "Reveal in Finder", onClick: () => api.revealInFinder(result.path) },
@@ -216,14 +435,25 @@ export function ChatScreen({
   const isEmpty = turns.length === 0;
   const isAnswering = turns.some((turn) => turn.pending);
   const activeEpisode = episodeId === null ? null : episodes.find((e) => e.id === episodeId) ?? null;
+  const scopeLabel = activeEpisode ? `Episode ${activeEpisode.code}` : "All Episodes";
+  const chatCountLabel = `${chats.length} ${chats.length === 1 ? "chat" : "chats"}`;
+  const partialCoverage =
+    coverage !== null && coverage.totalFiles > 0 && coverage.pendingFiles + coverage.failedFiles > 0;
+  const coverageBannerText = coverage
+    ? coverage.pendingFiles > 0
+      ? `INDEXING · ${coverage.pendingFiles} OF ${coverage.totalFiles} FILES REMAIN · ANSWERS COVER INDEXED FILES ONLY`
+      : `${coverage.failedFiles} ${coverage.failedFiles === 1 ? "FILE" : "FILES"} NOT SEARCHABLE · ANSWERS COVER INDEXED FILES ONLY`
+    : "";
+  const activePreviewHit = preview?.hit ?? previewPendingHit ?? null;
+  const activePreviewKey = activePreviewHit ? previewReturnFocusRef.current : null;
 
   return (
     <div className="chat-screen">
-      <aside className="chat-history" aria-label="Past conversations">
+      <aside className="chat-history" aria-label="Conversations in this scope">
         <div className="chat-history-head">
-          <span className="label">Conversations</span>
+          <span className="label">{scopeLabel} · {chatCountLabel}</span>
           <button className="chat-new label" onClick={handleNewChat} disabled={isAnswering}>
-            + New
+            New chat
           </button>
         </div>
         <div className="chat-history-list">
@@ -236,12 +466,15 @@ export function ChatScreen({
               aria-current={chat.id === chatId ? "page" : undefined}
             >
               <span className="chat-history-title">{chat.title}</span>
-              <span className="chat-history-date mono">{formatChatDate(chat.createdAt)}</span>
+              <span className="chat-history-meta">
+                <span className="chat-history-chip mono">{chatChipLabel(chat, episodes)}</span>
+                <span className="chat-history-date mono">{formatChatDate(chat.createdAt)}</span>
+              </span>
             </button>
           ))}
           {chatsLoading && chats.length === 0 && <span className="chat-history-note mono">Loading…</span>}
           {!chatsLoading && chats.length === 0 && !historyError && (
-            <span className="chat-history-note mono">No past chats.</span>
+            <span className="chat-history-note mono">No chats in this scope yet.</span>
           )}
           {historyError && <span className="chat-history-note error mono">{historyError}</span>}
         </div>
@@ -259,6 +492,15 @@ export function ChatScreen({
                 size="centered"
               />
             </div>
+
+            {partialCoverage &&
+              (onOpenSettings ? (
+                <button type="button" className="coverage-banner mono" onClick={onOpenSettings}>
+                  {coverageBannerText}
+                </button>
+              ) : (
+                <div className="coverage-banner mono">{coverageBannerText}</div>
+              ))}
 
             {conversationLoading && <p className="chat-conversation-loading mono">Loading conversation…</p>}
 
@@ -296,7 +538,14 @@ export function ChatScreen({
                 {turn.error && <p className="turn-error mono">{turn.error}</p>}
 
                 {turn.answer && (
-                  <TurnAnswer answer={turn.answer} onOpenClip={onOpenClip} onExport={(kind, hits) => handleExport(kind, hits)} />
+                  <TurnAnswer
+                    answer={toDisplayAnswer(turn.answer)}
+                    onPlay={(hit, returnFocusId) => void openPreview(hit, returnFocusId)}
+                    activePreviewKey={activePreviewKey}
+                    onExportLocators={handleExportLocators}
+                    onExportSuccess={showLocatorExportToast}
+                    onLegacyExport={(hits) => void handleLegacyExport(hits)}
+                  />
                 )}
               </div>
             ))}
@@ -332,6 +581,81 @@ export function ChatScreen({
         />
       )}
 
+      {previewOpen && (
+        <>
+          <div className="preview-scrim" onClick={closePreview} />
+          <div className="preview-pop" role="dialog" aria-modal="true" aria-label="Clip preview">
+            <div className="preview-pop-head">
+              <span className="label">Preview</span>
+              <button ref={previewCloseBtnRef} className="preview-pop-close" onClick={closePreview} aria-label="Close preview">
+                ✕
+              </button>
+            </div>
+            <div className="preview-pop-body">
+              {previewPendingHit && <p className="preview-pop-loading mono">Loading…</p>}
+              {previewError && <p className="preview-pop-error mono">{previewError}</p>}
+              {preview && (
+                <>
+                  <div className="preview-bezel">
+                    {!preview.fileDetail.playbackPath ? (
+                      <div className="preview-unavailable mono">
+                        Original media can't be previewed in-app (MXF). Transcript timecodes still work.
+                      </div>
+                    ) : isAudioOnly(preview.fileDetail.file) ? (
+                      <div className="preview-audio-wrap">
+                        <audio
+                          ref={previewAudioRef}
+                          className="preview-audio"
+                          src={mediaUrl(preview.fileDetail.playbackPath)}
+                          controls
+                          aria-label={`Play ${preview.hit.filename}`}
+                          onLoadedMetadata={(e) => {
+                            e.currentTarget.currentTime = preview.hit.inS;
+                            void e.currentTarget.play();
+                          }}
+                          onError={() => setPreviewError("This clip could not be played back.")}
+                        />
+                      </div>
+                    ) : (
+                      <video
+                        ref={previewVideoRef}
+                        className="preview-video"
+                        src={mediaUrl(preview.fileDetail.playbackPath)}
+                        controls
+                        aria-label={`Play ${preview.hit.filename}`}
+                        onLoadedMetadata={(e) => {
+                          e.currentTarget.currentTime = preview.hit.inS;
+                          void e.currentTarget.play();
+                        }}
+                        onError={() => setPreviewError("This clip could not be played back.")}
+                      />
+                    )}
+                  </div>
+                  <div className="preview-meta">
+                    <span className="preview-meta-row">
+                      <span>CLIP</span>
+                      <span className="mono">{preview.hit.filename}</span>
+                    </span>
+                    <span className="preview-meta-row">
+                      <span>PLAYS FROM</span>
+                      <span className="mono">{preview.hit.inTc}</span>
+                    </span>
+                  </div>
+                  <div className="preview-actions">
+                    <button className="ghost-btn label" onClick={() => copyPreviewTc(preview.hit.inTc)}>
+                      {previewTcCopied ? "Copied" : "Copy TC"}
+                    </button>
+                    <button className="ghost-btn label" onClick={() => onOpenInLibrary(preview.hit.fileId)}>
+                      Open in library
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
       <style>{`
         .chat-screen {
           height: 100%;
@@ -358,15 +682,28 @@ export function ChatScreen({
           box-shadow: inset 0 -1px 0 var(--chrome-lo);
           flex: 0 0 auto;
         }
+        .chat-history-head .label {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
         .chat-new {
-          border: 0;
-          background: transparent;
-          color: var(--ink-dimmer);
-          padding: 3px 0;
+          flex: 0 0 auto;
+          background: var(--ground-raised);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          color: var(--ink);
+          padding: 5px 9px;
           font-size: 9.5px;
+          white-space: nowrap;
         }
         .chat-new:hover:not(:disabled) {
-          color: var(--accent);
+          background: #d2d6d9;
+        }
+        .chat-new:active:not(:disabled) {
+          box-shadow: var(--bevel-in);
         }
         .chat-new:disabled {
           color: var(--ink-faint);
@@ -414,10 +751,23 @@ export function ChatScreen({
           color: inherit;
           font-size: 11.5px;
         }
+        .chat-history-meta {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .chat-history-chip {
+          border: 1px solid currentColor;
+          border-radius: 2px;
+          padding: 0 4px;
+          font-size: 9px;
+          color: var(--ink-dimmer);
+        }
         .chat-history-date {
           color: var(--ink-dimmer);
           font-size: 9px;
         }
+        .chat-history-item.active .chat-history-chip,
         .chat-history-item.active .chat-history-date {
           color: var(--select-ink);
           opacity: 0.7;
@@ -451,6 +801,27 @@ export function ChatScreen({
           display: flex;
           justify-content: center;
           padding-top: 4px;
+        }
+        .coverage-banner {
+          display: flex;
+          width: 100%;
+          align-items: center;
+          gap: 8px;
+          margin: 16px 0 0;
+          padding: 8px 10px;
+          background: #f4ecd2;
+          border: 1px solid var(--status-warn);
+          color: var(--status-warn);
+          border-radius: 2px;
+          font-size: 10.5px;
+          text-align: left;
+          letter-spacing: 0.02em;
+        }
+        button.coverage-banner {
+          cursor: pointer;
+        }
+        button.coverage-banner:hover {
+          filter: brightness(0.97);
         }
         .chat-empty {
           padding-top: 14vh;
@@ -566,7 +937,7 @@ export function ChatScreen({
           flex: 0 0 auto;
           background: var(--marker-red);
           border: 1px solid var(--marker-red-dn);
-          border-radius: 999px;
+          border-radius: 2px;
           font-family: var(--font-body);
           font-size: 11px;
           font-weight: 800;
@@ -574,11 +945,14 @@ export function ChatScreen({
           text-transform: uppercase;
           color: #fff;
           padding: 9px 16px;
-          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 2px 3px 0 rgba(23,25,27,.3);
+          box-shadow: var(--bevel-out), var(--shadow-card);
         }
         .chat-send:hover:not(:disabled) {
           transform: translate(1px, 1px);
-          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 1px 1px 0 rgba(23,25,27,.3);
+          box-shadow: var(--bevel-out);
+        }
+        .chat-send:active:not(:disabled) {
+          box-shadow: var(--bevel-in);
         }
         .chat-send:disabled {
           background: var(--ground-raised);
@@ -594,74 +968,490 @@ export function ChatScreen({
           margin: 10px 0 0;
           user-select: none;
         }
+        .preview-scrim {
+          position: fixed;
+          inset: 0;
+          z-index: 40;
+        }
+        .preview-pop {
+          position: fixed;
+          top: 64px;
+          right: 24px;
+          width: 340px;
+          max-width: calc(100vw - 48px);
+          background: var(--ground-raised);
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out), 3px 4px 0 rgba(23, 25, 27, 0.3);
+          z-index: 41;
+          animation: preview-pop-in var(--dur-med) var(--ease-out) both;
+        }
+        @keyframes preview-pop-in {
+          from { opacity: 0; transform: translateY(-6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .preview-pop-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 7px 10px;
+          box-shadow: inset 0 -1px 0 var(--chrome-lo);
+        }
+        .preview-pop-close {
+          background: none;
+          border: none;
+          color: var(--ink-dim);
+          font-family: var(--font-mono);
+          font-size: 12px;
+          padding: 2px 4px;
+        }
+        .preview-pop-close:hover {
+          color: var(--ink);
+        }
+        .preview-pop-body {
+          padding: 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .preview-pop-loading,
+        .preview-pop-error {
+          padding: 24px 8px;
+          text-align: center;
+          font-size: 11px;
+          color: var(--ink-dimmer);
+        }
+        .preview-pop-error {
+          color: var(--status-error);
+        }
+        .preview-bezel {
+          background: var(--bezel);
+          border: 1px solid var(--panel-border);
+          border-radius: 1px;
+          overflow: hidden;
+        }
+        .preview-video {
+          width: 100%;
+          display: block;
+          aspect-ratio: 16 / 9;
+          background: var(--bezel);
+        }
+        .preview-audio-wrap {
+          min-height: 118px;
+          padding: 20px 16px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .preview-audio {
+          width: 100%;
+          height: 34px;
+          color-scheme: dark;
+          accent-color: var(--accent);
+        }
+        .preview-unavailable {
+          min-height: 118px;
+          padding: 20px;
+          display: grid;
+          place-items: center;
+          text-align: center;
+          color: var(--bezel-ink);
+          font-size: 11px;
+          line-height: 1.6;
+        }
+        .preview-meta {
+          padding: 8px 2px 2px;
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+        .preview-meta-row {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--ink-dim);
+        }
+        .preview-meta-row .mono {
+          color: var(--ink);
+        }
+        .preview-actions {
+          display: flex;
+          gap: 6px;
+          padding-top: 6px;
+        }
+        @media (max-width: 560px) {
+          .preview-scrim {
+            background: rgba(23, 25, 27, 0.25);
+          }
+          .preview-pop {
+            top: auto;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            max-width: none;
+            border-radius: 2px 2px 0 0;
+            animation: preview-sheet-in var(--dur-med) var(--ease-out) both;
+          }
+          @keyframes preview-sheet-in {
+            from { transform: translateY(100%); }
+            to { transform: translateY(0); }
+          }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .preview-pop {
+            animation: none;
+          }
+        }
       `}</style>
     </div>
   );
 }
 
 interface TurnAnswerProps {
-  answer: AgentAnswer;
-  onOpenClip: (fileId: number, seekS: number) => void;
-  onExport: (kind: ExportKind, hits: AnswerHit[]) => void;
+  answer: DisplayAnswer;
+  onPlay: (hit: AnswerHit, returnFocusId: string) => void;
+  /** Play-button id for the hit whose preview pop-over is currently open. */
+  activePreviewKey: string | null;
+  onExportLocators: (hits: AnswerHit[]) => Promise<LocatorExportOutcome>;
+  onExportSuccess: (outcome: Extract<LocatorExportOutcome, { kind: "written" }>) => void;
+  onLegacyExport: (hits: AnswerHit[]) => void;
 }
 
-function TurnAnswer({ answer, onOpenClip, onExport }: TurnAnswerProps) {
-  const sorted = [...answer.hits].sort((a, b) => confidenceRank(b.confidence) - confidenceRank(a.confidence));
+function TurnAnswer({ answer, onPlay, activePreviewKey, onExportLocators, onExportSuccess, onLegacyExport }: TurnAnswerProps) {
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [exportPending, setExportPending] = useState(false);
+  const [blockedReason, setBlockedReason] = useState<"no-hits" | "no-valid-sources" | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  function flipCopied(key: string, text: string) {
+    void navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopiedKey(null), 1000);
+  }
+
+  async function handleExportClick(hits: AnswerHit[]) {
+    setExportPending(true);
+    setBlockedReason(null);
+    try {
+      const outcome = await onExportLocators(hits);
+      if (outcome.kind === "blocked") setBlockedReason(outcome.reason);
+      else onExportSuccess(outcome);
+    } finally {
+      setExportPending(false);
+    }
+  }
+
+  let body: ReactNode;
+
+  if (answer.kind === "message") {
+    body = <p className="answer-message">{answer.text}</p>;
+  } else if (answer.kind === "empty") {
+    const count = answer.coverage.searchableFiles;
+    body = (
+      <div className="answer-empty">
+        <p>No hits in this scope.</p>
+        <p className="answer-empty-meta mono">
+          {count} {count === 1 ? "file" : "files"} searched · 0 hits
+        </p>
+      </div>
+    );
+  } else if (answer.kind === "legacy-visual") {
+    body = (
+      <>
+        <p className="answer-message">{answer.prose}</p>
+        <div className="legacy-hit-grid">
+          {answer.hits.map((hit, i) => {
+            const returnFocusId = `legacy-hit-${hitIdentity(hit, i)}`;
+            return (
+              <div key={returnFocusId} id={returnFocusId} tabIndex={-1} className="legacy-hit-focus-wrap">
+                <HitCard hit={hit} index={i} onOpen={(h) => onPlay(h, returnFocusId)} />
+              </div>
+            );
+          })}
+        </div>
+        {answer.hits.length > 0 && (
+          <div className="legacy-footer">
+            <button className="ghost-btn label" onClick={() => onLegacyExport(answer.hits)}>
+              Export markers
+            </button>
+          </div>
+        )}
+      </>
+    );
+  } else {
+    const hits = answer.hits;
+    const markerCount = hits.length;
+    const clipCount = new Set(hits.map((hit) => hit.fileId)).size;
+    body = (
+      <div className="answer">
+        {answer.summary && <p className="answer-summary">{answer.summary}</p>}
+        {hits.map((hit, index) => {
+          const key = hitIdentity(hit, index);
+          const active = copiedKey === key;
+          const playId = `hit-play-${key}`;
+          const previewing = activePreviewKey === playId;
+          return (
+            <div className={`hit${previewing ? " selected" : ""}`} key={key}>
+              <button
+                id={playId}
+                className="hit-play"
+                onClick={() => onPlay(hit, playId)}
+                aria-label={`Play ${hit.filename} at ${hit.inTc}`}
+              >
+                ▶
+              </button>
+              <span className="hit-text">
+                <span className="hit-quote">"{normalizeCopyLine(hit.quote ?? hit.description ?? "")}"</span>
+                <span className="hit-meta">
+                  <span className="clip">{hit.filename}</span>
+                  <span
+                    title={hit.sourceRateFallback ? "source rate unknown; 30fps basis" : undefined}
+                  >
+                    {hit.inTc}{hit.sourceRateFallback ? "*" : ""}
+                  </span>
+                  <span className="dot" style={{ background: CONFIDENCE_DOT_COLOR[hit.confidence] }} />
+                </span>
+              </span>
+              <button
+                className={`ghost-btn label hit-copy${active ? " btn-primary" : ""}`}
+                onClick={() => flipCopied(key, formatHitCopyLine(hit))}
+              >
+                {active ? "Copied" : "Copy"}
+              </button>
+            </div>
+          );
+        })}
+        <div className="answer-foot">
+          <button className="ghost-btn label btn-primary" onClick={() => flipCopied("all", formatHitsCopyAll(hits))}>
+            {copiedKey === "all" ? "Copied" : "Copy all"}
+          </button>
+          <button className="ghost-btn label" onClick={() => void handleExportClick(hits)} disabled={exportPending}>
+            {exportPending
+              ? "Exporting…"
+              : `Export ${markerCount} ${markerCount === 1 ? "marker" : "markers"} · ${clipCount} ${clipCount === 1 ? "clip" : "clips"}`}
+          </button>
+          <span className="hint mono">copy writes: "line" · clip · timecode</span>
+        </div>
+        {blockedReason && (
+          <div className="banner err mono">
+            EXPORT STOPPED · 0 MARKERS WOULD BE WRITTEN ·{" "}
+            {blockedReason === "no-hits" ? "NO HITS IN THIS ANSWER" : "SOURCE FILES ARE OUT OF SCOPE OR NO LONGER AVAILABLE"}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="turn-answer">
-      <p className="turn-prose">{answer.prose}</p>
-
-      <div className="hit-grid">
-        {sorted.map((hit, i) => (
-          <HitCard key={`${hit.fileId}-${hit.inS}`} hit={hit} index={i} onOpen={(h) => onOpenClip(h.fileId, h.inS)} />
-        ))}
-      </div>
-
-      <div className="turn-footer">
-        <button className="turn-footer-btn label" onClick={() => onExport("locators", answer.hits)}>
-          Export markers
-        </button>
-        <span className="turn-footer-sep">·</span>
-        <button className="turn-footer-btn label" onClick={() => onExport("edl", answer.hits)}>
-          Export EDL
-        </button>
-      </div>
+      {body}
 
       <style>{`
         .turn-answer {
           animation: fade-up var(--dur-med) var(--ease-out) both;
         }
-        .turn-prose {
+        .answer-message {
           font-size: 14.5px;
           line-height: 1.7;
           color: var(--ink-dim);
-          margin: 0 0 24px;
+          margin: 0;
         }
-        .hit-grid {
+        .answer-empty {
+          background: #fff;
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          padding: 12px 14px;
+        }
+        .answer-empty p {
+          font-size: 13px;
+          line-height: 1.5;
+          color: var(--ink);
+          margin: 0;
+        }
+        .answer-empty-meta {
+          margin-top: 6px !important;
+          font-size: 11px;
+          color: var(--ink-faint);
+        }
+        .answer {
+          background: #fff;
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          overflow: hidden;
+        }
+        .answer-summary {
+          padding: 12px 14px;
+          font-size: 13px;
+          line-height: 1.5;
+          color: var(--ink);
+          margin: 0;
+          border-bottom: 1px solid var(--hairline);
+        }
+        .hit {
+          display: grid;
+          grid-template-columns: 34px 1fr auto;
+          gap: 0 10px;
+          align-items: start;
+          padding: 10px 12px 10px 8px;
+        }
+        .hit:nth-child(even) {
+          background: var(--paper-alt);
+        }
+        .hit-play {
+          width: 24px;
+          height: 24px;
+          margin-top: 1px;
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          background: var(--ground-raised);
+          box-shadow: var(--bevel-out);
+          display: grid;
+          place-items: center;
+          font-size: 9px;
+          color: var(--ink);
+        }
+        .hit-play:hover {
+          background: #d2d6d9;
+        }
+        .hit-play:active {
+          box-shadow: var(--bevel-in);
+        }
+        .hit-text {
+          display: flex;
+          flex-direction: column;
+          min-width: 0;
+        }
+        .hit-quote {
+          font-size: 13px;
+          line-height: 1.5;
+          color: var(--ink);
+        }
+        .hit-meta {
+          margin-top: 4px;
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--ink-dim);
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          font-variant-numeric: tabular-nums;
+        }
+        .hit-meta .clip {
+          color: var(--accent);
+        }
+        .dot {
+          display: inline-block;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          flex: 0 0 auto;
+        }
+        .hit-copy {
+          margin-top: 1px;
+          padding: 5px 9px;
+          font-size: 9.5px;
+          white-space: nowrap;
+        }
+        .hit.selected {
+          background: var(--select-bg);
+          color: var(--select-ink);
+        }
+        .hit.selected .hit-meta {
+          color: #9aa3ad;
+        }
+        .hit.selected .hit-meta .clip {
+          color: #8fb4dd;
+        }
+        .hit.selected .hit-quote {
+          color: var(--select-ink);
+        }
+        .hit.selected .hit-play,
+        .hit.selected .hit-copy {
+          background: #2a2d31;
+          color: var(--select-ink);
+          box-shadow: none;
+          border-color: #45494e;
+        }
+        .legacy-hit-focus-wrap {
+          outline: none;
+          border-radius: 2px;
+        }
+        .legacy-hit-focus-wrap:focus {
+          outline: 2px solid var(--accent);
+          outline-offset: 2px;
+        }
+        .answer-foot {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 12px;
+          border-top: 1px solid var(--hairline);
+          background: var(--ground-card);
+        }
+        .hint {
+          font-size: 10px;
+          color: var(--ink-faint);
+          margin-left: auto;
+        }
+        .ghost-btn.btn-primary,
+        .ghost-btn.btn-primary:hover {
+          background: var(--select-bg);
+          border-color: var(--select-bg);
+          color: var(--select-ink);
+          box-shadow: none;
+        }
+        .banner {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 10px;
+          font-size: 11px;
+        }
+        .banner.err {
+          background: #f2dcd8;
+          color: var(--status-error);
+          border-top: 1px solid var(--status-error);
+        }
+        .legacy-hit-grid {
           display: grid;
           grid-template-columns: repeat(2, 1fr);
           gap: 14px;
-          margin-bottom: 20px;
+          margin: 20px 0;
         }
-        .turn-footer {
+        .legacy-footer {
           display: flex;
-          align-items: center;
-          gap: 10px;
         }
-        .turn-footer-btn {
-          background: transparent;
-          border: none;
-          color: var(--ink-dimmer);
-          padding: 0;
-          transition: color var(--dur-fast) var(--ease-out);
-        }
-        .turn-footer-btn:hover {
-          color: var(--accent);
-        }
-        .turn-footer-sep {
-          color: var(--ink-faint);
-          font-size: 11px;
+        @media (max-width: 560px) {
+          .hit {
+            grid-template-columns: 34px 1fr;
+          }
+          .hit-copy {
+            grid-column: 1 / -1;
+            justify-self: start;
+            margin-top: 8px;
+          }
+          .answer-foot {
+            flex-wrap: wrap;
+          }
+          .hint {
+            margin-left: 0;
+            flex-basis: 100%;
+          }
+          .legacy-hit-grid {
+            grid-template-columns: 1fr;
+          }
         }
       `}</style>
     </div>

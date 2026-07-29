@@ -5,10 +5,14 @@
  * so incompatible source rates/formats are rejected instead of mixed.
  */
 import type { ExportItem, MediaFile } from "../../shared/types";
-import { framesToTc, parseTc, tcAddSeconds } from "../../shared/timecode";
+import {
+  deriveSourceTimecode,
+  framesToTc,
+  parseTc,
+  UNKNOWN_SOURCE_RATE_FALLBACK_FPS,
+} from "../../shared/timecode";
 
 const RECORD_START_TC = "01:00:00:00";
-const UNKNOWN_EDIT_RATE_FALLBACK_FPS = 30;
 
 export interface EdlOffendingClip {
   fileId: number;
@@ -59,11 +63,11 @@ export function buildEdl(
   lines.push(`TITLE: ${title}`);
 
   const formatSource = rows.find((row) => row.file.fps > 0)?.file;
-  const recordFps = formatSource?.fps ?? UNKNOWN_EDIT_RATE_FALLBACK_FPS;
+  const recordFps = formatSource?.fps ?? UNKNOWN_SOURCE_RATE_FALLBACK_FPS;
   const recordDropFrame = formatSource?.dropFrame ?? false;
   const offendingById = new Map<number, EdlOffendingClip>();
   for (const { file } of rows) {
-    const sourceFps = file.fps > 0 ? file.fps : UNKNOWN_EDIT_RATE_FALLBACK_FPS;
+    const sourceFps = file.fps > 0 ? file.fps : UNKNOWN_SOURCE_RATE_FALLBACK_FPS;
     const sourceDropFrame = file.fps > 0 ? file.dropFrame : false;
     if (Math.abs(sourceFps - recordFps) > 0.001 || sourceDropFrame !== recordDropFrame) {
       offendingById.set(file.id, {
@@ -86,13 +90,13 @@ export function buildEdl(
     const { file, item } = row;
     const evt = pad3(idx + 1);
 
-    const sourceFps = file.fps > 0 ? file.fps : UNKNOWN_EDIT_RATE_FALLBACK_FPS;
+    const sourceFps = file.fps > 0 ? file.fps : UNKNOWN_SOURCE_RATE_FALLBACK_FPS;
     const unknownRate = !(file.fps > 0);
     const rawSrcIn = unknownRate && item.inS !== undefined
-      ? tcAddSeconds(file.startTc, item.inS, sourceFps, false)
+      ? deriveSourceTimecode(file.startTc, item.inS, file.fps, file.dropFrame).tc
       : item.inTc;
     const rawSrcOut = unknownRate && item.outS !== undefined
-      ? tcAddSeconds(file.startTc, item.outS, sourceFps, false)
+      ? deriveSourceTimecode(file.startTc, item.outS, file.fps, file.dropFrame).tc
       : item.outTc;
     const sourceDropFrame = unknownRate ? false : file.dropFrame;
     const srcInFrames = parseTc(rawSrcIn, sourceFps, sourceDropFrame);
@@ -108,7 +112,7 @@ export function buildEdl(
     lines.push(`${evt}  AX       V     C        ${srcIn} ${srcOut} ${recIn} ${recOut}`);
     lines.push(`* FROM CLIP NAME: ${file.filename}`);
     if (unknownRate) {
-      lines.push(`* DAILIES WARNING: SOURCE EDIT RATE UNKNOWN; ${UNKNOWN_EDIT_RATE_FALLBACK_FPS} FPS FALLBACK`);
+      lines.push(`* DAILIES WARNING: SOURCE EDIT RATE UNKNOWN; ${UNKNOWN_SOURCE_RATE_FALLBACK_FPS} FPS FALLBACK`);
     }
     lines.push(`* COMMENT: ${item.comment}`);
   });

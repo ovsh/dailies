@@ -9,6 +9,7 @@ import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { buildMediaResponse, parseMediaRequestPath } from "./media-protocol";
 import { createWindowRef } from "./window-ref";
+import { startAutoUpdater } from "./updater";
 
 /**
  * When the app is launched from Finder/Dock (rather than a terminal), the
@@ -130,6 +131,7 @@ void app.whenReady().then(async () => {
   }
 
   createWindow();
+  startAutoUpdater();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

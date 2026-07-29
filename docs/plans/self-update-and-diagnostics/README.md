@@ -2,6 +2,15 @@
 
 Status: implementation plan only. No production updater or telemetry has been enabled.
 
+> **2026-07-28 — repo went public.** `ovsh/dailies` is now the public source
+> repository, so the update feed in 0.3.0 points at it directly
+> (`build.publish` in `package.json`). The separate `ovsh/dailies-releases`
+> repo and cross-repo token described below were designed around a private
+> source repo and are no longer needed. A minimal updater (silent check at
+> startup, silent download, native restart prompt) shipped in 0.3.0 — it is
+> a small slice of the "Updates" experience in this plan, not the full
+> quiet-dot/banner/diagnostics design, which remains unimplemented.
+
 ## Outcome
 
 Dailies should gain two simple user-facing capabilities:

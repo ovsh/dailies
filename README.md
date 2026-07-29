@@ -24,6 +24,9 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
    **Dailies** to Applications. The app is signed and notarized; it opens
    like any other Mac app.
 2. Requirements: Apple Silicon Mac, macOS 14+.
+3. The DMG is only for that first install — from 0.3.0 on, Dailies checks
+   GitHub Releases at launch and updates itself, prompting to restart once
+   a new version has downloaded.
 
 ### 2. First run — three things
 
@@ -131,7 +134,7 @@ npm run dev            # vite + electron
 npm run dev:renderer   # renderer only in a browser, with mock data
 npm run typecheck
 npm test
-npm run dist           # signed macOS DMG into release/
+npm run dist           # signed macOS DMG + ZIP + latest-mac.yml into release/
 npm run rebuild        # force a fresh Electron native rebuild (normally unnecessary)
 ```
 
@@ -152,9 +155,15 @@ stored notarytool keychain profile:
 APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist
 ```
 
-Then notarize and staple the DMG itself and verify with Gatekeeper; the
-`apple-sign` skill (`.claude/skills/apple-sign/SKILL.md`) has the full flow,
-including the one-time `notarytool store-credentials` setup.
+This produces the DMG, the ZIP, and `latest-mac.yml` in `release/`. Notarize
+and staple the DMG itself and verify with Gatekeeper; the global
+`apple-sign` skill (`~/.claude/skills/apple-sign/SKILL.md`) has the full flow.
+The `digital-lane` notarytool profile is shared across all Digital Lane apps
+and is already set up — no per-repo credential step.
+
+The ZIP and `latest-mac.yml` are what `electron-updater` reads to serve
+auto-updates — both must be uploaded to the GitHub release alongside the DMG,
+or existing installs won't see the new version.
 
 Un-notarized builds are blocked by Gatekeeper on current macOS ("damaged / move to
 Trash"). Workaround for a machine you control: `xattr -d com.apple.quarantine /Applications/Dailies.app`.

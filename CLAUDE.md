@@ -21,14 +21,28 @@ ovsh.github.io/dailies/ — one deploy for the whole personal site). After any
 site/ change run `scripts/sync-site.sh` and commit both repos. Never add a
 GitHub Pages workflow to this repo.
 
-## Signing & notarization — use /apple-sign
+## Signing & notarization — use the global apple-sign skill
 
-Use the `apple-sign` skill (`.claude/skills/apple-sign/`) for release builds:
-`APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist` signs with the Digital
-Lane LLC Developer ID (team `7Z82LSPAPP`) and notarizes via the stored
-notarytool profile; then notarize + staple the DMG itself and verify with
-Gatekeeper before shipping. Never handle Apple ID passwords —
-`notarytool store-credentials` is a user-only step.
+The procedure (identity, notarize → staple → verify order, troubleshooting)
+lives in the global `apple-sign` skill, `~/.claude/skills/apple-sign/`.
+
+Dailies' specifics:
+
+- App `Dailies.app`, bundle id `com.dailies.app`; artifacts land in
+  `release/Dailies-<version>-arm64.dmg`, plus (from 0.3.0, for auto-update)
+  `release/Dailies-<version>-arm64-mac.zip` and `release/latest-mac.yml`.
+  Both the ZIP and `latest-mac.yml` must be uploaded to the GitHub release
+  alongside the DMG, or existing installs never see the update.
+- electron-builder does the signing and app notarization itself — it just
+  needs the shared profile: `APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist`
+  (hardened runtime is on in `package.json → build.mac`, `notarize: true`).
+- It does NOT notarize the DMG. Submit and staple that yourself afterward,
+  then verify the mounted app with `spctl` before shipping.
+- Nested Mach-O under `asarUnpack` (ffmpeg/ffprobe/whisper) is the usual cause
+  of an `Invalid` notarization — check each with `codesign -dv`.
+
+The `digital-lane` notarytool profile is per-team and already set up — no
+first-run credential step. Never handle Apple ID passwords.
 
 ## Marketing screenshots
 

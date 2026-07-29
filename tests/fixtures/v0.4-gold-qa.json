@@ -820,6 +820,108 @@
       "summaryRequired": true,
       "maxUnexpectedConfidence": "low",
       "reviewNote": "The answer must distinguish examples in footage from complete coverage."
+    },
+    {
+      "id": "landscape-analytical-count-stormwater-options",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "How many storm-water options are named, and what are they?",
+      "tags": ["analytical-answer", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "a swale if you're not going to do that you have a retention pond",
+          "startS": 692,
+          "endS": 699
+        },
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "dry well",
+          "startS": 690,
+          "endS": 790
+        },
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "rain barrel",
+          "startS": 690,
+          "endS": 790
+        },
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "french drain",
+          "startS": 690,
+          "endS": 790
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "storm water",
+          "startS": 220,
+          "endS": 1516
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "summaryClaims": [
+        ["five", "5"],
+        ["swale"],
+        ["retention pond"],
+        ["dry well"],
+        ["rain barrel"],
+        ["french drain"]
+      ],
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The reviewed transcript names five options: a swale, retention pond, dry well, rain barrel, and French drain."
+    },
+    {
+      "id": "landscape-analytical-compare-wet-pond-and-tea-plants",
+      "projectKey": "landscaping",
+      "episodeCode": null,
+      "priorTurns": [],
+      "question": "Compare the wet-pond plant with the tea herbs. Which plants belong to each use?",
+      "tags": ["analytical-answer", "footage-result"],
+      "expectedDisposition": "results",
+      "requiredHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "blue-eyed grass is a must",
+          "startS": 1544,
+          "endS": 1552
+        },
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "lemongrass, oregano, mints",
+          "startS": 342,
+          "endS": 352
+        }
+      ],
+      "allowedHits": [
+        {
+          "clipName": "06252025/05",
+          "quoteSubstring": "blue-eyed grass",
+          "startS": 40,
+          "endS": 1562
+        },
+        {
+          "clipName": "06252025/06",
+          "quoteSubstring": "herbs",
+          "startS": 340,
+          "endS": 800
+        }
+      ],
+      "forbiddenHits": [],
+      "summaryRequired": true,
+      "summaryClaims": [
+        ["blue-eyed grass"],
+        ["lemongrass"],
+        ["oregano"],
+        ["mint"]
+      ],
+      "maxUnexpectedConfidence": "low",
+      "reviewNote": "The reviewed clips assign blue-eyed grass to the wet pond and lemongrass, oregano, and mints to tea."
     }
   ]
 }

@@ -1,3 +1,5 @@
+import { CHAT_MODEL, EMBEDDING_MODEL } from "../../shared/types";
+
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 export interface ContentPart {
@@ -87,7 +89,11 @@ export function createOpenRouterClient(getKey: () => string | null): OpenRouterC
       const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: headers(requireKey()),
-        body: JSON.stringify(req),
+        body: JSON.stringify({
+          ...req,
+          model: CHAT_MODEL,
+          provider: { allow_fallbacks: false },
+        }),
       });
       const body = await readJson(response);
       if (!response.ok) throw apiError(response.status, body);
@@ -104,11 +110,16 @@ export function createOpenRouterClient(getKey: () => string | null): OpenRouterC
       };
     },
 
-    async embed(model: string, input: string[], dimensions?: number): Promise<number[][]> {
+    async embed(_model: string, input: string[], dimensions?: number): Promise<number[][]> {
       const response = await fetch(`${OPENROUTER_BASE_URL}/embeddings`, {
         method: "POST",
         headers: headers(requireKey()),
-        body: JSON.stringify({ model, input, ...(dimensions === undefined ? {} : { dimensions }) }),
+        body: JSON.stringify({
+          model: EMBEDDING_MODEL,
+          input,
+          ...(dimensions === undefined ? {} : { dimensions }),
+          provider: { allow_fallbacks: false },
+        }),
       });
       const body = await readJson(response);
       if (!response.ok) throw apiError(response.status, body);

@@ -190,7 +190,7 @@ export function createQueue(opts: QueueOptions): JobQueue {
 
   function isTransientError(err: unknown): boolean {
     const message = err instanceof Error ? `${err.name} ${err.message}` : String(err);
-    return /\b429\b|\b5\d\d\b|rate.?limit|temporar|timeout|timed out|network|fetch failed|econnreset|econnrefused|enotfound|eai_again|socket/i.test(
+    return /\b429\b|\b5\d\d\b|rate.?limit|temporar|timeout|timed out|network|fetch failed|econnreset|econnrefused|enotfound|eai_again|socket|\bebadf\b|\bemfile\b/i.test(
       message,
     );
   }

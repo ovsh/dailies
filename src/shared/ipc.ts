@@ -14,6 +14,7 @@ import type {
   Episode,
   ExportItem,
   ExportKind,
+  DiagnosticsExportOutcome,
   ExportWriteOutcome,
   FileDetail,
   IndexUpdate,
@@ -65,6 +66,9 @@ export interface DailiesAPI {
 
   // settings (global)
   getSettings(): Promise<AppSettings>;
+  setTelemetryEnabled(enabled: boolean): Promise<AppSettings>;
+  /** Zips dailies.log, the failure list, versions, and the pipeline snapshot into Dailies Exports. */
+  exportDiagnostics(): Promise<DiagnosticsExportOutcome>;
   /** Starts (or joins) the speech-model download; progress arrives via onModelProgress. */
   downloadWhisperModel(): Promise<void>;
   onModelProgress(cb: (p: ModelDownloadProgress) => void): () => void;
@@ -134,6 +138,8 @@ export const IPC = {
   listJobs: "dailies:listJobs",
   retryFile: "dailies:retryFile",
   getSettings: "dailies:getSettings",
+  setTelemetryEnabled: "dailies:setTelemetryEnabled",
+  exportDiagnostics: "dailies:exportDiagnostics",
   downloadWhisperModel: "dailies:downloadWhisperModel",
   modelProgress: "dailies:modelProgress",
   setApiKey: "dailies:setApiKey",

@@ -1,5 +1,7 @@
 import { app, dialog, ipcMain, shell, type BrowserWindow } from "electron";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { downloadWhisperModel } from "./model-download";
 import { IPC } from "../shared/ipc";
@@ -8,6 +10,7 @@ import type {
   ApiKeyStatus,
   ChatEvent,
   ChatScope,
+  DiagnosticsExportOutcome,
   ExportItem,
   ExportKind,
   FileDetail,
@@ -264,19 +267,22 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     requireProject().pipeline.retryFile(fileId));
 
   // ---- settings (global) ----
-  ipcMain.handle(IPC.getSettings, async (): Promise<AppSettings> => {
+  const assembleSettings = async (): Promise<AppSettings> => {
     const avail = checkAvailability();
     const model = settings.getWhisperModel();
     const apiKeyStatus = await getApiKeyStatus();
     return {
       apiKeySet: apiKeyStatus !== "missing",
       apiKeyStatus,
+      telemetryEnabled: settings.getTelemetryEnabled(),
       whisperModel: model,
       whisperAvailable: avail.whisper,
       whisperModelReady: findWhisperModel(model, dataDir) !== null,
       ffmpegAvailable: avail.ffmpeg,
     };
-  });
+  };
+
+  ipcMain.handle(IPC.getSettings, () => assembleSettings());
 
   ipcMain.handle(IPC.downloadWhisperModel, () => {
     const model = settings.getWhisperModel();
@@ -464,6 +470,72 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     }
     emitProjectUpdate();
     return projectSnapshot(db, { episodeId: null });
+  });
+
+  ipcMain.handle(IPC.setTelemetryEnabled, (_e, enabled: boolean): Promise<AppSettings> => {
+    settings.setTelemetryEnabled(enabled === true);
+    return assembleSettings();
+  });
+
+  // Bundles what a remote bug report needs: log, failure list, versions,
+  // snapshot. The tester sends the zip by hand — nothing uploads itself.
+  ipcMain.handle(IPC.exportDiagnostics, async (): Promise<DiagnosticsExportOutcome> => {
+    const staging = fs.mkdtempSync(path.join(os.tmpdir(), "dailies-diagnostics-"));
+    try {
+      const logFile = path.join(dataDir, "dailies.log");
+      if (fs.existsSync(logFile)) {
+        fs.copyFileSync(logFile, path.join(staging, "dailies.log"));
+      }
+
+      const versions = [
+        `app ${app.getVersion()}`,
+        `electron ${process.versions.electron}`,
+        `node ${process.versions.node}`,
+        `platform ${process.platform} ${os.release()}`,
+      ].join("\n");
+      fs.writeFileSync(path.join(staging, "versions.txt"), `${versions}\n`, "utf8");
+
+      const c = manager.current();
+      if (c) {
+        const snapshot = projectSnapshot(c.db, { episodeId: null });
+        fs.writeFileSync(
+          path.join(staging, "pipeline-snapshot.json"),
+          JSON.stringify(snapshot, null, 2),
+          "utf8",
+        );
+        if (snapshot.failures.length > 0) {
+          const rows: FailureExportRow[] = snapshot.failures.map((failure) => {
+            const file = c.db.getFile(failure.fileId);
+            return {
+              clip: file?.clipName ?? failure.filename,
+              path: file?.path ?? "",
+              stage: failure.stage,
+              reason: failure.reason,
+              attempts: failure.attempts,
+              updatedAt: failure.updatedAt,
+            };
+          });
+          fs.writeFileSync(path.join(staging, "failures.csv"), buildFailureCsv(rows), "utf8");
+        }
+      }
+
+      const outDir = path.join(app.getPath("documents"), "Dailies Exports");
+      fs.mkdirSync(outDir, { recursive: true });
+      const zipPath = path.join(outDir, `dailies-diagnostics-${exportTimestamp()}.zip`);
+      await new Promise<void>((resolve, reject) => {
+        execFile("ditto", ["-c", "-k", "--sequesterRsrc", staging, zipPath], (err) =>
+          err ? reject(err) : resolve(),
+        );
+      });
+      return { kind: "written", path: zipPath };
+    } catch (err) {
+      return {
+        kind: "blocked",
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      fs.rmSync(staging, { recursive: true, force: true });
+    }
   });
 
   ipcMain.handle(IPC.exportPipelineFailures, (_e, scope: ChatScope) => {

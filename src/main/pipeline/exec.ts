@@ -14,6 +14,7 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   code: number | null;
+  signal: NodeJS.Signals | null;
   timedOut: boolean;
 }
 
@@ -53,11 +54,11 @@ export function run(bin: string, args: string[], opts?: RunOptions): Promise<Run
       reject(err);
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (settled) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
-      resolve({ stdout, stderr, code, timedOut });
+      resolve({ stdout, stderr, code, signal, timedOut });
     });
   });
 }

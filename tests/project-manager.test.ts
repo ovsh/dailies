@@ -8,11 +8,17 @@ import type { AppSettingsStore } from "../src/main/app-settings";
 /** In-memory settings store — the real one needs Electron's safeStorage. */
 function fakeSettings(): AppSettingsStore {
   let key: string | null = null;
+  let telemetryEnabled = true;
   return {
     getOpenRouterKey: () => key,
     setOpenRouterKey: (k: string) => ((key = k), true),
     hasOpenRouterKey: () => key !== null,
     getWhisperModel: () => "large-v3-turbo",
+    getTelemetryEnabled: () => telemetryEnabled,
+    setTelemetryEnabled: (enabled: boolean) => {
+      telemetryEnabled = enabled;
+    },
+    getTelemetryInstallId: () => "test-install-id",
   };
 }
 

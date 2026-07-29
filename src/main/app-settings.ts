@@ -4,6 +4,7 @@
  * (macOS Keychain-backed). Replaces the old per-database settings for these.
  */
 import { safeStorage } from "electron";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -11,6 +12,8 @@ interface AppSettingsFile {
   openrouterKeyEnc?: string;
   openrouterKeyIsPlain?: boolean;
   whisperModel?: string;
+  telemetryEnabled?: boolean;
+  telemetryInstallId?: string;
 }
 
 function parseAppSettings(value: unknown): AppSettingsFile {
@@ -26,6 +29,12 @@ function parseAppSettings(value: unknown): AppSettingsFile {
   if ("whisperModel" in value && typeof value.whisperModel === "string") {
     settings.whisperModel = value.whisperModel;
   }
+  if ("telemetryEnabled" in value && typeof value.telemetryEnabled === "boolean") {
+    settings.telemetryEnabled = value.telemetryEnabled;
+  }
+  if ("telemetryInstallId" in value && typeof value.telemetryInstallId === "string") {
+    settings.telemetryInstallId = value.telemetryInstallId;
+  }
   return settings;
 }
 
@@ -34,6 +43,10 @@ export interface AppSettingsStore {
   setOpenRouterKey(key: string): boolean;
   hasOpenRouterKey(): boolean;
   getWhisperModel(): string;
+  getTelemetryEnabled(): boolean;
+  setTelemetryEnabled(enabled: boolean): void;
+  /** Stable anonymous install id, created on first read. */
+  getTelemetryInstallId(): string;
 }
 
 export function createAppSettings(dataDir: string): AppSettingsStore {
@@ -84,6 +97,19 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
     },
     getWhisperModel() {
       return read().whisperModel ?? "large-v3-turbo";
+    },
+    getTelemetryEnabled() {
+      return read().telemetryEnabled ?? true;
+    },
+    setTelemetryEnabled(enabled: boolean) {
+      write({ telemetryEnabled: enabled });
+    },
+    getTelemetryInstallId() {
+      const s = read();
+      if (s.telemetryInstallId) return s.telemetryInstallId;
+      const id = randomUUID();
+      write({ telemetryInstallId: id });
+      return id;
     },
   };
 }

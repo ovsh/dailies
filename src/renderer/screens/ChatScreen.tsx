@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, mediaUrl } from "../api";
+import { CHAT_MODEL } from "../../shared/types";
 import type {
   AgentAnswer,
   AnswerHit,
@@ -10,6 +11,7 @@ import type {
   ExportItem,
   FileDetail,
   LocatorExportOutcome,
+  MediaFile,
   PipelineSnapshot,
   SearchCoverage,
   StructuredAgentAnswer,
@@ -108,6 +110,18 @@ const CONFIDENCE_DOT_COLOR: Record<AnswerHit["confidence"], string> = {
   low: "var(--ink-faint)",
 };
 
+/** "google/gemini-3.6-flash" -> "gemini-3.6-flash" for the input hint. */
+function shortModelName(model: string): string {
+  return model.split("/").pop() ?? model;
+}
+
+/** Honest explanation for a null playbackPath — never a silent dead player. */
+function unplayableReason(file: MediaFile): string {
+  return file.videoUnplayable
+    ? "No preview — proxy failed. Retry the file in Jobs."
+    : "No preview — this format can't be played in-app. Retry the file in Jobs.";
+}
+
 function formatChatDate(iso: string): string {
   const date = new Date(iso);
   const year = date.getFullYear() === new Date().getFullYear() ? "" : ` ${date.getFullYear()}`;
@@ -166,6 +180,8 @@ export function ChatScreen({
   const [previewPendingHit, setPreviewPendingHit] = useState<AnswerHit | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewTcCopied, setPreviewTcCopied] = useState(false);
+  /** Files a real load attempt found has no playable path — disables their row's play button from then on. */
+  const [unplayableFiles, setUnplayableFiles] = useState<Map<number, string>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
   const turnCounterRef = useRef(0);
   const runningTurnIdRef = useRef<string | null>(null);
@@ -191,6 +207,10 @@ export function ChatScreen({
       if (generation !== previewGenerationRef.current) return;
       setPreviewPendingHit(null);
       setPreview({ hit, fileDetail, returnFocusId });
+      if (fileDetail.playbackPath === null) {
+        const reason = unplayableReason(fileDetail.file);
+        setUnplayableFiles((prev) => (prev.get(hit.fileId) === reason ? prev : new Map(prev).set(hit.fileId, reason)));
+      }
     } catch {
       if (generation !== previewGenerationRef.current) return;
       setPreviewPendingHit(null);
@@ -266,6 +286,14 @@ export function ChatScreen({
   useEffect(() => {
     void refreshChats();
   }, [refreshChats]);
+
+  // A retry in Jobs can heal a file between refreshes, so a "no preview"
+  // verdict is only trusted until the next index update.
+  const refreshPlayability = useCallback(async () => {
+    setUnplayableFiles((prev) => (prev.size === 0 ? prev : new Map()));
+  }, []);
+
+  useLiveRefresh(refreshPlayability);
 
   const refreshCoverage = useCallback(async () => {
     const result = await runIpc(() => api.getPipelineSnapshot({ episodeId }), {
@@ -542,6 +570,7 @@ export function ChatScreen({
                     answer={toDisplayAnswer(turn.answer)}
                     onPlay={(hit, returnFocusId) => void openPreview(hit, returnFocusId)}
                     activePreviewKey={activePreviewKey}
+                    unplayableFiles={unplayableFiles}
                     onExportLocators={handleExportLocators}
                     onExportSuccess={showLocatorExportToast}
                     onLegacyExport={(hits) => void handleLegacyExport(hits)}
@@ -567,7 +596,7 @@ export function ChatScreen({
                 {isAnswering ? "Answering…" : "Send"}
               </button>
             </div>
-            <p className="chat-input-hint mono">⌘⏎ to send</p>
+            <p className="chat-input-hint mono">{shortModelName(CHAT_MODEL)} · ⌘⏎ to send</p>
           </div>
         </div>
       </div>
@@ -599,10 +628,13 @@ export function ChatScreen({
                   <div className="preview-bezel">
                     {!preview.fileDetail.playbackPath ? (
                       <div className="preview-unavailable mono">
-                        Original media can't be previewed in-app (MXF). Transcript timecodes still work.
+                        {unplayableReason(preview.fileDetail.file)}
                       </div>
                     ) : isAudioOnly(preview.fileDetail.file) ? (
                       <div className="preview-audio-wrap">
+                        {preview.fileDetail.file.videoUnplayable && (
+                          <span className="preview-audio-label label">Audio only — proxy failed</span>
+                        )}
                         <audio
                           ref={previewAudioRef}
                           className="preview-audio"
@@ -648,6 +680,11 @@ export function ChatScreen({
                     <button className="ghost-btn label" onClick={() => onOpenInLibrary(preview.hit.fileId)}>
                       Open in library
                     </button>
+                    {!preview.fileDetail.playbackPath && onOpenSettings && (
+                      <button className="ghost-btn label" onClick={onOpenSettings}>
+                        Retry in Jobs
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -1040,8 +1077,14 @@ export function ChatScreen({
           min-height: 118px;
           padding: 20px 16px;
           display: flex;
+          flex-direction: column;
+          gap: 10px;
           align-items: center;
           justify-content: center;
+        }
+        .preview-audio-label {
+          color: var(--status-warn);
+          align-self: flex-start;
         }
         .preview-audio {
           width: 100%;
@@ -1078,6 +1121,7 @@ export function ChatScreen({
         }
         .preview-actions {
           display: flex;
+          flex-wrap: wrap;
           gap: 6px;
           padding-top: 6px;
         }
@@ -1115,12 +1159,14 @@ interface TurnAnswerProps {
   onPlay: (hit: AnswerHit, returnFocusId: string) => void;
   /** Play-button id for the hit whose preview pop-over is currently open. */
   activePreviewKey: string | null;
+  /** fileId -> reason, populated once a real load attempt finds no playable path. */
+  unplayableFiles: Map<number, string>;
   onExportLocators: (hits: AnswerHit[]) => Promise<LocatorExportOutcome>;
   onExportSuccess: (outcome: Extract<LocatorExportOutcome, { kind: "written" }>) => void;
   onLegacyExport: (hits: AnswerHit[]) => void;
 }
 
-function TurnAnswer({ answer, onPlay, activePreviewKey, onExportLocators, onExportSuccess, onLegacyExport }: TurnAnswerProps) {
+function TurnAnswer({ answer, onPlay, activePreviewKey, unplayableFiles, onExportLocators, onExportSuccess, onLegacyExport }: TurnAnswerProps) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [exportPending, setExportPending] = useState(false);
   const [blockedReason, setBlockedReason] = useState<"no-hits" | "no-valid-sources" | null>(null);
@@ -1200,18 +1246,29 @@ function TurnAnswer({ answer, onPlay, activePreviewKey, onExportLocators, onExpo
           const active = copiedKey === key;
           const playId = `hit-play-${key}`;
           const previewing = activePreviewKey === playId;
+          const unplayableReasonForHit = unplayableFiles.get(hit.fileId) ?? null;
+          const quoteText = normalizeCopyLine(hit.quote ?? hit.description ?? "");
+          const whyText = hit.quote && hit.description ? normalizeCopyLine(hit.description) : null;
           return (
             <div className={`hit${previewing ? " selected" : ""}`} key={key}>
               <button
                 id={playId}
                 className="hit-play"
                 onClick={() => onPlay(hit, playId)}
-                aria-label={`Play ${hit.filename} at ${hit.inTc}`}
+                aria-label={unplayableReasonForHit ? `${hit.filename}: ${unplayableReasonForHit}` : `Play ${hit.filename} at ${hit.inTc}`}
+                title={unplayableReasonForHit ?? undefined}
+                disabled={Boolean(unplayableReasonForHit)}
               >
                 ▶
               </button>
               <span className="hit-text">
-                <span className="hit-quote">"{normalizeCopyLine(hit.quote ?? hit.description ?? "")}"</span>
+                <span className="hit-quote">"{quoteText}"</span>
+                {whyText && (
+                  <span className="hit-why">
+                    <span className="hit-why-label label">Why</span>
+                    <span className="hit-why-text">{whyText}</span>
+                  </span>
+                )}
                 <span className="hit-meta">
                   <span className="clip">{hit.filename}</span>
                   <span
@@ -1322,11 +1379,16 @@ function TurnAnswer({ answer, onPlay, activePreviewKey, onExportLocators, onExpo
           font-size: 9px;
           color: var(--ink);
         }
-        .hit-play:hover {
+        .hit-play:hover:not(:disabled) {
           background: #d2d6d9;
         }
-        .hit-play:active {
+        .hit-play:active:not(:disabled) {
           box-shadow: var(--bevel-in);
+        }
+        .hit-play:disabled {
+          color: var(--ink-faint);
+          box-shadow: var(--bevel-in);
+          cursor: default;
         }
         .hit-text {
           display: flex;
@@ -1337,6 +1399,26 @@ function TurnAnswer({ answer, onPlay, activePreviewKey, onExportLocators, onExpo
           font-size: 13px;
           line-height: 1.5;
           color: var(--ink);
+        }
+        .hit-why {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+          margin-top: 4px;
+        }
+        .hit-why-label {
+          flex: 0 0 auto;
+          font-size: 8.5px;
+          color: var(--ink-faint);
+        }
+        .hit-why-text {
+          font-size: 12px;
+          line-height: 1.5;
+          color: var(--ink-dim);
+        }
+        .hit.selected .hit-why-label,
+        .hit.selected .hit-why-text {
+          color: #9aa3ad;
         }
         .hit-meta {
           margin-top: 4px;
@@ -1383,6 +1465,9 @@ function TurnAnswer({ answer, onPlay, activePreviewKey, onExportLocators, onExpo
           color: var(--select-ink);
           box-shadow: none;
           border-color: #45494e;
+        }
+        .hit.selected .hit-play:disabled {
+          color: #9aa3ad;
         }
         .legacy-hit-focus-wrap {
           outline: none;

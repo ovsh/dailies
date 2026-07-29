@@ -1,10 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { CHAT_MODEL, EMBEDDING_MODEL } from "../../shared/types";
 import type {
   ModelDownloadProgress, AppSettings, Episode, Job, PipelineSnapshot, ProjectFolder, UpdaterState } from "../../shared/types";
 import { InlineError } from "../components/InlineError";
+import { Toast } from "../components/Toast";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { runIpc } from "../lib/async";
+
+/** First line only — the rest (full ffmpeg stderr, etc.) stays behind the expand affordance. */
+function firstLine(text: string): string {
+  const line = text.split("\n")[0]?.trim();
+  return line && line.length > 0 ? line : text.trim();
+}
+
+function hasMoreLines(text: string): boolean {
+  return text.trim().includes("\n");
+}
 
 const STATUS_COLOR: Record<Job["status"], string> = {
   queued: "var(--ink-faint)",
@@ -108,6 +120,11 @@ export function JobsSettingsScreen({
   const [selectedFailureIds, setSelectedFailureIds] = useState<Set<number>>(() => new Set());
   const [bulkRetryPending, setBulkRetryPending] = useState(false);
   const [csvExportPending, setCsvExportPending] = useState(false);
+  const [expandedFailureIds, setExpandedFailureIds] = useState<Set<number>>(() => new Set());
+  const [expandedJobIds, setExpandedJobIds] = useState<Set<number>>(() => new Set());
+  const [telemetryPending, setTelemetryPending] = useState(false);
+  const [diagnosticsPending, setDiagnosticsPending] = useState(false);
+  const [toast, setToast] = useState<{ message: string; actionLabel?: string; onAction?: () => void } | null>(null);
 
   const refreshJobs = useCallback(async () => {
     const result = await runIpc(api.listJobs, {
@@ -317,6 +334,52 @@ export function JobsSettingsScreen({
       return;
     }
     await api.revealInFinder(result.value.path);
+  }
+
+  function toggleFailureExpanded(fileId: number) {
+    setExpandedFailureIds((current) => {
+      const next = new Set(current);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  }
+
+  function toggleJobExpanded(jobId: number) {
+    setExpandedJobIds((current) => {
+      const next = new Set(current);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  }
+
+  async function handleSetTelemetry(enabled: boolean) {
+    const result = await runIpc(() => api.setTelemetryEnabled(enabled), {
+      setPending: setTelemetryPending,
+      setError: setActionError,
+      fallback: "Could not change the usage data setting.",
+    });
+    if (result.ok) setSettings(result.value);
+  }
+
+  async function handleExportDiagnostics() {
+    const result = await runIpc(() => api.exportDiagnostics(), {
+      setPending: setDiagnosticsPending,
+      setError: setActionError,
+      fallback: "Could not export diagnostics.",
+    });
+    if (!result.ok) return;
+    if (result.value.kind === "blocked") {
+      setActionError(result.value.reason);
+      return;
+    }
+    const path = result.value.path;
+    setToast({
+      message: `Diagnostics written to ${path}`,
+      actionLabel: "Reveal in Finder",
+      onAction: () => void api.revealInFinder(path),
+    });
   }
 
   const waitingCount = jobs?.filter((job) => job.status === "waiting").length ?? 0;
@@ -575,7 +638,19 @@ export function JobsSettingsScreen({
                               </td>
                               <td>{failure.stage}</td>
                               <td className="job-detail error">
-                                <span>{failure.reason}</span>
+                                <span className="reason-line mono">{firstLine(failure.reason)}</span>
+                                {hasMoreLines(failure.reason) && (
+                                  <button
+                                    type="button"
+                                    className="reason-toggle label"
+                                    onClick={() => toggleFailureExpanded(failure.fileId)}
+                                  >
+                                    {expandedFailureIds.has(failure.fileId) ? "Hide full reason" : "Show full reason"}
+                                  </button>
+                                )}
+                                {expandedFailureIds.has(failure.fileId) && (
+                                  <pre className="reason-full mono">{failure.reason}</pre>
+                                )}
                               </td>
                               <td>{failure.attempts}</td>
                               <td>
@@ -637,7 +712,23 @@ export function JobsSettingsScreen({
                           </td>
                           <td>{job.attempts}</td>
                           <td className={`job-detail${job.status === "waiting" ? " waiting" : job.status === "error" ? " error" : ""}`}>
-                            <span>{job.status === "waiting" ? waitingMessage(job) : job.error ?? "—"}</span>
+                            {job.status === "error" && job.error ? (
+                              <>
+                                <span className="reason-line mono">{firstLine(job.error)}</span>
+                                {hasMoreLines(job.error) && (
+                                  <button
+                                    type="button"
+                                    className="reason-toggle label"
+                                    onClick={() => toggleJobExpanded(job.id)}
+                                  >
+                                    {expandedJobIds.has(job.id) ? "Hide full reason" : "Show full reason"}
+                                  </button>
+                                )}
+                                {expandedJobIds.has(job.id) && <pre className="reason-full mono">{job.error}</pre>}
+                              </>
+                            ) : (
+                              <span>{job.status === "waiting" ? waitingMessage(job) : "—"}</span>
+                            )}
                             {job.status === "error" && (
                               <button
                                 type="button"
@@ -821,6 +912,70 @@ export function JobsSettingsScreen({
           <section className="jobs-section">
             <div className="panel-bar">
               <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Model</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
+            </div>
+            <div className="panel-body">
+              <h2 className="display panel-title">Model</h2>
+              <div className="trans-row">
+                <span className="trans-name">Chat model</span>
+                <span className="trans-status mono">{CHAT_MODEL}</span>
+              </div>
+              <div className="trans-row">
+                <span className="trans-name">Embedding model</span>
+                <span className="trans-status mono">{EMBEDDING_MODEL}</span>
+              </div>
+            </div>
+          </section>
+
+          <section className="jobs-section">
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Privacy</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
+            </div>
+            <div className="panel-body">
+              <h2 className="display panel-title">Usage data</h2>
+              <p className="jobs-hint mono" style={{ marginTop: 0, marginBottom: 14 }}>
+                When usage-data sharing is on, Dailies may send questions, answers, clip names, file names, and error reports to the developer to help fix problems. This version sends nothing automatically — use Export diagnostics to share a report by hand.
+              </p>
+              <div className="trans-row">
+                <span className="trans-name">Usage data</span>
+                <div className="segmented-toggle" role="group" aria-label="Usage data">
+                  <button
+                    type="button"
+                    className={`segmented-btn label${settings?.telemetryEnabled ? " active" : ""}`}
+                    onClick={() => void handleSetTelemetry(true)}
+                    disabled={telemetryPending || settings?.telemetryEnabled === true}
+                  >
+                    On
+                  </button>
+                  <button
+                    type="button"
+                    className={`segmented-btn label${settings?.telemetryEnabled === false ? " active" : ""}`}
+                    onClick={() => void handleSetTelemetry(false)}
+                    disabled={telemetryPending || settings?.telemetryEnabled === false}
+                  >
+                    Off
+                  </button>
+                </div>
+              </div>
+              <div className="trans-row">
+                <span className="trans-name">Diagnostics export</span>
+                <button
+                  className="ghost-btn label"
+                  onClick={() => void handleExportDiagnostics()}
+                  disabled={diagnosticsPending}
+                >
+                  {diagnosticsPending ? "Exporting…" : "Export diagnostics"}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="jobs-section">
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
               <span className="panel-bar-title">Danger zone</span>
               <span className="panel-bar-stripes" aria-hidden="true" />
             </div>
@@ -840,6 +995,15 @@ export function JobsSettingsScreen({
           </section>
         </div>
       </div>
+
+      {toast && (
+        <Toast
+          message={toast.message}
+          actionLabel={toast.actionLabel}
+          onAction={toast.onAction}
+          onDismiss={() => setToast(null)}
+        />
+      )}
 
       <style>{`
         .jobs-screen {
@@ -1110,6 +1274,45 @@ export function JobsSettingsScreen({
         .job-detail.waiting {
           color: var(--status-warn);
         }
+        .reason-line {
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 280px;
+        }
+        .reason-toggle {
+          display: block;
+          margin-top: 4px;
+          background: none;
+          border: none;
+          padding: 0;
+          color: var(--ink-faint);
+          font-size: 9px;
+          text-decoration: underline;
+          cursor: pointer;
+        }
+        .reason-toggle:hover {
+          color: var(--accent);
+        }
+        .reason-full {
+          margin: 6px 0 0;
+          padding: 8px 9px;
+          max-width: 280px;
+          max-height: 140px;
+          overflow: auto;
+          white-space: pre-wrap;
+          word-break: break-word;
+          background: var(--paper-alt);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
+          font-size: 10.5px;
+          color: var(--status-error);
+        }
+        .job-detail.waiting .reason-full {
+          color: var(--status-warn);
+        }
         .jobs-empty {
           color: var(--ink-faint);
           padding: 16px 0;
@@ -1308,6 +1511,39 @@ export function JobsSettingsScreen({
           margin-top: 14px;
           font-size: 11px;
           color: var(--ink-faint);
+        }
+        .segmented-toggle {
+          display: inline-flex;
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          overflow: hidden;
+          box-shadow: var(--bevel-in);
+        }
+        .segmented-btn {
+          font-family: var(--font-body);
+          font-size: 10.5px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--ink-faint);
+          background: var(--ground-raised);
+          border: none;
+          padding: 7px 14px;
+          cursor: pointer;
+        }
+        .segmented-btn + .segmented-btn {
+          border-left: 1px solid var(--chrome-lo);
+        }
+        .segmented-btn.active {
+          background: var(--select-bg);
+          color: var(--select-ink);
+        }
+        .segmented-btn:disabled {
+          cursor: default;
+        }
+        .segmented-btn:hover:not(.active):not(:disabled) {
+          background: #d2d6d9;
+          color: var(--ink-dim);
         }
       `}</style>
     </div>

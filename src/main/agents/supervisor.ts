@@ -23,6 +23,9 @@ import {
 import type { SearchDisposition, SearchPlan, TranscriptWindowCenter } from "./tools";
 
 const MAX_ITERS = 16;
+const MAX_REASON_LENGTH = 200;
+const ANALYTICAL_QUESTION =
+  /\b(?:how many|number of|count(?:ing)?|total|compare|comparison|contrast|differences?|versus|vs\.?|which (?:house|home|property|option|one))\b/i;
 
 export interface ChatTurnOptions {
   db: DailiesDB;
@@ -62,9 +65,11 @@ Always finish by calling final_answer exactly once with one disposition.
 - "empty" means no supported footage hit was found.
 - "results" requires one or more segment references returned by transcript search or a transcript window during this turn.
 
-For results, reference only segment candidate IDs that appeared in transcript tool results during this turn. A hit contains only source "segment", its candidate ID, and confidence. Never write a clip name, quote, timecode, description, or other footage fact. The application reloads those facts from the database.
+For results, reference only segment candidate IDs that appeared in transcript tool results during this turn. A hit contains source "segment", its candidate ID, confidence, and an optional reason. The reason is short model-written commentary that explains why the hit answers the editor's question. Do not restate or invent a quote in the reason. Never write a clip name, quote, timecode, or other database fact into the hit. The application reloads those facts from the database.
 
-An optional summary has text and source_segment_ids. Include it only when every factual statement in the summary is supported by every listed segment, and every listed segment is also a selected rendered hit. Otherwise omit the summary. Do not put factual prose anywhere else.
+Classify counting, comparison, contrast, and "which house..." questions as analytical. For an analytical question, gather relevant transcript evidence first, then reason over the gathered hits; do not return empty merely because no transcript segment states the combined answer verbatim. If the evidence is incomplete, state what can and cannot be established.
+
+A descriptive summary must be one sentence. An analytical summary may use up to three sentences. Every factual claim in a summary must be supported by source_segment_ids, and every support ID must also be a selected rendered hit. A useful analytical shape is: "They look at three houses: the rustic house (clip A), the modern house (clip B), and the coastal house (clip C)." Otherwise omit the summary. Do not put factual prose anywhere else.
 
 Search is grounded in spoken transcripts. Do not claim that an unspoken subject is visible on screen. A "raw" hit uses source timecode. A "final" hit uses timeline timecode in the finished episode.`;
 
@@ -205,6 +210,11 @@ const SUPERVISOR_TOOLS: ToolDef[] = [
               source: { type: "string", enum: ["segment"] },
               id: { type: "number" },
               confidence: { type: "string", enum: ["high", "medium", "low"] },
+              reason: {
+                type: "string",
+                maxLength: MAX_REASON_LENGTH,
+                description: "Short explanation of why this hit answers the question",
+              },
             },
             required: ["source", "id", "confidence"],
           },
@@ -244,6 +254,7 @@ interface CandidateReference {
   source: "segment";
   id: number;
   confidence: Confidence;
+  reason?: string;
 }
 
 interface GroundedSummary {
@@ -261,6 +272,12 @@ function positiveInteger(value: unknown): number | null {
   return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
+function sanitizeReason(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.replace(/\s+/g, " ").trim().slice(0, MAX_REASON_LENGTH).trim();
+  return text.length > 0 ? text : undefined;
+}
+
 function coerceCandidateReference(raw: unknown): CandidateReference | null {
   if (!isRecord(raw)) return null;
   const source = raw.source === "segment" ? raw.source : null;
@@ -269,7 +286,14 @@ function coerceCandidateReference(raw: unknown): CandidateReference | null {
     raw.confidence === "high" || raw.confidence === "medium" || raw.confidence === "low"
       ? raw.confidence
       : null;
-  return source !== null && id !== null && confidence !== null ? { source, id, confidence } : null;
+  if (source === null || id === null || confidence === null) return null;
+  const reason = sanitizeReason(raw.reason);
+  return {
+    source,
+    id,
+    confidence,
+    ...(reason === undefined ? {} : { reason }),
+  };
 }
 
 function coerceGroundedSummary(raw: unknown): GroundedSummary | null {
@@ -310,10 +334,11 @@ function isValidStoredRange(startS: number, endS: number, durationS: number): bo
   );
 }
 
-function firstSentence(text: string): string | null {
-  const [sentence = ""] = text.trim().split(/(?<=[.!?])\s+/, 1);
-  const trimmed = sentence.trim();
-  return trimmed.length > 0 ? trimmed : null;
+function boundedSummary(text: string, question: string): string | null {
+  const sentenceLimit = ANALYTICAL_QUESTION.test(question) ? 3 : 1;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed.split(/(?<=[.!?])\s+/).slice(0, sentenceLimit).join(" ").trim() || null;
 }
 
 /**
@@ -325,6 +350,7 @@ export function hydrateFinalAnswer(
   db: DailiesDB,
   registry: CandidateRegistry,
   episodeId: number | null,
+  question = "",
   warn: (message: string) => void = (message) => console.warn(message),
 ): StructuredAgentAnswer {
   const rec = isRecord(args) ? args : {};
@@ -405,6 +431,7 @@ export function hydrateFinalAnswer(
       segmentId: row.segmentId,
       supportsSummary: false,
       sourceRateFallback: inTimecode.sourceRateFallback,
+      ...(ref.reason === undefined ? {} : { description: ref.reason }),
     });
     emitted.add(key);
   }
@@ -422,7 +449,8 @@ export function hydrateFinalAnswer(
   if (rec.summary !== undefined && !summaryIsGrounded) {
     warn("[chat-grounding] dropped summary with unsupported segment references");
   }
-  const summaryText = summaryIsGrounded && summary !== null ? firstSentence(summary.text) : null;
+  const summaryText =
+    summaryIsGrounded && summary !== null ? boundedSummary(summary.text, question) : null;
   const supportIds = summaryText !== null && summary !== null
     ? new Set(summary.sourceSegmentIds)
     : new Set<number>();
@@ -650,13 +678,14 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgen
           db,
           registry,
           episodeId,
+          userText,
         );
       }
 
       if (calls.length === 0) {
         const parsedFinal = parseFinalAnswerText(response.message.content ?? "");
         if (parsedFinal) {
-          return hydrateFinalAnswer(parsedFinal, db, registry, episodeId);
+          return hydrateFinalAnswer(parsedFinal, db, registry, episodeId, userText);
         }
         return { kind: "empty", coverage: scopedCoverage(db, episodeId) };
       }
@@ -697,11 +726,12 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgen
         db,
         registry,
         episodeId,
+        userText,
       );
     }
     const parsedFinal = parseFinalAnswerText(forced.message.content ?? "");
     if (parsedFinal) {
-      return hydrateFinalAnswer(parsedFinal, db, registry, episodeId);
+      return hydrateFinalAnswer(parsedFinal, db, registry, episodeId, userText);
     }
     return { kind: "empty", coverage: scopedCoverage(db, episodeId) };
   } catch (err) {

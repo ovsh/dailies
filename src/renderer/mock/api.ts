@@ -426,6 +426,15 @@ export function createMockApi(): DailiesAPI {
       return settings;
     },
 
+    async setTelemetryEnabled(enabled: boolean) {
+      settings = { ...settings, telemetryEnabled: enabled };
+      return settings;
+    },
+
+    async exportDiagnostics() {
+      return { kind: "written", path: "/mock/Dailies Exports/diagnostics.zip" } as const;
+    },
+
     async setApiKey(_provider: "openrouter") {
       settings = { ...settings, apiKeySet: true, apiKeyStatus: "connected" };
       notifyIndexUpdate();

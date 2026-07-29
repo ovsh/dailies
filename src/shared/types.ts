@@ -343,6 +343,10 @@ export type ExportWriteOutcome =
   | { kind: "written"; result: ExportResult }
   | { kind: "blocked"; reason: "no-hits" | "no-valid-sources" };
 
+export type DiagnosticsExportOutcome =
+  | { kind: "written"; path: string }
+  | { kind: "blocked"; reason: string };
+
 export type LocatorExportOutcome =
   | {
       kind: "written";
@@ -368,6 +372,8 @@ export const EMBEDDING_DIM = 768;
 /** Global (cross-project) settings. Folders/episodes live on ProjectState. */
 export interface AppSettings {
   apiKeySet: boolean;
+  /** Usage-data sharing (questions, answers, file names, errors). Default on; user-visible switch. */
+  telemetryEnabled: boolean;
   /** Only "connected" means the stored key passed an OpenRouter API request. */
   apiKeyStatus: ApiKeyStatus;
   whisperModel: string;

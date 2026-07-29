@@ -56,6 +56,7 @@ interface GoldCase {
   allowedHits: GoldHit[];
   forbiddenHits: ForbiddenHit[];
   summaryRequired: boolean;
+  summaryClaims: string[][];
   maxUnexpectedConfidence: Confidence;
   reviewNote: string;
 }
@@ -126,6 +127,9 @@ interface EvalCaseResult {
   summaryPresent: boolean;
   summarySupported: boolean;
   summaryRequiredMet: boolean;
+  summaryClaimCount: number;
+  matchedSummaryClaimCount: number;
+  summaryClaimsMet: boolean;
   honestEmpty: boolean;
   signature: string;
   error: string | null;
@@ -138,6 +142,7 @@ interface EvalReport {
   wrongAnswerRate: number;
   scopeLeaks: number;
   summarySupportRate: number;
+  analyticalAnswerRate: number;
   honestEmptyResults: number;
   gatePassed: boolean;
   cases: EvalCaseResult[];
@@ -179,6 +184,7 @@ const CATEGORY_COUNTS = new Map([
   ["multi-clip-comparison", 2],
   ["notes-assisted-search", 2],
   ["low-confidence-partial-coverage", 2],
+  ["analytical-answer", 2],
 ]);
 
 const CONFIDENCE_RANK: Record<Confidence, number> = {
@@ -208,6 +214,18 @@ function requiredNumber(value: unknown, label: string): number {
 function stringArray(value: unknown, label: string): string[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
   return value.map((item, index) => requiredString(item, `${label}[${index}]`));
+}
+
+function summaryClaims(value: unknown, label: string): string[][] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value.map((claim, index) => {
+    const alternatives = stringArray(claim, `${label}[${index}]`);
+    if (alternatives.length === 0) {
+      throw new Error(`${label}[${index}] must contain at least one accepted phrase`);
+    }
+    return alternatives;
+  });
 }
 
 function parsePriorTurn(value: unknown, label: string): PriorTurn {
@@ -310,6 +328,7 @@ function parseGoldCase(value: Record<string, unknown>, index: number): GoldCase 
       parseForbiddenHit(hit, `${label}.forbiddenHits[${hitIndex}]`)
     ),
     summaryRequired: value.summaryRequired,
+    summaryClaims: summaryClaims(value.summaryClaims, `${label}.summaryClaims`),
     maxUnexpectedConfidence: value.maxUnexpectedConfidence,
     reviewNote,
   };
@@ -561,6 +580,12 @@ function assessCase(
     ? summarySupportCount > 0
     : summarySupportCount === 0;
   const summaryRequiredMet = !goldCase.summaryRequired || summaryPresent;
+  const normalizedSummary =
+    answer.kind === "results" ? answer.summary?.toLowerCase() ?? "" : "";
+  const matchedSummaryClaimCount = goldCase.summaryClaims.filter((alternatives) =>
+    alternatives.some((phrase) => normalizedSummary.includes(phrase.toLowerCase()))
+  ).length;
+  const summaryClaimsMet = matchedSummaryClaimCount === goldCase.summaryClaims.length;
   const requiredHitRecall = goldCase.requiredHits.length === 0
     ? 1
     : matchedRequiredHitCount / goldCase.requiredHits.length;
@@ -582,6 +607,9 @@ function assessCase(
     summaryPresent,
     summarySupported,
     summaryRequiredMet,
+    summaryClaimCount: goldCase.summaryClaims.length,
+    matchedSummaryClaimCount,
+    summaryClaimsMet,
     honestEmpty: goldCase.expectedDisposition === "empty" && answer.kind === "empty",
     signature: answerSignature(answer),
     error: null,
@@ -606,6 +634,9 @@ function errorCase(goldCase: GoldCase, error: unknown): EvalCaseResult {
     summaryPresent: false,
     summarySupported: true,
     summaryRequiredMet: !goldCase.summaryRequired,
+    summaryClaimCount: goldCase.summaryClaims.length,
+    matchedSummaryClaimCount: 0,
+    summaryClaimsMet: goldCase.summaryClaims.length === 0,
     honestEmpty: false,
     signature: JSON.stringify({ kind: "error" }),
     error: error instanceof Error ? error.message : String(error),
@@ -628,6 +659,10 @@ function makeReport(cases: EvalCaseResult[]): EvalReport {
   const summaries = cases.filter((result) => result.summaryPresent);
   const contractFailures = cases.filter((result) => !result.contractValid).length;
   const unsupportedSummaries = cases.filter((result) => !result.summarySupported).length;
+  const analyticalCases = cases.filter((result) => result.summaryClaimCount > 0);
+  const failedAnalyticalAnswers = analyticalCases.filter(
+    (result) => !result.summaryClaimsMet,
+  ).length;
   const scopeLeaks = cases.reduce((count, result) => count + result.scopeLeaks, 0);
   return {
     contractRate: total === 0 ? 0 : (total - contractFailures) / total,
@@ -641,10 +676,14 @@ function makeReport(cases: EvalCaseResult[]): EvalReport {
     summarySupportRate: summaries.length === 0
       ? 1
       : summaries.filter((result) => result.summarySupported).length / summaries.length,
+    analyticalAnswerRate: analyticalCases.length === 0
+      ? 1
+      : (analyticalCases.length - failedAnalyticalAnswers) / analyticalCases.length,
     honestEmptyResults: cases.filter((result) => result.honestEmpty).length,
     gatePassed:
       contractFailures === 0 &&
       unsupportedSummaries === 0 &&
+      failedAnalyticalAnswers === 0 &&
       scopeLeaks === 0 &&
       confidentWrong === 0,
     cases,
@@ -826,6 +865,7 @@ function printReport(run: number, report: EvalReport): void {
     wrongAnswerRate: report.wrongAnswerRate,
     scopeLeaks: report.scopeLeaks,
     summarySupportRate: report.summarySupportRate,
+    analyticalAnswerRate: report.analyticalAnswerRate,
     honestEmptyResults: report.honestEmptyResults,
     gatePassed: report.gatePassed,
   });
@@ -853,6 +893,7 @@ function selfTestCase(): GoldCase {
     allowedHits: [],
     forbiddenHits: [],
     summaryRequired: true,
+    summaryClaims: [],
     maxUnexpectedConfidence: "low",
     reviewNote: "Self-test",
   };
@@ -875,7 +916,12 @@ function selfTestHit(overrides: Partial<GroundedAnswerHit> = {}): GroundedAnswer
   };
 }
 
-function runSelfTest(): void {
+function runSelfTest(manifestPath: string): void {
+  const manifest = loadManifest(manifestPath);
+  assertSelfTest(
+    validateDistribution(manifest).length === 0,
+    `manifest distribution is invalid: ${validateDistribution(manifest).join("; ")}`,
+  );
   const goldCase = selfTestCase();
   const snapshot: FixtureSnapshot = {
     episodes: [{ id: 1, code: "101" }],
@@ -922,6 +968,32 @@ function runSelfTest(): void {
   }, getContext);
   assertSelfTest(!unsupported.summarySupported, "unsupported summary passed");
   assertSelfTest(!makeReport([unsupported]).gatePassed, "unsupported summary did not fail gate");
+
+  const analyticalCase: GoldCase = {
+    ...goldCase,
+    summaryClaims: [["three", "3"], ["rustic"]],
+  };
+  const incompleteAnalysis = assessCase(analyticalCase, {
+    kind: "results",
+    summary: "They visit two houses.",
+    hits: [selfTestHit()],
+  }, getContext);
+  assertSelfTest(!incompleteAnalysis.summaryClaimsMet, "incomplete analytical answer passed");
+  assertSelfTest(
+    !makeReport([incompleteAnalysis]).gatePassed,
+    "incomplete analytical answer did not fail gate",
+  );
+  const completeAnalysis = assessCase(analyticalCase, {
+    kind: "results",
+    summary: "They visit 3 houses, including the rustic house.",
+    hits: [selfTestHit()],
+  }, getContext);
+  assertSelfTest(completeAnalysis.summaryClaimsMet, "complete analytical answer failed");
+  assertSelfTest(
+    makeReport([completeAnalysis]).analyticalAnswerRate === 1,
+    "analytical answer rate is incorrect",
+  );
+  assertSelfTest(makeReport([completeAnalysis]).gatePassed, "complete analytical answer failed gate");
 
   const leaked = assessCase(goldCase, {
     kind: "results",
@@ -1059,7 +1131,7 @@ async function main(options: CliOptions): Promise<void> {
 
 const options = parseCli(process.argv.slice(2));
 if (options.selfTest) {
-  runSelfTest();
+  runSelfTest(options.casesPath);
 } else {
   await main(options);
 }

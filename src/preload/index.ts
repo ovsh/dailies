@@ -38,6 +38,8 @@ const api: DailiesAPI = {
 
   // settings
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
+  setTelemetryEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.setTelemetryEnabled, enabled),
+  exportDiagnostics: () => ipcRenderer.invoke(IPC.exportDiagnostics),
   downloadWhisperModel: () => ipcRenderer.invoke(IPC.downloadWhisperModel),
   onModelProgress: (cb: (p: ModelDownloadProgress) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, p: ModelDownloadProgress) => cb(p);

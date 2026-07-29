@@ -288,14 +288,21 @@ export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => ({
   addedAt: new Date(Date.UTC(2026, 6, 15 + (s.id % 5), 9, 30)).toISOString(),
   hasTranscript: s.hasTranscript,
   hasVideo: true,
-  proxyPath: s.status === "ready" ? `/Volumes/DAILIES_01/proxies/${s.filename.replace(".mov", "_proxy.mp4")}` : null,
+  // File 9 stands in for "proxy generation failed" — exercises the honest
+  // no-preview state instead of a dead player.
+  proxyPath:
+    s.id === 9
+      ? null
+      : s.status === "ready"
+        ? `/Volumes/DAILIES_01/proxies/${s.filename.replace(".mov", "_proxy.mp4")}`
+        : null,
   episodeId: s.episodeId ?? null,
   role: s.role ?? "raw",
   clipName: s.clipName ?? null,
   mediaKind: s.mediaKind ?? "standard",
   memberPaths: null,
   clipKey: null,
-  videoUnplayable: false,
+  videoUnplayable: s.id === 9,
   discoveryFailed: false,
 }));
 
@@ -405,7 +412,9 @@ export function getFileDetail(fileId: number): FileDetail | null {
   if (!file) return null;
   return {
     file,
-    playbackPath: file.proxyPath ?? file.path,
+    // Never fall back to raw/original media the renderer can't decode —
+    // an honest null means the UI must show the no-preview explanation.
+    playbackPath: file.proxyPath ?? (file.videoUnplayable ? null : file.path),
     scenes: getScenes(fileId),
     segments: getSegments(fileId),
   };
@@ -413,17 +422,26 @@ export function getFileDetail(fileId: number): FileDetail | null {
 
 // ---------- jobs ----------
 
+const MOCK_PROXY_FAILURE_REASON = `ffmpeg exited with code 1
+[proxy] scale filter failed: Invalid argument
+Error opening filters: Invalid argument
+Source: /Volumes/DAILIES_01/footage/A004_C002_0719_guide_interview_night.mov
+Command: ffmpeg -y -i <source> -vf scale=960:-2 -c:v h264 -crf 20 <proxy>
+Attempt 3 of 3 — giving up. Retry from Jobs once the source is remuxed.`;
+
 export const MOCK_JOBS: Job[] = [
   { id: 1, fileId: 8, filename: "A003_C027_0718_camp_broll_evening.mov", stage: "proxy", status: "running", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 20, 15, 2)).toISOString() },
   { id: 2, fileId: 8, filename: "A003_C027_0718_camp_broll_evening.mov", stage: "transcribe", status: "queued", attempts: 0, error: null, updatedAt: new Date(Date.UTC(2026, 6, 20, 15, 2)).toISOString() },
   { id: 5, fileId: 10, filename: "A004_C018_0719_bear_river_salmon_run.mov", stage: "transcribe", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 19, 18, 12)).toISOString() },
   { id: 6, fileId: 6, filename: "EP102_v08_FINAL.mov", stage: "scenes", status: "done", attempts: 1, error: null, updatedAt: new Date(Date.UTC(2026, 6, 19, 9, 30)).toISOString() },
+  { id: 7, fileId: 9, filename: "A004_C002_0719_guide_interview_night.mov", stage: "proxy", status: "error", attempts: 3, error: MOCK_PROXY_FAILURE_REASON, updatedAt: new Date(Date.UTC(2026, 6, 20, 8, 45)).toISOString() },
 ];
 
 // ---------- settings ----------
 
 export const MOCK_SETTINGS: AppSettings = {
   apiKeySet: true,
+  telemetryEnabled: true,
   apiKeyStatus: "connected",
   whisperModel: "large-v3",
   whisperAvailable: true,
@@ -485,12 +503,15 @@ export function buildMockAnswer(question: string): AgentAnswer {
   const hits: AnswerHit[] = [
     hit(3, "spoken", 12, 19, "high", {
       quote: "The bears come down to the river the moment the salmon start running. It's almost clockwork.",
+      description: "Directly states the timing relationship between salmon run and bear arrival — the clearest answer to the question.",
     }),
     hit(3, "spoken", 102, 114, "medium", {
       quote: "What surprises people is how patient the bears are. They'll stand in that cold water for an hour without moving.",
+      description: "Supporting context on bear behavior at the river bend, from the same interview.",
     }),
     hit(9, "spoken", 60, 71, "low", {
       quote: "The bears are less cautious after dark. Fewer people on the river, less competition for the good spots.",
+      description: "Related but off-topic: describes night behavior, not the salmon-run timing itself. Proxy for this file failed, so no preview is available.",
     }),
   ];
 

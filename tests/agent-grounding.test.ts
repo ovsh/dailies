@@ -9,6 +9,7 @@ import {
   hydrateFinalAnswer,
   runChatTurn,
 } from "../src/main/agents/supervisor";
+import { createOpenRouterClient } from "../src/main/agents/openrouter-client";
 import { openDatabase } from "../src/main/db/database";
 import type { OpenRouterClient } from "../src/main/agents/openrouter-client";
 import {
@@ -17,7 +18,7 @@ import {
   getTranscriptWindowTool,
   searchTranscriptsTool,
 } from "../src/main/agents/tools";
-import { CHAT_MODEL } from "../src/shared/types";
+import { CHAT_MODEL, EMBEDDING_MODEL } from "../src/shared/types";
 
 function makeDb(name: string) {
   const dir = mkdtempSync(path.join(tmpdir(), "dailies-grounding-"));
@@ -105,7 +106,7 @@ describe("final answer grounding", () => {
         text: "Grounded answer",
         source_segment_ids: [good.segmentId],
       },
-    }, db, registry, selected.id, (warning) => warnings.push(warning));
+    }, db, registry, selected.id, "", (warning) => warnings.push(warning));
 
     expect(answer).toEqual({
       kind: "results",
@@ -546,7 +547,7 @@ describe("flat agent loop", () => {
         text: "An unsupported summary.",
         source_segment_ids: [999_999],
       },
-    }, db, registry, null, (warning) => warnings.push(warning));
+    }, db, registry, null, "", (warning) => warnings.push(warning));
 
     expect(answer.kind).toBe("results");
     if (answer.kind !== "results") throw new Error("expected results");
@@ -582,6 +583,72 @@ describe("flat agent loop", () => {
     expect(answer.kind).toBe("results");
     if (answer.kind !== "results") throw new Error("expected results");
     expect(answer.summary).toBe("The first sentence is grounded.");
+    db.close();
+  });
+
+  it("keeps up to three grounded sentences for an analytical question", () => {
+    const db = makeDb("analytical-summary");
+    const file = addFile(db, "houses.mov", 20, null);
+    db.replaceTranscript(file.id, [{
+      startS: 2,
+      endS: 4,
+      text: "They visit the rustic, modern, and coastal houses.",
+      avgConf: 1,
+      words: [],
+    }]);
+    const hit = db.getTranscriptHit(db.listSegments(file.id)[0]!.id)!;
+    const registry = createCandidateRegistry();
+    registry.segments.set(hit.segmentId, hit);
+
+    const answer = hydrateFinalAnswer({
+      disposition: "results",
+      hits: [{ source: "segment", id: hit.segmentId, confidence: "high" }],
+      summary: {
+        text: "They visit three houses. The first is rustic. The second is modern. The fourth sentence must not render.",
+        source_segment_ids: [hit.segmentId],
+      },
+    }, db, registry, null, "How many houses do they visit?");
+
+    expect(answer.kind).toBe("results");
+    if (answer.kind !== "results") throw new Error("expected results");
+    expect(answer.summary).toBe(
+      "They visit three houses. The first is rustic. The second is modern.",
+    );
+    db.close();
+  });
+
+  it("sanitizes and caps a model-written hit reason without changing the stored quote", () => {
+    const db = makeDb("hit-reason");
+    const file = addFile(db, "reason.mov", 20, null);
+    db.replaceTranscript(file.id, [{
+      startS: 2,
+      endS: 4,
+      text: "The stored quote stays verbatim.",
+      avgConf: 1,
+      words: [],
+    }]);
+    const hit = db.getTranscriptHit(db.listSegments(file.id)[0]!.id)!;
+    const registry = createCandidateRegistry();
+    registry.segments.set(hit.segmentId, hit);
+    const reason = `It directly names the answer.\n${"Supporting context ".repeat(20)}`;
+
+    const answer = hydrateFinalAnswer({
+      disposition: "results",
+      hits: [{
+        source: "segment",
+        id: hit.segmentId,
+        confidence: "high",
+        reason,
+        quote: "A model-written quote must be ignored.",
+      }],
+    }, db, registry, null);
+
+    expect(answer.kind).toBe("results");
+    if (answer.kind !== "results") throw new Error("expected results");
+    expect(answer.hits[0].quote).toBe("The stored quote stays verbatim.");
+    expect(answer.hits[0].description).toHaveLength(200);
+    expect(answer.hits[0].description).not.toMatch(/[\r\n]/);
+    expect(answer.hits[0].description).toMatch(/^It directly names the answer\. Supporting context/);
     db.close();
   });
 
@@ -991,10 +1058,8 @@ describe("flat agent loop", () => {
 
   it("always calls the single chat model and surfaces a model error to the caller", async () => {
     const db = makeDb("model-error");
-    const requests: string[] = [];
     const client: OpenRouterClient = {
-      chat: vi.fn(async (request) => {
-        requests.push(request.model);
+      chat: vi.fn(async () => {
         const error = new Error("model not found");
         Object.assign(error, { status: 404 });
         throw error;
@@ -1013,8 +1078,45 @@ describe("flat agent loop", () => {
       client,
     })).rejects.toThrow("404: model not found");
 
-    expect(requests).toEqual([CHAT_MODEL]);
+    expect(vi.mocked(client.chat).mock.calls[0]?.[0].model).toBe(CHAT_MODEL);
     db.close();
+  });
+
+  it("pins chat and embedding providers on the OpenRouter wire payload", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      const body = bodies.length === 1
+        ? { choices: [{ message: { content: "ok" } }] }
+        : { data: [{ index: 0, embedding: [1, 0] }] };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const client = createOpenRouterClient(() => "test-key");
+      await client.chat({ model: "not-the-pinned-chat-model", messages: [] });
+      await client.embed("not-the-pinned-embedding-model", ["query"], 2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(bodies).toEqual([
+      {
+        model: CHAT_MODEL,
+        messages: [],
+        provider: { allow_fallbacks: false },
+      },
+      {
+        model: EMBEDDING_MODEL,
+        input: ["query"],
+        dimensions: 2,
+        provider: { allow_fallbacks: false },
+      },
+    ]);
   });
 
   it("forces final_answer after the 16-round tool budget", async () => {

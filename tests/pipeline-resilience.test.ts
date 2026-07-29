@@ -13,6 +13,10 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  run: vi.fn(),
+  makeProxyForTest: async (_path: string, _outDir: string, _timeoutMs?: number): Promise<string> => {
+    throw new Error("Proxy test helper was not initialized");
+  },
   whisperReady: false,
   probeFile: vi.fn(),
   identifyFile: vi.fn(),
@@ -38,6 +42,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/main/pipeline/binaries", () => ({
+  findFfmpegBinary: () => "ffmpeg",
   findFfprobeBinary: () => "ffprobe",
   findWhisperBinary: () => (mocks.whisperReady ? "/fake/whisper" : null),
   findWhisperModel: () => (mocks.whisperReady ? "/fake/model.bin" : null),
@@ -54,11 +59,17 @@ vi.mock("../src/main/pipeline/opatom", async (importOriginal) => {
       mocks.mxfAtoms.get(filePath) ?? null),
   };
 });
-vi.mock("../src/main/pipeline/proxy", () => ({
-  extractAudio: vi.fn(async () => {}),
-  extractKeyframe: vi.fn(async () => {}),
-  makeProxy: mocks.makeProxy,
-}));
+vi.mock("../src/main/pipeline/exec", () => ({ run: mocks.run }));
+vi.mock("../src/main/pipeline/proxy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/main/pipeline/proxy")>();
+  mocks.makeProxyForTest = actual.makeProxy;
+  return {
+    ...actual,
+    extractAudio: vi.fn(async () => {}),
+    extractKeyframe: vi.fn(async () => {}),
+    makeProxy: mocks.makeProxy,
+  };
+});
 vi.mock("../src/main/pipeline/scenes", () => ({
   detectScenes: mocks.detectScenes,
 }));
@@ -125,6 +136,7 @@ function setLegacyFileStatus(dataDir: string, fileId: number, status: string): v
 }
 
 beforeEach(() => {
+  mocks.run.mockReset();
   mocks.whisperReady = false;
   mocks.probeFile.mockReset().mockImplementation(async (filePath: string) =>
     mocks.probeByPath.get(filePath) ?? mocks.probeInput);
@@ -167,6 +179,53 @@ afterEach(async () => {
 });
 
 describe("pipeline prerequisite and applicability handling", () => {
+  it("encodes proxies as yuv420p", async () => {
+    mocks.run.mockResolvedValue({
+      stdout: "",
+      stderr: "",
+      code: 0,
+      signal: null,
+      timedOut: false,
+    });
+
+    await mocks.makeProxyForTest("/media/avid-422.mov", "/cache");
+
+    expect(mocks.run).toHaveBeenCalledWith("ffmpeg", [
+      "-y",
+      "-i",
+      "/media/avid-422.mov",
+      "-vf",
+      "scale=960:-2",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-crf",
+      "26",
+      "-preset",
+      "veryfast",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-movflags",
+      "+faststart",
+      "/cache/proxy.mp4",
+    ], { timeoutMs: undefined });
+  });
+
+  it("includes the terminating signal in a proxy failure", async () => {
+    mocks.run.mockResolvedValue({
+      stdout: "",
+      stderr: "process stopped",
+      code: null,
+      signal: "SIGKILL",
+      timedOut: false,
+    });
+
+    await expect(mocks.makeProxyForTest("/media/interrupted.mov", "/cache"))
+      .rejects.toThrow("signal SIGKILL");
+  });
   it("requeues and processes a waiting transcription when startup finds the model", async () => {
     const { db, pipeline } = setup();
     const file = db.upsertFile({
@@ -493,6 +552,40 @@ describe("pipeline prerequisite and applicability handling", () => {
     await waitForDrain(db);
     await pipeline.stop();
   });
+
+  it.each(["spawn EBADF", "spawn EMFILE"])(
+    "retries a proxy after %s with backoff",
+    async (error) => {
+      const { db, pipeline } = setup();
+      mocks.makeProxy
+        .mockRejectedValueOnce(new Error(error))
+        .mockImplementation(async (_path: string, outDir: string) => path.join(outDir, "proxy.mp4"));
+      const file = db.upsertFile({
+        path: "/media/fd-exhausted.mov",
+        filename: "fd-exhausted.mov",
+        durationS: 5,
+        fps: 24,
+        dropFrame: false,
+        startTc: "01:00:00:00",
+        codec: "prores",
+        audioChannels: 2,
+        fileHash: error,
+        hasVideo: true,
+      });
+      db.replaceTranscript(file.id, []);
+      db.markTranscribed(file.id);
+      db.enqueueJob(file.id, "proxy");
+      pipeline.start();
+
+      await vi.waitFor(() => {
+        expect(db.listJobsForFile(file.id).find((job) => job.stage === "proxy"))
+          .toMatchObject({ status: "done", attempts: 1 });
+      }, { timeout: 5000 });
+      expect(mocks.makeProxy).toHaveBeenCalledTimes(2);
+      expect(db.getFile(file.id)?.videoUnplayable).toBe(false);
+      await pipeline.stop();
+    },
+  );
 
   it("keeps a scenes failure job-only without degrading playable video", async () => {
     const { db, pipeline } = setup();

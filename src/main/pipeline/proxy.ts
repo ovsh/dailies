@@ -9,12 +9,13 @@ import { run } from "./exec";
 
 async function runFfmpeg(args: string[], timeoutMs?: number): Promise<void> {
   const ffmpegBin = findFfmpegBinary();
-  const { stderr, code, timedOut } = await run(ffmpegBin, args, { timeoutMs });
+  const { stderr, code, signal, timedOut } = await run(ffmpegBin, args, { timeoutMs });
   if (timedOut) {
     throw new Error(`ffmpeg timed out after ${timeoutMs}ms`);
   }
   if (code !== 0) {
-    throw new Error(`ffmpeg failed (exit ${code ?? "unknown"}): ${stderr.slice(-2000)}`);
+    const reason = code === null ? `signal ${signal ?? "unknown"}` : `exit ${code}`;
+    throw new Error(`ffmpeg failed (${reason}): ${stderr.slice(-2000)}`);
   }
 }
 
@@ -29,6 +30,8 @@ export async function makeProxy(path: string, outDir: string, timeoutMs?: number
     "scale=960:-2",
     "-c:v",
     "libx264",
+    "-pix_fmt",
+    "yuv420p",
     "-crf",
     "26",
     "-preset",

@@ -14,6 +14,7 @@ import type {
 } from "../shared/types";
 import type { ProjectManager } from "./project-manager";
 import type { AppSettingsStore } from "./app-settings";
+import type { UpdaterService } from "./updater";
 import { checkAvailability, findWhisperModel } from "./pipeline/binaries";
 import { DOC_EXTENSIONS } from "./pipeline/docs";
 import { runChatTurn } from "./agents/supervisor";
@@ -27,10 +28,11 @@ export interface IpcContext {
   settings: AppSettingsStore;
   dataDir: string;
   getWindow: () => BrowserWindow | null;
+  updater: UpdaterService;
 }
 
 export function registerIpcHandlers(ctx: IpcContext): void {
-  const { manager, settings, dataDir } = ctx;
+  const { manager, settings, dataDir, updater } = ctx;
 
   const emitChatEvent = (ev: ChatEvent) => {
     ctx.getWindow()?.webContents.send(IPC.chatEvent, ev);
@@ -299,4 +301,9 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     // https-only: never let the renderer launch arbitrary protocols/apps.
     if (/^https:\/\//.test(url)) void shell.openExternal(url);
   });
+
+  // ---- software update ----
+  ipcMain.handle(IPC.getUpdateState, () => updater.getState());
+  ipcMain.handle(IPC.checkForUpdates, () => updater.checkNow());
+  ipcMain.handle(IPC.restartToUpdate, () => updater.restartNow());
 }

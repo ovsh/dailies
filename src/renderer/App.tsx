@@ -3,11 +3,13 @@ import { api } from "./api";
 import type { AppSettings, ProjectState } from "../shared/types";
 import { Rail } from "./components/Rail";
 import { Welcome } from "./components/Welcome";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { ChatScreen } from "./screens/ChatScreen";
 import { LibraryScreen } from "./screens/LibraryScreen";
 import { ClipScreen } from "./screens/ClipScreen";
 import { JobsSettingsScreen } from "./screens/JobsSettingsScreen";
 import { ProjectScreen } from "./screens/ProjectScreen";
+import { useUpdateState } from "./hooks/useUpdateState";
 
 export type Screen = "chat" | "library" | "jobs" | "clip";
 
@@ -27,6 +29,12 @@ export function App() {
   const [projectLoaded, setProjectLoaded] = useState(false);
   const [episodeId, setEpisodeId] = useState<number | null>(null);
   const [showProjects, setShowProjects] = useState(false);
+
+  const updateState = useUpdateState();
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const updateReady = updateState.phase === "ready";
+  const dismissUpdate = useCallback(() => setUpdateDismissed(true), []);
+  const showUpdateBanner = updateReady && !updateDismissed;
 
   const refreshSettings = useCallback(() => {
     void api.getSettings().then(setSettings);
@@ -121,47 +129,62 @@ export function App() {
         onNavigate={navigate}
         projectName={projectState.project.name}
         onOpenProjects={() => setShowProjects(true)}
+        appVersion={updateState.currentVersion}
+        updateReady={updateReady}
+        updateDismissed={updateDismissed}
+        onShowUpdate={() => setUpdateDismissed(false)}
       />
       <main className="app-main">
-        {screen === "chat" && (
-          <ChatScreen
-            onOpenClip={(fileId, seekS) => openClip(fileId, seekS, "chat")}
-            apiKeySet={settings ? settings.apiKeyStatus === "connected" : null}
-            onOpenSettings={() => setScreen("jobs")}
-            episodeId={episodeId}
-            episodes={projectState.episodes}
-            onEpisodeChange={setEpisodeId}
-            onCreateEpisode={async (code) => {
-              await api.createEpisode(code);
-              await refreshProjectState();
-            }}
+        {showUpdateBanner && updateState.availableVersion && (
+          <UpdateBanner
+            version={updateState.availableVersion}
+            onRestart={() => void api.restartToUpdate()}
+            onDismiss={dismissUpdate}
           />
         )}
-        {screen === "library" && (
-          <LibraryScreen
-            onOpenClip={(fileId) => openClip(fileId, 0, "library")}
-            episodeId={episodeId}
-            episodes={projectState.episodes}
-            folders={projectState.folders}
-            onEpisodeChange={setEpisodeId}
-            onCreateEpisode={async (code) => {
-              await api.createEpisode(code);
-              await refreshProjectState();
-            }}
-            onRefresh={refreshProjectState}
-          />
-        )}
-        {screen === "jobs" && (
-          <JobsSettingsScreen
-            onSettingsChanged={refreshSettings}
-            folders={projectState.folders}
-            episodes={projectState.episodes}
-            onRefresh={refreshProjectState}
-          />
-        )}
-        {screen === "clip" && clipTarget && (
-          <ClipScreen fileId={clipTarget.fileId} seekS={clipTarget.seekS} onBack={() => setScreen(returnScreen)} />
-        )}
+        <div className="app-screen-area">
+          {screen === "chat" && (
+            <ChatScreen
+              onOpenClip={(fileId, seekS) => openClip(fileId, seekS, "chat")}
+              apiKeySet={settings ? settings.apiKeyStatus === "connected" : null}
+              onOpenSettings={() => setScreen("jobs")}
+              episodeId={episodeId}
+              episodes={projectState.episodes}
+              onEpisodeChange={setEpisodeId}
+              onCreateEpisode={async (code) => {
+                await api.createEpisode(code);
+                await refreshProjectState();
+              }}
+            />
+          )}
+          {screen === "library" && (
+            <LibraryScreen
+              onOpenClip={(fileId) => openClip(fileId, 0, "library")}
+              episodeId={episodeId}
+              episodes={projectState.episodes}
+              folders={projectState.folders}
+              onEpisodeChange={setEpisodeId}
+              onCreateEpisode={async (code) => {
+                await api.createEpisode(code);
+                await refreshProjectState();
+              }}
+              onRefresh={refreshProjectState}
+            />
+          )}
+          {screen === "jobs" && (
+            <JobsSettingsScreen
+              onSettingsChanged={refreshSettings}
+              folders={projectState.folders}
+              episodes={projectState.episodes}
+              onRefresh={refreshProjectState}
+              updateState={updateState}
+              onDismissUpdate={dismissUpdate}
+            />
+          )}
+          {screen === "clip" && clipTarget && (
+            <ClipScreen fileId={clipTarget.fileId} seekS={clipTarget.seekS} onBack={() => setScreen(returnScreen)} />
+          )}
+        </div>
         {needsWelcome && settings && (
           <Welcome
             settings={settings}
@@ -184,7 +207,14 @@ export function App() {
           flex: 1;
           min-width: 0;
           height: 100%;
+          display: flex;
+          flex-direction: column;
           overflow: hidden;
+          position: relative;
+        }
+        .app-screen-area {
+          flex: 1;
+          min-height: 0;
           position: relative;
         }
       `}</style>

@@ -24,6 +24,7 @@ import type {
   ProjectFolder,
   ProjectState,
   ApiKeyValidationStatus,
+  UpdaterState,
   WordTiming,
 } from "./types";
 
@@ -91,6 +92,15 @@ export interface DailiesAPI {
 
   /** Converts an absolute local path into a URL the renderer may load (media:// protocol). */
   fileUrl(path: string): string;
+
+  // software update (main owns the feed; renderer only expresses intent)
+  /** Works in dev too: {phase:"idle", currentVersion} when the updater is disabled. */
+  getUpdateState(): Promise<UpdaterState>;
+  /** Manual check. No-op when the updater is disabled. */
+  checkForUpdates(): Promise<void>;
+  /** Quits and installs the downloaded update. Only meaningful from phase "ready". */
+  restartToUpdate(): Promise<void>;
+  onUpdateStateChanged(cb: (state: UpdaterState) => void): () => void;
 }
 
 export const IPC = {
@@ -122,4 +132,8 @@ export const IPC = {
   openExternal: "dailies:openExternal",
   projectUpdate: "dailies:projectUpdate",
   indexUpdate: "dailies:indexUpdate",
+  getUpdateState: "dailies:getUpdateState",
+  checkForUpdates: "dailies:checkForUpdates",
+  restartToUpdate: "dailies:restartToUpdate",
+  updateStateChanged: "dailies:updateStateChanged",
 } as const;

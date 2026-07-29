@@ -14,6 +14,7 @@ import type { ModelDownloadProgress,
   Project,
   ProjectFolder,
   ProjectState,
+  UpdaterState,
   WordTiming,
 } from "../../shared/types";
 import {
@@ -28,11 +29,107 @@ import {
   MOCK_JOBS,
   MOCK_PROJECTS,
   MOCK_SETTINGS,
+  MOCK_UPDATE_AVAILABLE_VERSION,
+  MOCK_UPDATE_CURRENT_VERSION,
+  MOCK_UPDATE_TOTAL_BYTES,
 } from "./data";
 
 type Listener = (ev: ChatEvent) => void;
 
 const modelProgressListeners = new Set<(p: ModelDownloadProgress) => void>();
+
+// ---------- software update (dev-only demo) ----------
+// Renderer-only dev mode (`npm run dev:renderer`) has no main process, so
+// there is no real update feed. This stands in for one: "Check now" walks
+// checking -> downloading -> ready like a real release, and
+// window.__mockUpdaterPhase(phase) forces any of the five states instantly
+// for visual QA. Starts idle, per the approved mock.
+let updateState: UpdaterState = {
+  phase: "idle",
+  currentVersion: MOCK_UPDATE_CURRENT_VERSION,
+  lastCheckedAt: Date.now() - 5 * 60 * 1000,
+};
+const updateStateListeners = new Set<(s: UpdaterState) => void>();
+let updateTimer: ReturnType<typeof setTimeout> | null = null;
+
+function pushUpdateState(patch: Partial<UpdaterState>): void {
+  updateState = { ...updateState, ...patch };
+  updateStateListeners.forEach((cb) => cb(updateState));
+}
+
+function clearUpdateTimer(): void {
+  if (updateTimer) clearTimeout(updateTimer);
+  updateTimer = null;
+}
+
+function tickMockDownload(): void {
+  const transferred = Math.min(MOCK_UPDATE_TOTAL_BYTES, (updateState.transferred ?? 0) + MOCK_UPDATE_TOTAL_BYTES / 6);
+  if (transferred >= MOCK_UPDATE_TOTAL_BYTES) {
+    pushUpdateState({ phase: "ready", transferred: MOCK_UPDATE_TOTAL_BYTES, total: MOCK_UPDATE_TOTAL_BYTES });
+    return;
+  }
+  pushUpdateState({ transferred });
+  updateTimer = setTimeout(tickMockDownload, 450);
+}
+
+function runMockCheck(): void {
+  clearUpdateTimer();
+  pushUpdateState({ phase: "checking" });
+  updateTimer = setTimeout(() => {
+    pushUpdateState({
+      phase: "downloading",
+      availableVersion: MOCK_UPDATE_AVAILABLE_VERSION,
+      transferred: 0,
+      total: MOCK_UPDATE_TOTAL_BYTES,
+    });
+    tickMockDownload();
+  }, 850);
+}
+
+declare global {
+  interface Window {
+    /** Dev-only: force any updater phase for visual QA (see mock/api.ts). */
+    __mockUpdaterPhase?: (phase: UpdaterState["phase"]) => void;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__mockUpdaterPhase = (phase) => {
+    clearUpdateTimer();
+    if (phase === "idle") {
+      pushUpdateState({
+        phase: "idle",
+        lastCheckedAt: Date.now(),
+        errorMessage: undefined,
+        availableVersion: undefined,
+        transferred: undefined,
+        total: undefined,
+      });
+    } else if (phase === "checking") {
+      pushUpdateState({ phase: "checking" });
+    } else if (phase === "downloading") {
+      pushUpdateState({
+        phase: "downloading",
+        availableVersion: MOCK_UPDATE_AVAILABLE_VERSION,
+        transferred: Math.round(MOCK_UPDATE_TOTAL_BYTES * 0.37),
+        total: MOCK_UPDATE_TOTAL_BYTES,
+      });
+    } else if (phase === "ready") {
+      pushUpdateState({
+        phase: "ready",
+        availableVersion: MOCK_UPDATE_AVAILABLE_VERSION,
+        transferred: MOCK_UPDATE_TOTAL_BYTES,
+        total: MOCK_UPDATE_TOTAL_BYTES,
+      });
+    } else if (phase === "error") {
+      pushUpdateState({
+        phase: "error",
+        errorMessage: "Could not reach GitHub — retrying in an hour",
+        lastCheckedAt: Date.now(),
+      });
+    }
+  };
+}
 
 export function createMockApi(): DailiesAPI {
   const listeners = new Set<Listener>();
@@ -345,6 +442,32 @@ export function createMockApi(): DailiesAPI {
 
     fileUrl(path: string) {
       return path;
+    },
+
+    // ---------- software update ----------
+
+    async getUpdateState() {
+      return updateState;
+    },
+
+    async checkForUpdates() {
+      runMockCheck();
+    },
+
+    async restartToUpdate() {
+      clearUpdateTimer();
+      pushUpdateState({
+        phase: "idle",
+        availableVersion: undefined,
+        transferred: undefined,
+        total: undefined,
+        lastCheckedAt: Date.now(),
+      });
+    },
+
+    onUpdateStateChanged(cb: (s: UpdaterState) => void) {
+      updateStateListeners.add(cb);
+      return () => updateStateListeners.delete(cb);
     },
   };
 }

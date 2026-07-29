@@ -68,10 +68,11 @@ cloud upload of media or don't speak Avid natively.
 - Personal project by Miki (first-person voice on the page; footer links to the
   personal site at ovsh.github.io). Digital Lane LLC appears only as the code-signing
   identity, not as a brand.
-- The app's own UI is a "screening room" design: slate ground (#1b1f27 family), brass
-  accent (#d0ad5f), Cormorant Garamond display / Schibsted Grotesk body / Spline Sans
-  Mono. This is the incumbent product look that screenshots will show; the landing
-  page's world is decided separately in new-work.
+- The app's own UI is "The Bin" (since 2026-07-24): pre-dark-era Media Composer
+  steel chrome — desktop #9ea4a9, panel chrome #c7cbce with platinum bevels, paper
+  #f4f5f6, Archivo + Fragment Mono, red #c94038 as the locator. One world for app
+  and landing page; see root DESIGN.md (app) and site/DESIGN.md (marketing). The
+  earlier dark "screening room" (slate/brass/Cormorant) is retired.
 
 ## Evidence on Hand
 

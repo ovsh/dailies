@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
-  ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder } from "../../shared/types";
+  ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder, UpdaterState } from "../../shared/types";
 import { InlineError } from "../components/InlineError";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { runIpc } from "../lib/async";
@@ -31,6 +31,21 @@ function formatScanTime(iso: string): string {
   return `${day} ${month}, ${hh}:${mm}`;
 }
 
+function formatCheckedAt(ts: number): string {
+  const d = new Date(ts);
+  const now = new Date();
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return `today ${time}`;
+  const day = d.getDate();
+  const month = d.toLocaleString("en-US", { month: "short" });
+  return `${day} ${month}, ${time}`;
+}
+
+function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined) return "—";
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
 function waitingMessage(job: Job): string {
   if (job.stage === "transcribe") return "Waiting for speech model. Download it below.";
   if (job.stage === "embed") {
@@ -44,9 +59,19 @@ interface JobsSettingsScreenProps {
   folders: ProjectFolder[];
   episodes: Episode[];
   onRefresh: () => Promise<unknown>;
+  updateState: UpdaterState;
+  /** "On next quit" dismisses, same as "Later" on the banner. */
+  onDismissUpdate: () => void;
 }
 
-export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRefresh }: JobsSettingsScreenProps) {
+export function JobsSettingsScreen({
+  onSettingsChanged,
+  folders,
+  episodes,
+  onRefresh,
+  updateState,
+  onDismissUpdate,
+}: JobsSettingsScreenProps) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [openRouterKey, setOpenRouterKey] = useState("");
@@ -209,6 +234,93 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
 
   const waitingCount = jobs?.filter((job) => job.status === "waiting").length ?? 0;
 
+  function renderUpdateRow() {
+    switch (updateState.phase) {
+      case "checking":
+        return (
+          <div className="u-row">
+            <span className="u-state">
+              <span className="dot spin" aria-hidden="true" />
+              <span className="u-text">Checking for updates…</span>
+            </span>
+            <button className="ghost-btn label" disabled>
+              Check now
+            </button>
+          </div>
+        );
+      case "downloading": {
+        const total = updateState.total;
+        const pct = total ? Math.min(100, Math.round(((updateState.transferred ?? 0) / total) * 100)) : 0;
+        return (
+          <div className="u-row">
+            <span className="u-state">
+              <span className="dot warn" aria-hidden="true" />
+              <span className="u-text">
+                Downloading <span className="mono">{updateState.availableVersion}</span>
+              </span>
+            </span>
+            <span className="prog">
+              <i style={{ width: `${pct}%` }} />
+            </span>
+            <span className="prog-label mono">
+              {formatBytes(updateState.transferred)} / {formatBytes(updateState.total)}
+            </span>
+          </div>
+        );
+      }
+      case "ready":
+        return (
+          <div className="u-row">
+            <span className="u-state">
+              <span className="dot red" aria-hidden="true" />
+              <span className="u-text">
+                <span className="mono">{updateState.availableVersion}</span> downloaded — restart to finish
+              </span>
+            </span>
+            <button className="marker-btn" onClick={() => void api.restartToUpdate()}>
+              Restart now
+            </button>
+            <button className="ghost-btn label" onClick={onDismissUpdate}>
+              On next quit
+            </button>
+          </div>
+        );
+      case "error":
+        return (
+          <div className="u-row">
+            <span className="u-state">
+              <span className="dot err" aria-hidden="true" />
+              <span className="u-text">{updateState.errorMessage ?? "Could not reach GitHub — retrying in an hour"}</span>
+            </span>
+            <button className="ghost-btn label" onClick={() => void api.checkForUpdates()}>
+              Check now
+            </button>
+          </div>
+        );
+      case "idle":
+      default:
+        return (
+          <>
+            <div className="u-row">
+              <span className="u-state">
+                <span className="dot ok" aria-hidden="true" />
+                <span className="u-text">
+                  Dailies <span className="mono">{updateState.currentVersion}</span> — up to date
+                </span>
+              </span>
+              <button className="ghost-btn label" onClick={() => void api.checkForUpdates()}>
+                Check now
+              </button>
+            </div>
+            <div className="u-meta mono">
+              {updateState.lastCheckedAt ? `Checked ${formatCheckedAt(updateState.lastCheckedAt)} · ` : ""}
+              checks at launch, hourly, and when the window comes to front
+            </div>
+          </>
+        );
+    }
+  }
+
   return (
     <div className="jobs-screen">
       <div className="jobs-scroll">
@@ -223,6 +335,17 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
               retrying={actionPending || addingEpisode || savingProvider !== null || retryingFileIds.size > 0}
             />
           )}
+          <section className="jobs-section">
+            <div className="panel-bar">
+              <span className="panel-bar-close" aria-hidden="true" />
+              <span className="panel-bar-title">Software update</span>
+              <span className="panel-bar-stripes" aria-hidden="true" />
+            </div>
+            <div className="panel-body">
+              <h2 className="display panel-title">Updates</h2>
+              {renderUpdateRow()}
+            </div>
+          </section>
           <section className="jobs-section">
             <div className="panel-bar">
               <span className="panel-bar-close" aria-hidden="true" />
@@ -545,6 +668,107 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
           font-size: 19px;
           color: var(--ink);
           margin: 0 0 18px;
+        }
+        .u-row {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          flex-wrap: wrap;
+          padding: 11px 12px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+        }
+        .u-row + .u-meta {
+          margin-top: 7px;
+        }
+        .u-state {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          flex: 1;
+          min-width: 220px;
+        }
+        .u-state .dot {
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          flex: none;
+          border: 1px solid rgba(23, 25, 27, 0.35);
+        }
+        .u-state .dot.ok {
+          background: var(--status-ok);
+        }
+        .u-state .dot.warn {
+          background: var(--status-warn);
+        }
+        .u-state .dot.err {
+          background: var(--status-error);
+        }
+        .u-state .dot.red {
+          background: var(--marker-red);
+        }
+        .u-state .dot.spin {
+          background: conic-gradient(var(--accent) 0 25%, var(--paper-alt) 25% 100%);
+          animation: update-dot-tick 1s steps(4) infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .u-state .dot.spin {
+            animation: none;
+          }
+        }
+        @keyframes update-dot-tick {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+        .u-text {
+          font-size: 14px;
+          font-weight: 500;
+          color: var(--ink);
+        }
+        .u-meta {
+          font-size: 11px;
+          color: var(--ink-dim);
+        }
+        .prog {
+          flex: 1;
+          min-width: 140px;
+          height: 10px;
+          background: var(--paper-alt);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          position: relative;
+        }
+        .prog > i {
+          position: absolute;
+          inset: 1px auto 1px 1px;
+          background: var(--accent);
+        }
+        .prog-label {
+          font-size: 11px;
+          color: var(--ink-dim);
+          white-space: nowrap;
+        }
+        .marker-btn {
+          font-family: var(--font-body);
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: #fff;
+          background: var(--marker-red);
+          border: 1px solid var(--marker-red-dn);
+          border-radius: 2px;
+          padding: 9px 16px;
+          cursor: pointer;
+          box-shadow:
+            inset 1px 1px 0 rgba(255, 255, 255, 0.25),
+            inset -1px -1px 0 rgba(0, 0, 0, 0.2),
+            1px 2px 0 rgba(23, 25, 27, 0.28);
+        }
+        .marker-btn:active {
+          box-shadow: inset 1px 1px 0 rgba(0, 0, 0, 0.2);
         }
         .jobs-table {
           width: 100%;

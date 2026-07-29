@@ -1,4 +1,4 @@
-import { app, BrowserWindow, protocol } from "electron";
+import { app, BrowserWindow, Menu, protocol } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { IPC } from "../shared/ipc";
@@ -9,7 +9,7 @@ import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { buildMediaResponse, parseMediaRequestPath } from "./media-protocol";
 import { createWindowRef } from "./window-ref";
-import { startAutoUpdater } from "./updater";
+import { createUpdater } from "./updater";
 
 /**
  * When the app is launched from Finder/Dock (rather than a terminal), the
@@ -53,6 +53,41 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
   },
 ]);
+
+/**
+ * Electron's own default menu (About / Services / Hide / Quit, standard Edit
+ * and Window menus) but with "Check for Updates…" inserted under About, in
+ * the standard macOS location. Building it by hand — rather than relying on
+ * the implicit default — is the only way to add that one item.
+ */
+function buildAppMenu(checkForUpdates: () => void): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: app.name,
+      submenu: [
+        { role: "about" },
+        { label: "Check for Updates…", click: () => checkForUpdates() },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    { role: "fileMenu" },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+    {
+      role: "help",
+      submenu: [],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 function createWindow(): BrowserWindow {
   const w = new BrowserWindow({
@@ -121,7 +156,9 @@ void app.whenReady().then(async () => {
     },
   });
 
-  registerIpcHandlers({ manager, settings, dataDir, getWindow: winRef.get });
+  const updater = createUpdater(winRef.get);
+  registerIpcHandlers({ manager, settings, dataDir, getWindow: winRef.get, updater });
+  buildAppMenu(() => void updater.checkNow());
 
   // Re-open the last project (adopts a pre-projects install on first boot).
   try {
@@ -131,7 +168,7 @@ void app.whenReady().then(async () => {
   }
 
   createWindow();
-  startAutoUpdater();
+  updater.start();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -1,47 +1,162 @@
 /**
- * Minimal auto-update: check once at startup, download silently, prompt to
- * restart once the download lands. No manual UI yet — see
- * docs/plans/self-update-and-diagnostics/ for the fuller experience.
+ * Auto-update: checks at launch, every hour, and whenever any window comes
+ * to front (throttled). Downloads silently in the background and installs
+ * on restart or next quit. No dialogs — state pushes to the renderer over
+ * IPC, which renders the banner, the rail chip, and the Settings & Jobs
+ * "Software update" panel (JobsSettingsScreen) — those three surfaces are
+ * the only consumers of this state.
  */
-import { app, dialog, BrowserWindow } from "electron";
+import { app, BrowserWindow } from "electron";
 // CJS interop: electron-updater ships no ESM build, and under esbuild-cjs
 // output a named import of `autoUpdater` resolves to undefined at runtime.
 import electronUpdater from "electron-updater";
 const { autoUpdater } = electronUpdater;
+import { IPC } from "../shared/ipc";
+import type { UpdaterState } from "../shared/types";
 
-export function startAutoUpdater(): void {
+const CHECK_INTERVAL_MS = 60 * 60 * 1000; // hourly
+const FOCUS_CHECK_THROTTLE_MS = 10 * 60 * 1000; // at most once per 10 minutes
+
+export interface UpdaterService {
+  /** Wires electron-updater and schedules launch/hourly/focus checks. No-op when disabled. */
+  start(): void;
+  getState(): UpdaterState;
+  /** User-initiated check (menu item or the Settings "Check now" button). No-op when disabled. */
+  checkNow(): Promise<void>;
+  /** Quits and installs. Only meaningful from phase "ready"; no-op when disabled. */
+  restartNow(): void;
+}
+
+function terseErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/net::|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo|network/i.test(raw)) {
+    return "Could not reach GitHub — retrying in an hour";
+  }
+  return "Update check failed — retrying in an hour";
+}
+
+export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterService {
   // Dev runs and e2e harnesses (DAILIES_USER_DATA set) must never touch the
   // updater: no packaged app, no feed, no accidental restarts mid-test.
-  if (!app.isPackaged || process.env["DAILIES_USER_DATA"]) return;
+  const enabled = app.isPackaged && !process.env["DAILIES_USER_DATA"];
 
-  autoUpdater.logger = {
-    info: (message?: unknown) => console.warn(message),
-    warn: (message?: unknown) => console.warn(message),
-    error: (message?: unknown) => console.error(message),
-  };
-  autoUpdater.autoDownload = true;
+  let state: UpdaterState = { phase: "idle", currentVersion: app.getVersion() };
+  let busy = false; // a check (and its follow-on download) is in flight
+  let manual = false; // whether the in-flight check was user-initiated
+  let pendingAvailableVersion: string | undefined;
+  let lastFocusCheckAt = 0;
 
-  autoUpdater.on("update-downloaded", (info) => {
-    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
-    const promise = win
-      ? dialog.showMessageBox(win, {
-          message: "An update is ready",
-          detail: `Dailies ${info.version} has been downloaded. Restart to use it.`,
-          buttons: ["Restart now", "Later"],
-          defaultId: 0,
-        })
-      : dialog.showMessageBox({
-          message: "An update is ready",
-          detail: `Dailies ${info.version} has been downloaded. Restart to use it.`,
-          buttons: ["Restart now", "Later"],
-          defaultId: 0,
-        });
-    void promise.then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall();
+  function pushState(patch: Partial<UpdaterState>): void {
+    state = { ...state, ...patch };
+    getWindow()?.webContents.send(IPC.updateStateChanged, state);
+  }
+
+  function settle(patch: Partial<UpdaterState>): void {
+    busy = false;
+    manual = false;
+    pushState(patch);
+  }
+
+  function runCheck(isManual: boolean): Promise<void> {
+    if (!enabled) return Promise.resolve();
+    // Never overlap checks, and don't re-check while an update is sitting
+    // ready to install (a fresh check would just re-download it). A manual
+    // click during a quiet background check promotes it instead of being
+    // swallowed, so the user sees their click land.
+    if (busy || state.phase === "ready") {
+      if (busy && isManual && !manual && state.phase !== "downloading") {
+        manual = true;
+        pushState({ phase: "checking" });
+      }
+      return Promise.resolve();
+    }
+    busy = true;
+    manual = isManual;
+    return autoUpdater.checkForUpdates().then(
+      () => undefined,
+      (err: unknown) => {
+        settle({ phase: "error", errorMessage: terseErrorMessage(err), lastCheckedAt: Date.now() });
+      },
+    );
+  }
+
+  function setupListeners(): void {
+    autoUpdater.on("checking-for-update", () => {
+      // Scheduled checks never flash the row — only a manual one shows "Checking…".
+      if (manual) pushState({ phase: "checking" });
     });
-  });
 
-  autoUpdater.checkForUpdates().catch((err: unknown) => {
-    console.error("Update check failed:", err);
-  });
+    autoUpdater.on("update-available", (info) => {
+      pendingAvailableVersion = info.version;
+      // Stay quiet until the download actually starts (first progress tick).
+    });
+
+    autoUpdater.on("update-not-available", () => {
+      settle({
+        phase: "idle",
+        lastCheckedAt: Date.now(),
+        errorMessage: undefined,
+        availableVersion: undefined,
+        transferred: undefined,
+        total: undefined,
+      });
+    });
+
+    autoUpdater.on("download-progress", (p) => {
+      pushState({
+        phase: "downloading",
+        availableVersion: pendingAvailableVersion ?? state.availableVersion,
+        transferred: Math.round(p.transferred),
+        total: Math.round(p.total),
+      });
+    });
+
+    autoUpdater.on("update-downloaded", (info) => {
+      settle({ phase: "ready", availableVersion: info.version });
+    });
+
+    autoUpdater.on("error", (err) => {
+      settle({ phase: "error", errorMessage: terseErrorMessage(err), lastCheckedAt: Date.now() });
+    });
+  }
+
+  return {
+    start(): void {
+      if (!enabled) return;
+
+      autoUpdater.logger = {
+        info: (message?: unknown) => console.warn(message),
+        warn: (message?: unknown) => console.warn(message),
+        error: (message?: unknown) => console.error(message),
+      };
+      autoUpdater.autoDownload = true;
+      // autoInstallOnAppQuit stays at its electron-updater default (true).
+
+      setupListeners();
+
+      void runCheck(false); // launch check
+
+      setInterval(() => void runCheck(false), CHECK_INTERVAL_MS);
+
+      app.on("browser-window-focus", () => {
+        const now = Date.now();
+        if (now - lastFocusCheckAt < FOCUS_CHECK_THROTTLE_MS) return;
+        lastFocusCheckAt = now;
+        void runCheck(false);
+      });
+    },
+
+    getState(): UpdaterState {
+      return state;
+    },
+
+    checkNow(): Promise<void> {
+      return runCheck(true);
+    },
+
+    restartNow(): void {
+      if (!enabled) return;
+      autoUpdater.quitAndInstall();
+    },
+  };
 }

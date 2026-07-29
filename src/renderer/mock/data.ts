@@ -431,6 +431,12 @@ export const MOCK_SETTINGS: AppSettings = {
   ffmpegAvailable: true,
 };
 
+// ---------- software update (dev-only demo, see mock/api.ts) ----------
+
+export const MOCK_UPDATE_CURRENT_VERSION = "0.3.3";
+export const MOCK_UPDATE_AVAILABLE_VERSION = "0.3.4";
+export const MOCK_UPDATE_TOTAL_BYTES = 263 * 1024 * 1024;
+
 // ---------- chat ----------
 
 export const MOCK_CHATS: ChatSummary[] = [

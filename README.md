@@ -25,8 +25,11 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
    like any other Mac app.
 2. Requirements: Apple Silicon Mac, macOS 14+.
 3. The DMG is only for that first install — from 0.3.0 on, Dailies checks
-   GitHub Releases at launch and updates itself, prompting to restart once
-   a new version has downloaded.
+   GitHub Releases at launch, hourly, and whenever the window comes to
+   front, downloading updates in the background. A banner appears under
+   the title bar once one is ready ("Restart now" or "Later"); the same
+   status lives in Settings & Jobs and via **Dailies ▸ Check for Updates…**
+   in the menu bar.
 
 ### 2. First run — three things
 
@@ -115,6 +118,7 @@ All timecodes are source TC (or timeline TC for finals), drop-frame handled corr
 | Symptom | Fix |
 |---|---|
 | "Can't verify the app" on first open | Only affects pre-0.2.1 builds. Download the current notarized DMG from Releases, or right-click → Open → Open once. |
+| Update banner never appears | It only shows once a download finishes. Check status any time in Settings & Jobs, or **Dailies ▸ Check for Updates…**. |
 | Chat says a key is needed | Settings & Jobs → paste your OpenRouter key. |
 | Clips stuck without transcripts | Download the speech model: Settings & Jobs → Transcription → Download. |
 | Something looks stuck | Settings & Jobs shows every indexing job and any errors; "Scan again" is always safe. |

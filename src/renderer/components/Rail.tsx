@@ -7,6 +7,14 @@ interface RailProps {
   /** Full project name, e.g. "DUCK DYNASTY" — rendered as initials with a tooltip. */
   projectName: string;
   onOpenProjects: () => void;
+  /** The running app's version, e.g. "0.3.3". */
+  appVersion: string;
+  /** An update has finished downloading and is waiting to install. */
+  updateReady: boolean;
+  /** The banner (or the panel's "On next quit") has been dismissed for this session. */
+  updateDismissed: boolean;
+  /** Un-dismisses the banner. */
+  onShowUpdate: () => void;
 }
 
 const ITEMS: { screen: Screen; label: string; icon: ReactElement }[] = [
@@ -48,7 +56,17 @@ function projectInitials(name: string): string {
   return (words[0][0] + words[1][0]).toUpperCase();
 }
 
-export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailProps) {
+export function Rail({
+  screen,
+  onNavigate,
+  projectName,
+  onOpenProjects,
+  appVersion,
+  updateReady,
+  updateDismissed,
+  onShowUpdate,
+}: RailProps) {
+  const showUpdateDot = updateReady && updateDismissed;
   return (
     <nav className="rail">
       <button
@@ -74,6 +92,18 @@ export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailPr
           </button>
         ))}
       </div>
+      <div className="rail-spacer" />
+      {appVersion && (
+        <button
+          className="rail-version-chip mono"
+          onClick={onShowUpdate}
+          aria-label={showUpdateDot ? `Dailies ${appVersion} — update ready, click to review` : `Dailies ${appVersion}`}
+          data-tooltip={showUpdateDot ? "Update ready — click to review" : undefined}
+        >
+          {appVersion}
+          {showUpdateDot && <span className="rail-version-dot" aria-hidden="true" />}
+        </button>
+      )}
       <style>{`
         .rail {
           width: var(--rail-w);
@@ -166,6 +196,35 @@ export function Rail({ screen, onNavigate, projectName, onOpenProjects }: RailPr
         .rail-btn[data-tooltip]:hover::after,
         .rail-project[data-tooltip]:hover::after {
           opacity: 1;
+        }
+        .rail-spacer {
+          flex: 1;
+          min-height: 24px;
+        }
+        .rail-version-chip {
+          position: relative;
+          flex: none;
+          font-size: 11px;
+          color: var(--ink-dim);
+          background: var(--ground-card);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
+          padding: 5px 9px;
+          cursor: pointer;
+        }
+        .rail-version-chip:hover {
+          color: var(--ink);
+        }
+        .rail-version-dot {
+          position: absolute;
+          top: -4px;
+          right: -4px;
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--marker-red);
+          border: 1px solid rgba(23, 25, 27, 0.35);
         }
       `}</style>
     </nav>

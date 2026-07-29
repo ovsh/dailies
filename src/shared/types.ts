@@ -299,6 +299,26 @@ export interface ModelDownloadProgress {
   error: string | null;
 }
 
+// ---------- software update ----------
+
+export type UpdatePhase = "idle" | "checking" | "downloading" | "ready" | "error";
+
+/** Pushed main -> renderer whenever the updater's state changes. */
+export interface UpdaterState {
+  phase: UpdatePhase;
+  currentVersion: string;
+  /** The version being downloaded or ready to install. */
+  availableVersion?: string;
+  /** Bytes downloaded so far, while phase is "downloading". */
+  transferred?: number;
+  /** Total bytes to download, while phase is "downloading". */
+  total?: number;
+  /** epoch ms of the last check that reached a result (idle or error). */
+  lastCheckedAt?: number;
+  /** Terse, human-readable; never a stack trace. */
+  errorMessage?: string;
+}
+
 // ---------- documents (producer notes, scripts) ----------
 
 export type DocumentKind = "pdf" | "txt" | "md" | "xlsx" | "csv";

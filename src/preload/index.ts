@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC, type DailiesAPI } from "../shared/ipc";
 import type {
-  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, IndexUpdate, MediaRole } from "../shared/types";
+  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, IndexUpdate, MediaRole, UpdaterState } from "../shared/types";
 
 const api: DailiesAPI = {
   // projects
@@ -68,6 +68,16 @@ const api: DailiesAPI = {
   },
 
   fileUrl: (path: string) => `media://local/${encodeURIComponent(path)}`,
+
+  // software update
+  getUpdateState: () => ipcRenderer.invoke(IPC.getUpdateState),
+  checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
+  restartToUpdate: () => ipcRenderer.invoke(IPC.restartToUpdate),
+  onUpdateStateChanged: (cb: (state: UpdaterState) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, state: UpdaterState) => cb(state);
+    ipcRenderer.on(IPC.updateStateChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.updateStateChanged, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld("dailies", api);

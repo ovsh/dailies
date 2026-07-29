@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC, type DailiesAPI } from "../shared/ipc";
 import type {
-  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, IndexUpdate, MediaRole, QualityMode } from "../shared/types";
+  ModelDownloadProgress, ChatEvent, ExportItem, ExportKind, IndexUpdate, MediaRole } from "../shared/types";
 
 const api: DailiesAPI = {
   // projects
@@ -37,8 +37,6 @@ const api: DailiesAPI = {
     return () => ipcRenderer.removeListener(IPC.modelProgress, listener);
   },
   setApiKey: (provider: "openrouter", key: string) => ipcRenderer.invoke(IPC.setApiKey, provider, key),
-  setModelProfile: (id: string) => ipcRenderer.invoke(IPC.setModelProfile, id),
-  setQualityMode: (mode: QualityMode) => ipcRenderer.invoke(IPC.setQualityMode, mode),
 
   // chat
   listChats: () => ipcRenderer.invoke(IPC.listChats),

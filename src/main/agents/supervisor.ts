@@ -3,11 +3,10 @@ import type {
   AgentAnswer,
   ChatMessageRecord,
   Confidence,
-  ModelProfile,
-  QualityMode,
   TextEmbedder,
   TranscriptHit,
 } from "../../shared/types";
+import { CHAT_MODEL } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
 import { createOpenRouterClient } from "./openrouter-client";
 import type { ChatMessage, OpenRouterClient, ToolCall, ToolDef } from "./openrouter-client";
@@ -26,8 +25,6 @@ export interface ChatTurnOptions {
   history: ChatMessageRecord[]; // oldest first
   userText: string;
   apiKey: string;
-  qualityMode: QualityMode; // "high" => supervisor tries the pro model first
-  modelProfile: ModelProfile;
   embedder: TextEmbedder | null;
   episodeId: number | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
@@ -390,15 +387,6 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function isModelUnavailableError(err: unknown): boolean {
-  const rec = isRecord(err) ? err : {};
-  const status = rec.status;
-  const message = typeof rec.message === "string" ? rec.message : err instanceof Error ? err.message : String(err);
-  const statusUnavailable = status === 404 || status === 403 || status === "404" || status === "403";
-  const messageUnavailable = /\b(?:403|404)\b|not found/i.test(message);
-  return statusUnavailable || messageUnavailable;
-}
-
 function parseToolArguments(call: ToolCall): unknown {
   try {
     const parsed: unknown = JSON.parse(call.function.arguments);
@@ -431,15 +419,12 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
     history,
     userText,
     apiKey,
-    qualityMode,
-    modelProfile,
     embedder,
     episodeId,
     emit,
   } = opts;
   const client = opts.client ?? createOpenRouterClient(() => apiKey);
 
-  let supervisorModel = qualityMode === "high" ? modelProfile.supervisorHigh : modelProfile.supervisor;
   const systemInstruction =
     episodeId === null ? SUPERVISOR_SYSTEM : `${SUPERVISOR_SYSTEM}\n\n${EPISODE_SCOPE_NOTICE}`;
 
@@ -498,7 +483,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
 
   const generate = () =>
     client.chat({
-      model: supervisorModel,
+      model: CHAT_MODEL,
       messages,
       tools: SUPERVISOR_TOOLS,
     });
@@ -514,7 +499,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
       content: "You have gathered enough evidence. Stop searching and call final_answer now with your best prose and references to the strongest candidate segment IDs you found.",
     });
     return client.chat({
-      model: supervisorModel,
+      model: CHAT_MODEL,
       messages,
       tools: [FINAL_ANSWER_TOOL],
       tool_choice: "required",
@@ -522,27 +507,7 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<AgentAnswer> {
   };
 
   try {
-    let response;
-    try {
-      response = await generate();
-    } catch (err) {
-      if (
-        qualityMode === "high" &&
-        modelProfile.supervisorHigh !== modelProfile.supervisor &&
-        supervisorModel === modelProfile.supervisorHigh &&
-        isModelUnavailableError(err)
-      ) {
-        supervisorModel = modelProfile.supervisor;
-        emit({
-          type: "activity",
-          agent: "supervisor",
-          status: `${modelProfile.supervisorHigh} unavailable — using ${modelProfile.supervisor}`,
-        });
-        response = await generate();
-      } else {
-        throw err;
-      }
-    }
+    let response = await generate();
 
     let iters = 0;
     while (iters < MAX_ITERS) {

@@ -12,7 +12,7 @@ import {
 import { openDatabase } from "../src/main/db/database";
 import type { OpenRouterClient } from "../src/main/agents/openrouter-client";
 import { expandTerms, getTranscriptWindowTool } from "../src/main/agents/tools";
-import { MODEL_PROFILES } from "../src/shared/types";
+import { CHAT_MODEL } from "../src/shared/types";
 
 function makeDb(name: string) {
   const dir = mkdtempSync(path.join(tmpdir(), "dailies-grounding-"));
@@ -146,8 +146,6 @@ describe("final answer grounding", () => {
       history: [],
       userText: "hello",
       apiKey: "unused-test-value",
-      qualityMode: "standard",
-      modelProfile: MODEL_PROFILES[0]!,
       embedder: null,
       episodeId: null,
       emit: () => {},
@@ -200,8 +198,6 @@ describe("final answer grounding", () => {
       history: db.getChatMessages(chat.id),
       userText: "Current question",
       apiKey: "unused-test-value",
-      qualityMode: "standard",
-      modelProfile: MODEL_PROFILES[0]!,
       embedder: null,
       episodeId: selected.id,
       emit: () => {},
@@ -265,8 +261,6 @@ describe("flat agent loop", () => {
       history: [],
       userText: "Summarize this",
       apiKey: "unused-test-value",
-      qualityMode: "standard",
-      modelProfile: MODEL_PROFILES[0]!,
       embedder: null,
       episodeId: null,
       emit: () => {},
@@ -331,8 +325,6 @@ describe("flat agent loop", () => {
       history: [],
       userText: "Where do they discuss water control?",
       apiKey: "unused-test-value",
-      qualityMode: "standard",
-      modelProfile: MODEL_PROFILES[0]!,
       embedder: null,
       episodeId: null,
       emit: (event) => events.push(event),
@@ -415,8 +407,6 @@ describe("flat agent loop", () => {
       history: [],
       userText: query,
       apiKey: "unused-test-value",
-      qualityMode: "standard",
-      modelProfile: MODEL_PROFILES[0]!,
       embedder,
       episodeId: null,
       emit: () => {},
@@ -477,8 +467,6 @@ describe("flat agent loop", () => {
       history: [],
       userText: "What is said at 01:00:20:00?",
       apiKey: "unused-test-value",
-      qualityMode: "standard",
-      modelProfile: MODEL_PROFILES[0]!,
       embedder: null,
       episodeId: null,
       emit: () => {},
@@ -493,58 +481,31 @@ describe("flat agent loop", () => {
     db.close();
   });
 
-  it("falls back from an unavailable high-quality model", async () => {
-    const db = makeDb("model-fallback");
+  it("always calls the single chat model and surfaces a model error to the caller", async () => {
+    const db = makeDb("model-error");
     const requests: string[] = [];
-    let calls = 0;
     const client: OpenRouterClient = {
       chat: vi.fn(async (request) => {
         requests.push(request.model);
-        calls += 1;
-        if (calls === 1) {
-          const error = new Error("model not found");
-          Object.assign(error, { status: 404 });
-          throw error;
-        }
-        return {
-          message: {
-            content: null,
-            tool_calls: [{
-              id: "final-1",
-              type: "function" as const,
-              function: {
-                name: "final_answer",
-                arguments: JSON.stringify({ prose: "Fallback worked.", hits: [] }),
-              },
-            }],
-          },
-        };
+        const error = new Error("model not found");
+        Object.assign(error, { status: 404 });
+        throw error;
       }),
       embed: vi.fn(async () => []),
     };
-    const events: Array<{ type: "activity"; agent: string; status: string }> = [];
-    const profile = MODEL_PROFILES[0]!;
 
-    const answer = await runChatTurn({
+    await expect(runChatTurn({
       db,
       history: [],
       userText: "hello",
       apiKey: "unused-test-value",
-      qualityMode: "high",
-      modelProfile: profile,
       embedder: null,
       episodeId: null,
-      emit: (event) => events.push(event),
+      emit: () => {},
       client,
-    });
+    })).rejects.toThrow("404: model not found");
 
-    expect(answer.prose).toBe("Fallback worked.");
-    expect(requests).toEqual([profile.supervisorHigh, profile.supervisor]);
-    expect(events).toEqual([{
-      type: "activity",
-      agent: "supervisor",
-      status: `${profile.supervisorHigh} unavailable — using ${profile.supervisor}`,
-    }]);
+    expect(requests).toEqual([CHAT_MODEL]);
     db.close();
   });
 
@@ -593,8 +554,6 @@ describe("flat agent loop", () => {
       history: [],
       userText: "Keep looking forever",
       apiKey: "unused-test-value",
-      qualityMode: "standard",
-      modelProfile: MODEL_PROFILES[0]!,
       embedder: null,
       episodeId: null,
       emit: (event) => events.push(event),

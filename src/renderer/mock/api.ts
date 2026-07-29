@@ -255,14 +255,6 @@ export function createMockApi(): DailiesAPI {
       return "connected" as const;
     },
 
-    async setModelProfile(id: string) {
-      settings = { ...settings, modelProfileId: id };
-    },
-
-    async setQualityMode(mode) {
-      settings = { ...settings, qualityMode: mode };
-    },
-
     // ---------- chat ----------
 
     async listChats() {

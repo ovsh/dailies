@@ -9,7 +9,6 @@ import { runChatTurn } from "../src/main/agents/supervisor";
 import { openDatabase } from "../src/main/db/database";
 import type { DailiesDB } from "../src/main/db/types";
 import type { AnswerHit, SegmentInput } from "../src/shared/types";
-import { MODEL_PROFILES } from "../src/shared/types";
 
 interface EvalCase {
   id: string;
@@ -183,9 +182,6 @@ function stableHits(hits: AnswerHit[]) {
 }
 
 async function main(apiKey: string): Promise<void> {
-  const profile = MODEL_PROFILES.find((candidate) => candidate.id === "balanced");
-  if (!profile) throw new Error("balanced model profile is missing");
-
   const db = openDatabase(":memory:");
   try {
     const episodes = seedFixture(db);
@@ -204,8 +200,6 @@ async function main(apiKey: string): Promise<void> {
           history: [],
           userText: evalCase.query,
           apiKey,
-          qualityMode: "standard",
-          modelProfile: profile,
           embedder,
           episodeId,
           emit: (event) => activities.push(`${event.agent}: ${event.status}`),

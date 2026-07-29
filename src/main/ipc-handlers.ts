@@ -11,10 +11,7 @@ import type {
   ExportKind,
   FileDetail,
   MediaRole,
-  ModelProfile,
-  QualityMode,
 } from "../shared/types";
-import { MODEL_PROFILES } from "../shared/types";
 import type { ProjectManager } from "./project-manager";
 import type { AppSettingsStore } from "./app-settings";
 import { checkAvailability, findWhisperModel } from "./pipeline/binaries";
@@ -42,10 +39,6 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     ctx.getWindow()?.webContents.send(IPC.projectUpdate);
   };
   let cachedApiKeyStatus: ApiKeyStatus | null = null;
-
-  function activeProfile(): ModelProfile {
-    return MODEL_PROFILES.find((profile) => profile.id === settings.getModelProfileId()) ?? MODEL_PROFILES[0]!;
-  }
 
   async function getApiKeyStatus(): Promise<ApiKeyStatus> {
     const key = settings.getOpenRouterKey();
@@ -204,8 +197,6 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     return {
       apiKeySet: apiKeyStatus !== "missing",
       apiKeyStatus,
-      modelProfileId: settings.getModelProfileId(),
-      qualityMode: settings.getQualityMode(),
       whisperModel: model,
       whisperAvailable: avail.whisper,
       whisperModelReady: findWhisperModel(model, dataDir) !== null,
@@ -235,12 +226,6 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     if (saved) void manager.current()?.pipeline.refreshPrerequisites("openrouter");
     return saved ? "connected" : "invalid";
   });
-  ipcMain.handle(IPC.setModelProfile, (_e, id: string) => {
-    settings.setModelProfileId(id);
-    emitProjectUpdate();
-  });
-  ipcMain.handle(IPC.setQualityMode, (_e, mode: QualityMode) => settings.setQualityMode(mode));
-
   // ---- chat ----
   ipcMain.handle(IPC.listChats, () => requireProject().db.listChats());
   ipcMain.handle(IPC.getChat, (_e, chatId: number) => requireProject().db.getChatMessages(chatId));
@@ -270,15 +255,12 @@ export function registerIpcHandlers(ctx: IpcContext): void {
           return;
         }
         try {
-          const modelProfile = activeProfile();
           const client = createOpenRouterClient(() => apiKey);
           const answer = await runChatTurn({
             db: c.db,
             history: c.db.getChatMessages(id).slice(0, -1),
             userText: text,
             apiKey,
-            qualityMode: settings.getQualityMode(),
-            modelProfile,
             embedder: createOpenRouterEmbedder(client),
             episodeId,
             emit: (ev) => emitChatEvent({ ...ev, chatId: id, turnId }),

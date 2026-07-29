@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
-  ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder, QualityMode } from "../../shared/types";
-import { MODEL_PROFILES } from "../../shared/types";
+  ModelDownloadProgress, AppSettings, Episode, Job, ProjectFolder } from "../../shared/types";
 import { InlineError } from "../components/InlineError";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { runIpc } from "../lib/async";
@@ -158,33 +157,6 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
     onSettingsChanged?.();
     setOpenRouterKey("");
     setRetryAction(null);
-  }
-
-  async function handleQualityChange(mode: QualityMode) {
-    setRetryAction(() => () => void handleQualityChange(mode));
-    const result = await runIpc(
-      async () => {
-        await api.setQualityMode(mode);
-        setSettings(await api.getSettings());
-      },
-      { setPending: setActionPending, setError: setActionError, fallback: "Could not change quality mode." },
-    );
-    if (result.ok) setRetryAction(null);
-  }
-
-  async function handleModelProfileChange(id: string) {
-    setRetryAction(() => () => void handleModelProfileChange(id));
-    const result = await runIpc(
-      async () => {
-        await api.setModelProfile(id);
-        setSettings(await api.getSettings());
-      },
-      { setPending: setActionPending, setError: setActionError, fallback: "Could not change model profile." },
-    );
-    if (result.ok) {
-      setRetryAction(null);
-      onSettingsChanged?.();
-    }
   }
 
   async function handleDownloadModel() {
@@ -430,32 +402,6 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
           <section className="jobs-section">
             <div className="panel-bar">
               <span className="panel-bar-close" aria-hidden="true" />
-              <span className="panel-bar-title">Models</span>
-              <span className="panel-bar-stripes" aria-hidden="true" />
-            </div>
-            <div className="panel-body">
-              <select
-                className="model-select"
-                value={settings?.modelProfileId ?? MODEL_PROFILES[0]!.id}
-                onChange={(event) => void handleModelProfileChange(event.target.value)}
-                disabled={actionPending}
-              >
-                {MODEL_PROFILES.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.label} · {profile.description}
-                  </option>
-                ))}
-              </select>
-              <p className="model-description mono">
-                {MODEL_PROFILES.find((profile) => profile.id === settings?.modelProfileId)?.description ??
-                  MODEL_PROFILES[0]!.description}
-              </p>
-            </div>
-          </section>
-
-          <section className="jobs-section">
-            <div className="panel-bar">
-              <span className="panel-bar-close" aria-hidden="true" />
               <span className="panel-bar-title">Transcription</span>
               <span className="panel-bar-stripes" aria-hidden="true" />
             </div>
@@ -496,28 +442,6 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
               <p className="jobs-hint mono">
                 Everything transcribes on this Mac. Audio never leaves the machine.
               </p>
-            </div>
-          </section>
-
-          <section className="jobs-section">
-            <div className="panel-bar">
-              <span className="panel-bar-close" aria-hidden="true" />
-              <span className="panel-bar-title">Quality</span>
-              <span className="panel-bar-stripes" aria-hidden="true" />
-            </div>
-            <div className="panel-body">
-              <div className="quality-toggle">
-                {(["standard", "high"] as QualityMode[]).map((mode) => (
-                  <button
-                    key={mode}
-                    className={`quality-btn label${settings?.qualityMode === mode ? " active" : ""}`}
-                    onClick={() => void handleQualityChange(mode)}
-                    disabled={actionPending}
-                  >
-                    {mode}
-                  </button>
-                ))}
-              </div>
             </div>
           </section>
 
@@ -773,54 +697,6 @@ export function JobsSettingsScreen({ onSettingsChanged, folders, episodes, onRef
         }
         .episode-add-input::placeholder {
           color: var(--ink-faint);
-        }
-        .quality-toggle {
-          display: inline-flex;
-          gap: 2px;
-        }
-        .model-select {
-          width: 100%;
-          background: #fff;
-          border: 1px solid var(--chrome-lo);
-          box-shadow: var(--bevel-in);
-          border-radius: 2px;
-          padding: 10px 12px;
-          color: var(--ink);
-          font-family: var(--font-body);
-          font-size: 12.5px;
-        }
-        .model-select:focus-visible {
-          outline: 2px solid var(--accent);
-          outline-offset: -1px;
-        }
-        .model-description {
-          margin: 10px 0 0;
-          color: var(--ink-faint);
-          font-size: 10.5px;
-        }
-        .quality-btn {
-          background: var(--ground-raised);
-          border: 1px solid var(--chrome-lo);
-          box-shadow: var(--bevel-out);
-          border-radius: 2px;
-          color: var(--ink-dim);
-          padding: 8px 18px;
-        }
-        .quality-btn:hover:not(:disabled):not(.active) {
-          background: #d2d6d9;
-        }
-        .quality-btn:active:not(:disabled) {
-          box-shadow: var(--bevel-in);
-        }
-        .quality-btn.active {
-          background: var(--select-bg);
-          border-color: var(--select-bg);
-          color: var(--select-ink);
-          box-shadow: none;
-        }
-        .quality-btn:disabled {
-          color: var(--ink-faint);
-          cursor: default;
         }
         .trans-row {
           display: flex;

@@ -97,9 +97,7 @@ tag, and a confidence dot.
 Click a card to open the clip at that exact moment, with the synced transcript beside it.
 
 - Hits from finals carry a **FINAL** tag and their timecode is the timeline TC of the cut.
-- "Model profile" selects the OpenRouter routes used by the supervisor and search agents.
-  "Quality" switches the supervisor to that profile's higher-quality route, with automatic
-  fallback when the route is unavailable. Embeddings use one fixed model.
+- Chat runs on Gemini 3.6 Flash via OpenRouter. Embeddings use one fixed model.
 
 ### 8. Export to Avid
 

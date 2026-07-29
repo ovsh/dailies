@@ -267,56 +267,11 @@ export interface ExportResult {
 
 // ---------- settings ----------
 
-export type QualityMode = "standard" | "high";
 export type ApiKeyStatus = "missing" | "connected" | "invalid" | "unavailable";
 export type ApiKeyValidationStatus = Exclude<ApiKeyStatus, "missing">;
 
-export interface ModelProfile {
-  id: string;
-  label: string;
-  description: string;
-  supervisor: string;
-  supervisorHigh: string;
-}
-
-/**
- * Curated from a July 2026 scan of the OpenRouter catalog (vision + tool
- * support + pricing), LMArena text/vision leaderboards, and OpenRouter usage
- * rankings. Re-scan periodically — this tier moves fast. Default moved to
- * gemini-3.6-flash on its release, July 2026.
- */
-export const MODEL_PROFILES: ModelProfile[] = [
-  {
-    id: "balanced",
-    label: "Balanced (recommended)",
-    description: "Fast, inexpensive, current Gemini Flash",
-    supervisor: "google/gemini-3.6-flash",
-    supervisorHigh: "meta/muse-spark-1.1",
-  },
-  {
-    id: "value",
-    label: "Best value",
-    description: "Qwen 3.7 Plus — top arena rank per dollar, non-Google",
-    supervisor: "qwen/qwen3.7-plus",
-    supervisorHigh: "meta/muse-spark-1.1",
-  },
-  {
-    id: "best",
-    label: "Best quality",
-    description: "Higher-ranked chat model (can hit capacity)",
-    supervisor: "google/gemini-3.5-flash",
-    supervisorHigh: "meta/muse-spark-1.1",
-  },
-  {
-    id: "budget",
-    label: "Budget chat",
-    description: "Lower-cost chat model on OpenRouter",
-    supervisor: "xiaomi/mimo-v2.5",
-    supervisorHigh: "qwen/qwen3.7-plus",
-  },
-];
-
-export const DEFAULT_MODEL_PROFILE_ID = "balanced";
+/** Verified live on OpenRouter. Model choice may return later — no UI for it now. */
+export const CHAT_MODEL = "google/gemini-3.6-flash";
 export const EMBEDDING_MODEL = "google/gemini-embedding-001";
 
 /** Embedding vector length (google/gemini-embedding-001 with dimensions). */
@@ -327,8 +282,6 @@ export interface AppSettings {
   apiKeySet: boolean;
   /** Only "connected" means the stored key passed an OpenRouter API request. */
   apiKeyStatus: ApiKeyStatus;
-  modelProfileId: string;
-  qualityMode: QualityMode;
   whisperModel: string;
   whisperAvailable: boolean;
   /** True once the speech model file is on disk (global, shared by projects). */

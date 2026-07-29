@@ -1,20 +1,15 @@
 /**
- * Global (cross-project) settings: OpenRouter key, model profile, quality mode,
- * and whisper model.
+ * Global (cross-project) settings: OpenRouter key and whisper model.
  * Stored as JSON in userData; the API key is encrypted with safeStorage
  * (macOS Keychain-backed). Replaces the old per-database settings for these.
  */
 import { safeStorage } from "electron";
 import fs from "node:fs";
 import path from "node:path";
-import type { QualityMode } from "../shared/types";
-import { DEFAULT_MODEL_PROFILE_ID, MODEL_PROFILES } from "../shared/types";
 
 interface AppSettingsFile {
   openrouterKeyEnc?: string;
   openrouterKeyIsPlain?: boolean;
-  modelProfileId?: string;
-  qualityMode?: QualityMode;
   whisperModel?: string;
 }
 
@@ -28,15 +23,6 @@ function parseAppSettings(value: unknown): AppSettingsFile {
   if ("openrouterKeyIsPlain" in value && typeof value.openrouterKeyIsPlain === "boolean") {
     settings.openrouterKeyIsPlain = value.openrouterKeyIsPlain;
   }
-  if ("modelProfileId" in value && typeof value.modelProfileId === "string") {
-    settings.modelProfileId = value.modelProfileId;
-  }
-  if (
-    "qualityMode" in value &&
-    (value.qualityMode === "standard" || value.qualityMode === "high")
-  ) {
-    settings.qualityMode = value.qualityMode;
-  }
   if ("whisperModel" in value && typeof value.whisperModel === "string") {
     settings.whisperModel = value.whisperModel;
   }
@@ -47,10 +33,6 @@ export interface AppSettingsStore {
   getOpenRouterKey(): string | null;
   setOpenRouterKey(key: string): boolean;
   hasOpenRouterKey(): boolean;
-  getModelProfileId(): string;
-  setModelProfileId(id: string): void;
-  getQualityMode(): QualityMode;
-  setQualityMode(mode: QualityMode): void;
   getWhisperModel(): string;
 }
 
@@ -99,22 +81,6 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
     },
     hasOpenRouterKey() {
       return this.getOpenRouterKey() !== null;
-    },
-    getModelProfileId() {
-      const id = read().modelProfileId;
-      return MODEL_PROFILES.some((profile) => profile.id === id) ? id! : DEFAULT_MODEL_PROFILE_ID;
-    },
-    setModelProfileId(id: string) {
-      if (!MODEL_PROFILES.some((profile) => profile.id === id)) {
-        throw new Error(`Unknown model profile: ${id}`);
-      }
-      write({ modelProfileId: id });
-    },
-    getQualityMode() {
-      return read().qualityMode === "high" ? "high" : "standard";
-    },
-    setQualityMode(mode: QualityMode) {
-      write({ qualityMode: mode });
     },
     getWhisperModel() {
       return read().whisperModel ?? "large-v3-turbo";

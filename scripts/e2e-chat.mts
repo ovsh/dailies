@@ -8,7 +8,6 @@ import { openDatabase } from "../src/main/db/database";
 import { createOpenRouterClient } from "../src/main/agents/openrouter-client";
 import { createOpenRouterEmbedder } from "../src/main/agents/openrouter";
 import { runChatTurn } from "../src/main/agents/supervisor";
-import { MODEL_PROFILES } from "../src/shared/types";
 
 const dbPath = process.argv[2] ?? "";
 const question = process.argv[3] ?? "What do people talk about? Give me a few moments with timecodes.";
@@ -20,7 +19,6 @@ if (!dbPath || !key) {
 }
 
 const db = openDatabase(dbPath);
-const profile = MODEL_PROFILES[0]!;
 const client = createOpenRouterClient(() => key);
 const embedder = createOpenRouterEmbedder(client);
 
@@ -57,8 +55,6 @@ async function main() {
     history: [],
     userText: question,
     apiKey: key,
-    qualityMode: "standard",
-    modelProfile: profile,
     embedder,
     episodeId: null,
     emit: (ev) => console.log(`   · ${ev.agent}: ${ev.status}`),

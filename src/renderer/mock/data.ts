@@ -425,8 +425,6 @@ export const MOCK_JOBS: Job[] = [
 export const MOCK_SETTINGS: AppSettings = {
   apiKeySet: true,
   apiKeyStatus: "connected",
-  modelProfileId: "balanced",
-  qualityMode: "high",
   whisperModel: "large-v3",
   whisperAvailable: true,
   whisperModelReady: false,

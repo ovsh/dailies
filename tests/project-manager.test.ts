@@ -12,10 +12,6 @@ function fakeSettings(): AppSettingsStore {
     getOpenRouterKey: () => key,
     setOpenRouterKey: (k: string) => ((key = k), true),
     hasOpenRouterKey: () => key !== null,
-    getModelProfileId: () => "balanced",
-    setModelProfileId: () => {},
-    getQualityMode: () => "standard" as const,
-    setQualityMode: () => {},
     getWhisperModel: () => "large-v3-turbo",
   };
 }

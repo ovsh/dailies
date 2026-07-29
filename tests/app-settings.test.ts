@@ -31,15 +31,12 @@ describe("app settings", () => {
 
     const settings = createAppSettings(dataDir);
     expect(settings.getOpenRouterKey()).toBe("current-key");
-    expect(settings.getQualityMode()).toBe("standard");
 
-    settings.setQualityMode("high");
+    settings.setOpenRouterKey("current-key");
 
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       openrouterKeyEnc: Buffer.from("current-key", "utf8").toString("base64"),
       openrouterKeyIsPlain: true,
-      modelProfileId: "balanced",
-      qualityMode: "high",
       whisperModel: "large-v3-turbo",
     });
   });

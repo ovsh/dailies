@@ -23,7 +23,6 @@ import type {
   Project,
   ProjectFolder,
   ProjectState,
-  QualityMode,
   ApiKeyValidationStatus,
   WordTiming,
 } from "./types";
@@ -65,8 +64,6 @@ export interface DailiesAPI {
   downloadWhisperModel(): Promise<void>;
   onModelProgress(cb: (p: ModelDownloadProgress) => void): () => void;
   setApiKey(provider: "openrouter", key: string): Promise<ApiKeyValidationStatus>;
-  setModelProfile(id: string): Promise<void>;
-  setQualityMode(mode: QualityMode): Promise<void>;
 
   // chat (current project; episodeId scopes the search, null = whole project)
   listChats(): Promise<ChatSummary[]>;
@@ -116,8 +113,6 @@ export const IPC = {
   downloadWhisperModel: "dailies:downloadWhisperModel",
   modelProgress: "dailies:modelProgress",
   setApiKey: "dailies:setApiKey",
-  setModelProfile: "dailies:setModelProfile",
-  setQualityMode: "dailies:setQualityMode",
   listChats: "dailies:listChats",
   getChat: "dailies:getChat",
   sendChatMessage: "dailies:sendChatMessage",

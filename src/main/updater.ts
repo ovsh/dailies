@@ -1,12 +1,13 @@
 /**
  * Auto-update: checks at launch, every hour, and whenever any window comes
- * to front (throttled). Downloads silently in the background and installs
- * on restart or next quit. No dialogs — state pushes to the renderer over
+ * to front (throttled). Downloads silently in the background, waits for the
+ * native (Squirrel.Mac) updater to stage and validate it, and installs on
+ * restart or next quit. No dialogs — state pushes to the renderer over
  * IPC, which renders the banner, the rail chip, and the Settings & Jobs
  * "Software update" panel (JobsSettingsScreen) — those three surfaces are
  * the only consumers of this state.
  */
-import { app, BrowserWindow } from "electron";
+import { app, autoUpdater as nativeAutoUpdater, BrowserWindow } from "electron";
 // CJS interop: electron-updater ships no ESM build, and under esbuild-cjs
 // output a named import of `autoUpdater` resolves to undefined at runtime.
 import electronUpdater from "electron-updater";
@@ -59,12 +60,12 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
 
   function runCheck(isManual: boolean): Promise<void> {
     if (!enabled) return Promise.resolve();
-    // Never overlap checks, and don't re-check while an update is sitting
-    // ready to install (a fresh check would just re-download it). A manual
-    // click during a quiet background check promotes it instead of being
-    // swallowed, so the user sees their click land.
-    if (busy || state.phase === "ready") {
-      if (busy && isManual && !manual && state.phase !== "downloading") {
+    // Never overlap checks, and don't re-check while an update is staging or
+    // sitting ready to install (a fresh check would just re-download it). A
+    // manual click during a quiet background check promotes it instead of
+    // being swallowed, so the user sees their click land.
+    if (busy || state.phase === "ready" || state.phase === "staging") {
+      if (busy && isManual && !manual && state.phase !== "downloading" && state.phase !== "staging") {
         manual = true;
         pushState({ phase: "checking" });
       }
@@ -111,10 +112,28 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
       });
     });
 
+    // electron-updater's "update-downloaded" only means the ZIP arrived from
+    // GitHub. On macOS the native Squirrel.Mac agent then copies and
+    // signature-validates it in the background — and quitAndInstall() before
+    // THAT finishes is a silent no-op (the click does nothing, no error).
+    // So this is "staging", not "ready".
     autoUpdater.on("update-downloaded", (info) => {
-      settle({ phase: "ready", availableVersion: info.version });
+      pushState({
+        phase: "staging",
+        availableVersion: info.version,
+        transferred: undefined,
+        total: undefined,
+      });
     });
 
+    // Squirrel.Mac has validated and staged the update — installing on
+    // restart is now guaranteed to work. This is the real "ready".
+    nativeAutoUpdater.on("update-downloaded", () => {
+      settle({ phase: "ready", availableVersion: pendingAvailableVersion ?? state.availableVersion });
+    });
+
+    // Native staging failures (bad signature, ShipIt errors) surface here via
+    // electron-updater's own native error forwarding.
     autoUpdater.on("error", (err) => {
       settle({ phase: "error", errorMessage: terseErrorMessage(err), lastCheckedAt: Date.now() });
     });
@@ -156,6 +175,9 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
 
     restartNow(): void {
       if (!enabled) return;
+      // Only meaningful once the native updater confirmed readiness; calling
+      // earlier would silently do nothing (the original "restart lies" bug).
+      if (state.phase !== "ready") return;
       autoUpdater.quitAndInstall();
     },
   };

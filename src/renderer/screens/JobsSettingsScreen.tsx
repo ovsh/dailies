@@ -355,6 +355,17 @@ export function JobsSettingsScreen({
           </div>
         );
       }
+      case "staging":
+        return (
+          <div className="u-row">
+            <span className="u-state">
+              <span className="dot warn" aria-hidden="true" />
+              <span className="u-text">
+                Preparing <span className="mono">{updateState.availableVersion}</span> — verifying the download…
+              </span>
+            </span>
+          </div>
+        );
       case "ready":
         return (
           <div className="u-row">

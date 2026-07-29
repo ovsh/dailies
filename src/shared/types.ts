@@ -389,7 +389,10 @@ export interface ModelDownloadProgress {
 
 // ---------- software update ----------
 
-export type UpdatePhase = "idle" | "checking" | "downloading" | "ready" | "error";
+// "staging": the ZIP is downloaded and macOS (Squirrel.Mac) is copying and
+// signature-validating it. "ready" is only entered once the NATIVE updater
+// confirms it can install — quitAndInstall() before that is a silent no-op.
+export type UpdatePhase = "idle" | "checking" | "downloading" | "staging" | "ready" | "error";
 
 /** Pushed main -> renderer whenever the updater's state changes. */
 export interface UpdaterState {

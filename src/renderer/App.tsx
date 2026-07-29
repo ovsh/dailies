@@ -4,6 +4,7 @@ import type { AppSettings, ProjectActivity, ProjectState } from "../shared/types
 import { Rail } from "./components/Rail";
 import { Welcome } from "./components/Welcome";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { UpdateCluster } from "./components/UpdateCluster";
 import { ChatScreen } from "./screens/ChatScreen";
 import { LibraryScreen, type LibraryFocusRequest } from "./screens/LibraryScreen";
 import { ClipScreen } from "./screens/ClipScreen";
@@ -176,6 +177,7 @@ export function App() {
   return (
     <div className="app-root">
       {titlebar}
+      <UpdateCluster updateState={updateState} />
       <Rail
         screen={screen === "clip" ? returnScreen : screen}
         onNavigate={navigate}

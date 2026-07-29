@@ -48,8 +48,8 @@ const modelProgressListeners = new Set<(p: ModelDownloadProgress) => void>();
 // ---------- software update (dev-only demo) ----------
 // Renderer-only dev mode (`npm run dev:renderer`) has no main process, so
 // there is no real update feed. This stands in for one: "Check now" walks
-// checking -> downloading -> ready like a real release, and
-// window.__mockUpdaterPhase(phase) forces any of the five states instantly
+// checking -> downloading -> staging -> ready like a real release, and
+// window.__mockUpdaterPhase(phase) forces any of the states instantly
 // for visual QA. Starts idle, per the approved mock.
 let updateState: UpdaterState = {
   phase: "idle",
@@ -72,7 +72,12 @@ function clearUpdateTimer(): void {
 function tickMockDownload(): void {
   const transferred = Math.min(MOCK_UPDATE_TOTAL_BYTES, (updateState.transferred ?? 0) + MOCK_UPDATE_TOTAL_BYTES / 6);
   if (transferred >= MOCK_UPDATE_TOTAL_BYTES) {
-    pushUpdateState({ phase: "ready", transferred: MOCK_UPDATE_TOTAL_BYTES, total: MOCK_UPDATE_TOTAL_BYTES });
+    // Mirror the real pipeline: Squirrel staging/validation between the
+    // download finishing and restart actually being possible.
+    pushUpdateState({ phase: "staging", transferred: undefined, total: undefined });
+    updateTimer = setTimeout(() => {
+      pushUpdateState({ phase: "ready" });
+    }, 1400);
     return;
   }
   pushUpdateState({ transferred });
@@ -120,6 +125,13 @@ if (typeof window !== "undefined") {
         availableVersion: MOCK_UPDATE_AVAILABLE_VERSION,
         transferred: Math.round(MOCK_UPDATE_TOTAL_BYTES * 0.37),
         total: MOCK_UPDATE_TOTAL_BYTES,
+      });
+    } else if (phase === "staging") {
+      pushUpdateState({
+        phase: "staging",
+        availableVersion: MOCK_UPDATE_AVAILABLE_VERSION,
+        transferred: undefined,
+        total: undefined,
       });
     } else if (phase === "ready") {
       pushUpdateState({

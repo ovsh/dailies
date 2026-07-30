@@ -177,7 +177,12 @@ export function App() {
   return (
     <div className="app-root">
       {titlebar}
-      <UpdateCluster updateState={updateState} />
+      {/* Exactly one restart affordance at a time: while the full-width banner
+          is up it owns the "ready" story, so the fixed top-right cluster stays
+          out of the corner entirely (its ready button and version tag would
+          stack on top of the banner's controls). After "Later" the compact
+          cluster button becomes the single persistent affordance. */}
+      {!showUpdateBanner && <UpdateCluster updateState={updateState} />}
       <Rail
         screen={screen === "clip" ? returnScreen : screen}
         onNavigate={navigate}

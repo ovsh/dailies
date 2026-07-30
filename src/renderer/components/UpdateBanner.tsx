@@ -29,6 +29,12 @@ export function UpdateBanner({ version, onRestart, onDismiss }: UpdateBannerProp
           gap: 12px;
           flex-wrap: wrap;
           flex: none;
+          /* Clear the fixed 34px hidden-titlebar drag strip (global.css
+             .titlebar-drag, z-index 40): without this the banner is the first
+             in-flow child of .app-main and its Restart/Later controls land
+             inside the drag region — unclickable and colliding with anything
+             pinned to the top-right corner. */
+          margin-top: 34px;
           padding: 8px 20px;
           background: var(--ground-card);
           border-bottom: 1px solid var(--panel-border);

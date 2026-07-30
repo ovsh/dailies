@@ -3,9 +3,10 @@
  * to front (throttled). Downloads silently in the background, waits for the
  * native (Squirrel.Mac) updater to stage and validate it, and installs on
  * restart or next quit. No dialogs — state pushes to the renderer over
- * IPC, which renders the banner, the rail chip, and the Settings & Jobs
- * "Software update" panel (JobsSettingsScreen) — those three surfaces are
- * the only consumers of this state.
+ * IPC, which renders the banner, the top-right cluster (UpdateCluster —
+ * hidden while the banner is up so only one restart affordance shows), the
+ * rail chip, and the Settings & Jobs "Software update" panel
+ * (JobsSettingsScreen) — those are the only consumers of this state.
  */
 import { app, autoUpdater as nativeAutoUpdater, BrowserWindow } from "electron";
 // CJS interop: electron-updater ships no ESM build, and under esbuild-cjs
@@ -128,6 +129,10 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
     // THAT finishes is a silent no-op (the click does nothing, no error).
     // So this is "staging", not "ready".
     autoUpdater.on("update-downloaded", (info) => {
+      // Periodic checks can re-announce an already-downloaded update. Once the
+      // native updater has declared it ready, never regress to "staging" — the
+      // renderer's restart affordances key off "ready".
+      if (state.phase === "ready" && state.availableVersion === info.version) return;
       pushState({
         phase: "staging",
         availableVersion: info.version,

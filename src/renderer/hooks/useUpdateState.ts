@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { UpdaterState } from "../../shared/types";
+import { updaterStatesEqual } from "../../shared/updater-state";
 
 const FALLBACK_STATE: UpdaterState = { phase: "idle", currentVersion: "" };
 
@@ -10,10 +11,13 @@ export function useUpdateState(): UpdaterState {
 
   useEffect(() => {
     let mounted = true;
+    // Repeated pushes of the same state (e.g. "update-downloaded" re-firing on
+    // a periodic check) must be no-ops, not re-renders: keep the old object.
+    const apply = (s: UpdaterState) => setState((prev) => (updaterStatesEqual(prev, s) ? prev : s));
     void api.getUpdateState().then((s) => {
-      if (mounted) setState(s);
+      if (mounted) apply(s);
     });
-    const unsubscribe = api.onUpdateStateChanged((s) => setState(s));
+    const unsubscribe = api.onUpdateStateChanged(apply);
     return () => {
       mounted = false;
       unsubscribe();

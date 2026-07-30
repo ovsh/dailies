@@ -28,11 +28,23 @@ lives in the global `apple-sign` skill, `~/.claude/skills/apple-sign/`.
 
 Dailies' specifics:
 
-- App `Dailies.app`, bundle id `com.dailies.app`; artifacts land in
-  `release/Dailies-<version>-arm64.dmg`, plus (from 0.3.0, for auto-update)
-  `release/Dailies-<version>-arm64-mac.zip` and `release/latest-mac.yml`.
-  Both the ZIP and `latest-mac.yml` must be uploaded to the GitHub release
-  alongside the DMG, or existing installs never see the update.
+- App `Dailies.app`, bundle id `com.dailies.app`. Every build writes five
+  artifacts to `release/`, and ALL FIVE go on the GitHub release:
+
+      Dailies-<version>-arm64.dmg
+      Dailies-<version>-arm64-mac.zip
+      Dailies-<version>-arm64.dmg.blockmap
+      Dailies-<version>-arm64-mac.zip.blockmap
+      latest-mac.yml
+
+  The ZIP and `latest-mac.yml` are mandatory (from 0.3.0) — without them
+  existing installs never see the update at all. The two `.blockmap` files
+  make the update a small delta instead of a full ~260MB download.
+  electron-builder always generates them; they get lost because the
+  `gh release create` asset list is written by hand. v0.4.0 through v0.5.0
+  shipped without them. A delta needs a blockmap on BOTH sides — the
+  installed version and the new one — so the chain only restarts once two
+  consecutive releases carry them (0.5.1 is the first again).
 - electron-builder does the signing and app notarization itself — it just
   needs the shared profile: `APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist`
   (hardened runtime is on in `package.json → build.mac`, `notarize: true`).

@@ -18,6 +18,16 @@ export interface RunResult {
   timedOut: boolean;
 }
 
+/**
+ * EBADF/EMFILE/ENFILE from spawn mean the PROCESS (or machine) is out of
+ * file descriptors — the file being worked on is fine. Callers must not
+ * record such failures against the file.
+ */
+export function isSystemicSpawnError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return code === "EBADF" || code === "EMFILE" || code === "ENFILE";
+}
+
 export function run(bin: string, args: string[], opts?: RunOptions): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {

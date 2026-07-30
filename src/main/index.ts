@@ -127,13 +127,33 @@ void app.whenReady().then(async () => {
   setGlobalModelsDir(path.join(dataDir, "models"));
 
   // Crash-visibility for remote debugging: everything lands in dailies.log.
+  // Rotated at a size cap — a persistent error storm once grew an unrotated
+  // log past 700 MB, which is unusable as a diagnostic and hostile to disks.
   const logFile = path.join(dataDir, "dailies.log");
+  const rotatedLogFile = `${logFile}.1`;
+  const LOG_ROTATE_BYTES = 20 * 1024 * 1024;
+  let logBytes = 0;
+  const rotateLogIfNeeded = () => {
+    if (logBytes <= LOG_ROTATE_BYTES) return;
+    fs.rmSync(rotatedLogFile, { force: true });
+    fs.renameSync(logFile, rotatedLogFile);
+    logBytes = 0;
+  };
+  try {
+    logBytes = fs.statSync(logFile).size;
+    rotateLogIfNeeded();
+  } catch {
+    // no log yet
+  }
   const logLine = (level: string, args: unknown[]) => {
     try {
       const text = args
         .map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ""}` : String(a)))
         .join(" ");
-      fs.appendFileSync(logFile, `${new Date().toISOString()} [${level}] ${text}\n`);
+      const line = `${new Date().toISOString()} [${level}] ${text}\n`;
+      fs.appendFileSync(logFile, line);
+      logBytes += Buffer.byteLength(line);
+      rotateLogIfNeeded();
     } catch {
       // never let logging break the app
     }

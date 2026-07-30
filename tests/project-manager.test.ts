@@ -61,7 +61,7 @@ describe("project manager end-to-end (real db + pipeline)", () => {
     await manager.closeCurrent();
   }, 20000);
 
-  it("switches retained projects without stopping or closing the old context", async () => {
+  it("switching stops the old pipeline without blocking, and keeps its db open", async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "dailies-projects-stop-"));
     const manager = createProjectManager({
       dataDir,
@@ -95,15 +95,18 @@ describe("project manager end-to-end (real db + pipeline)", () => {
       return state;
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
-    const stopCallsBeforeRelease = vi.mocked(old.pipeline.stop).mock.calls.length;
+    // The switch must complete while the old pipeline's stop is still gated:
+    // teardown of the outgoing project never blocks opening the next one.
     const closedBeforeRelease = closeCalled;
     const switchedBeforeRelease = switched;
     releaseStop();
     const state = await switching;
 
-    expect(stopCallsBeforeRelease).toBe(0);
     expect(closedBeforeRelease).toBe(false);
     expect(switchedBeforeRelease).toBe(true);
+    await vi.waitFor(() => {
+      expect(old.pipeline.stop).toHaveBeenCalledWith("abort");
+    });
     expect(closeCalled).toBe(false);
     expect(state.project.id).toBe(second.id);
     const retained = await manager.openProject(first.id);
@@ -230,7 +233,9 @@ describe("project manager end-to-end (real db + pipeline)", () => {
     const fourthState = await manager.openProject(fourthProject.id);
     expect(fourthState.project.id).toBe(fourthProject.id);
     expect(activeBeforeFourth.project.id).toBe(firstProject.id);
-    expect(evicted.pipeline.stop).toHaveBeenCalledWith("abort");
+    await vi.waitFor(() => {
+      expect(evicted.pipeline.stop).toHaveBeenCalledWith("abort");
+    });
 
     const reopenedState = await manager.openProject(secondProject.id);
     expect(reopenedState.project.id).toBe(secondProject.id);
@@ -309,7 +314,7 @@ describe("project manager end-to-end (real db + pipeline)", () => {
     await manager.closeCurrent();
   });
 
-  it("requests abort synchronously and restart resets abandoned running work", async () => {
+  it("requests abort promptly and restart resets abandoned running work", async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "dailies-projects-abort-"));
     const manager = createProjectManager({
       dataDir,
@@ -339,9 +344,11 @@ describe("project manager end-to-end (real db + pipeline)", () => {
     context.pipeline.stop = vi.fn((mode) => originalStop(mode));
 
     const closing = manager.closeCurrent();
-    expect(context.pipeline.stop).toHaveBeenCalledWith("abort");
     expect(manager.current()).toBeNull();
     expect(context.db.listJobsForFile(file.id)[0]?.status).toBe("running");
+    await vi.waitFor(() => {
+      expect(context.pipeline.stop).toHaveBeenCalledWith("abort");
+    });
     await closing;
 
     const restarted = createProjectManager({

@@ -166,6 +166,12 @@ export interface DailiesDB {
   releaseClaimedJob(jobId: number): void;
   /** Called on boot: any 'running' job becomes 'queued' again. */
   resetRunningJobs(): void;
+  /**
+   * Requeues jobs that failed for process-level reasons (out of file
+   * descriptors, systemic spawn errors) rather than anything wrong with the
+   * file. Returns the number of jobs reopened.
+   */
+  requeueSystemicFailures(): number;
   listJobs(limit?: number): Job[];
   /** Complete uncapped history for one file, newest first. */
   listJobsForFile(fileId: number): Job[];

@@ -1,6 +1,7 @@
 import { OpenRouterApiError } from "../agents/openrouter-client";
 import type { DailiesDB } from "../db/types";
 import type { Job } from "../../shared/types";
+import { isSystemicSpawnError } from "./exec";
 import { STAGE_POLICY } from "./status";
 
 const MAX_CONCURRENCY = 2;
@@ -8,6 +9,13 @@ const MAX_TRANSCRIBE_CONCURRENCY = 1;
 const IDLE_POLL_MS = 1500;
 const MAX_TRANSIENT_RETRIES = 3;
 const RETRY_BASE_MS = 250;
+// Out-of-descriptors spawn failures are process-wide and clear on their own
+// once whatever held the descriptors lets go — worth far more patience than
+// an ordinary transient error, and fast retries would only burn attempts
+// while the table is still full.
+const MAX_SYSTEMIC_RETRIES = 8;
+const SYSTEMIC_RETRY_BASE_MS = 2_000;
+const MAX_RETRY_DELAY_MS = 60_000;
 const SHUTDOWN_TIMEOUT_MS = 15_000;
 const EVENT_LOOP_PROBE_MS = 100;
 
@@ -216,11 +224,15 @@ export function createQueue(opts: QueueOptions): JobQueue {
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
-      const transient = job.stage === "embed"
+      const systemic =
+        isSystemicSpawnError(err) || /\bebadf\b|\bemfile\b|\benfile\b/i.test(message);
+      const transient = systemic || (job.stage === "embed"
         ? isTransientEmbedError(err)
-        : isTransientError(err);
-      if (transient && job.attempts < MAX_TRANSIENT_RETRIES) {
-        await delay(RETRY_BASE_MS * 2 ** job.attempts);
+        : isTransientError(err));
+      const retryLimit = systemic ? MAX_SYSTEMIC_RETRIES : MAX_TRANSIENT_RETRIES;
+      if (transient && job.attempts < retryLimit) {
+        const baseMs = systemic ? SYSTEMIC_RETRY_BASE_MS : RETRY_BASE_MS;
+        await delay(Math.min(baseMs * 2 ** job.attempts, MAX_RETRY_DELAY_MS));
         if (signal.aborted) {
           outcome = "aborted";
           return;
@@ -353,6 +365,10 @@ export function createQueue(opts: QueueOptions): JobQueue {
     if (running) return;
     running = true;
     db.resetRunningJobs();
+    const requeued = db.requeueSystemicFailures();
+    if (requeued > 0) {
+      console.warn(`[pipeline] requeued ${requeued} jobs that failed for process-level reasons`);
+    }
     // Prerequisites may have arrived while this project was closed (model
     // downloaded with another/no project open, key added, app restarted) —
     // requeue waiting jobs now; handlers re-park them if still unmet.

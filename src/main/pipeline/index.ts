@@ -119,7 +119,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
       updateDebounceTimer = null;
     }
     const [discoveryResult, jobsResult] = await Promise.all([
-      settleStop(discovery.close()),
+      settleStop(discovery.close(mode)),
       settleStop(jobsStopped),
     ]);
     if (updateDebounceTimer) {

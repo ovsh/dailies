@@ -1658,6 +1658,18 @@ export function openDatabase(dbPath: string): DailiesDB {
   const clearDerivedStateTx = db.transaction(clearDerivedState);
 
   function updateExistingFile(existing: FileRow, input: FileInput): CanonicalFile {
+    if (input.path !== existing.path) {
+      const squatter = stmtGetFileByPath.get(input.path);
+      if (squatter && squatter.id !== existing.id) {
+        // A different row already claims this path — a stale registration
+        // (e.g. an atom once mis-ingested as standalone media, or a
+        // pre-membership row without a location). A path holds exactly one
+        // file on disk, so the live claim wins: absorb the stale row instead
+        // of failing the whole update with a UNIQUE constraint error.
+        clearDerivedStateTx(squatter.id);
+        stmtDeleteFile.run(squatter.id);
+      }
+    }
     const updated = stmtUpdateFile.get(
       input.path,
       input.filename,
@@ -1886,7 +1898,19 @@ export function openDatabase(dbPath: string): DailiesDB {
       ...input,
       clipKey: normalizedClipKey || null,
     };
-    const existingLocation = stmtGetLocationByPath.get(input.path);
+    let existingLocation = stmtGetLocationByPath.get(input.path);
+    if (existingLocation && normalizedInput.mediaKind === "opatom" && normalizedInput.clipKey) {
+      const clipOwner = stmtGetFileByNormalizedClipKey.get(normalizedInput.clipKey);
+      if (clipOwner && clipOwner.id !== existingLocation.file_id) {
+        // The clip key (UMID) is the identity of OP-Atom media; a different
+        // row occupying this path is a stale registration (e.g. an atom once
+        // mis-ingested as standalone media). Detach it from the path — which
+        // deletes the row when this was its last location — so the clip can
+        // claim the path instead of failing with a UNIQUE constraint error.
+        removeFileLocationTx(input.path);
+        existingLocation = stmtGetLocationByPath.get(input.path);
+      }
+    }
     if (existingLocation) {
       const existingFile = stmtGetFileById.get(existingLocation.file_id);
       if (!existingFile) throw new Error(`File ${existingLocation.file_id} not found`);
@@ -2542,6 +2566,21 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     resetRunningJobs(): void {
       stmtResetRunningJobs.run(new Date().toISOString());
+    },
+
+    requeueSystemicFailures(): number {
+      // "No member path … yielded audio" is the pre-0.5.1 audio stage
+      // masking spawn failures behind a per-clip message — reopen those too
+      // so the corrected classification gets a chance to run.
+      return db.prepare(
+        `UPDATE jobs
+         SET status = 'queued', attempts = 0, error = NULL, updated_at = ?
+         WHERE status = 'error'
+           AND (error LIKE '%EBADF%'
+             OR error LIKE '%EMFILE%'
+             OR error LIKE '%ENFILE%'
+             OR error LIKE '%No member path of opatom clip%')`,
+      ).run(new Date().toISOString()).changes;
     },
 
     listJobs(limit = 100): Job[] {

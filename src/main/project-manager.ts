@@ -45,6 +45,16 @@ interface RetainedProjectContext extends ProjectContext {
   lastActive: number;
   deferredStart: DeferredStartTask | null;
   inFlightChatTurns: number;
+  /**
+   * Whether this context's pipeline (watcher + job queue) should be running.
+   * Only the ACTIVE project indexes; a retained background context keeps its
+   * DB open for chat but must not hold folder watchers or spawn work — a
+   * watched Avid MediaFiles tree is expensive, and idle contexts multiplying
+   * that load is how the app runs out of file descriptors.
+   */
+  pipelineActive: boolean;
+  /** Serializes pipeline stop/start so a re-open never races a teardown. */
+  pipelineTransition: Promise<void>;
 }
 
 export interface ProjectManager {
@@ -155,6 +165,7 @@ export function createProjectManager(opts: {
   function scheduleDeferredStart(
     context: RetainedProjectContext,
     folders: ProjectState["folders"],
+    kind: "new" | "retained" = "new",
   ): DeferredStartTask {
     const scheduledAt = Date.now();
     let cancelled = false;
@@ -170,7 +181,7 @@ export function createProjectManager(opts: {
       reported = true;
       logOpen({
         projectId: context.project.id,
-        kind: "new",
+        kind,
         phase: "deferred-start",
         durationMs: Date.now() - scheduledAt,
         outcome,
@@ -229,7 +240,43 @@ export function createProjectManager(opts: {
     };
   }
 
+  /** Stop a background context's pipeline; its DB stays open for chat. */
+  function deactivatePipeline(context: RetainedProjectContext): void {
+    if (!context.pipelineActive) return;
+    context.pipelineActive = false;
+    context.deferredStart?.cancel();
+    context.pipelineTransition = context.pipelineTransition.then(async () => {
+      if (context.pipelineActive) return; // reactivated before we got here
+      await context.deferredStart?.done;
+      try {
+        await context.pipeline.stop("abort");
+      } catch (err) {
+        console.warn("[project] background pipeline stop failed", {
+          projectId: context.project.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+  }
+
+  /** Restart the pipeline of a retained context that is active again. */
+  function activatePipeline(
+    context: RetainedProjectContext,
+    folders: ProjectState["folders"],
+  ): void {
+    if (context.pipelineActive) return;
+    context.pipelineActive = true;
+    context.pipelineTransition = context.pipelineTransition.then(() => {
+      if (!context.pipelineActive || closing) return;
+      if (contexts.get(context.project.id) !== context) return;
+      context.deferredStart = scheduleDeferredStart(context, folders, "retained");
+      return context.deferredStart.done;
+    });
+  }
+
   async function abortAndClose(context: RetainedProjectContext): Promise<void> {
+    context.pipelineActive = false;
+    await context.pipelineTransition.catch(() => undefined);
     try {
       await context.pipeline.stop("abort");
     } catch (err) {
@@ -272,10 +319,13 @@ export function createProjectManager(opts: {
   async function openRecord(record: ProjectRecord): Promise<ProjectState> {
     if (closing) throw new Error("Project manager is closing");
     const startedAt = Date.now();
+    const previous = activeProjectId ? contexts.get(activeProjectId) ?? null : null;
     const retained = contexts.get(record.id);
     if (retained) {
       markOpened(retained);
       const state = stateFor(retained);
+      if (previous && previous !== retained) deactivatePipeline(previous);
+      activatePipeline(retained, state.folders);
       evictOverflow();
       logOpen({
         projectId: record.id,
@@ -318,6 +368,8 @@ export function createProjectManager(opts: {
       lastActive: 0,
       deferredStart: null,
       inFlightChatTurns: 0,
+      pipelineActive: true,
+      pipelineTransition: Promise.resolve(),
       beginChatTurn() {
         context.inFlightChatTurns += 1;
         let released = false;
@@ -331,6 +383,7 @@ export function createProjectManager(opts: {
     const state = stateFor(context);
     contexts.set(record.id, context);
     markOpened(context);
+    if (previous && previous !== context) deactivatePipeline(previous);
     context.deferredStart = scheduleDeferredStart(context, state.folders);
     evictOverflow();
     logOpen({
@@ -410,10 +463,15 @@ export function createProjectManager(opts: {
       activeProjectId = null;
       const retained = [...contexts.values()];
       contexts.clear();
-      for (const context of retained) context.deferredStart?.cancel();
+      for (const context of retained) {
+        context.pipelineActive = false;
+        context.deferredStart?.cancel();
+      }
       const stopped = retained.map((context) => ({
         context,
-        task: context.pipeline.stop("abort"),
+        task: context.pipelineTransition
+          .catch(() => undefined)
+          .then(() => context.pipeline.stop("abort")),
       }));
       const evictions = [...backgroundCloses.values()];
       closeTask = Promise.all([

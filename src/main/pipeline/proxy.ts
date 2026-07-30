@@ -69,6 +69,17 @@ export async function extractKeyframe(
 }
 
 /**
+ * True when an extractAudio failure means the input simply has no audio
+ * stream (video-only essence) — a fact about the media, not an error.
+ */
+export function isNoAudioStreamError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /does not contain any stream|no audio stream|Stream specifier .* matches no streams/i.test(
+    message,
+  );
+}
+
+/**
  * Extracts mono 16kHz PCM16 WAV audio, suitable for whisper.cpp.
  * There is intentionally no seek/trim: the WAV starts at source t=0, so
  * transcript startS offsets map 1:1 to playback time.

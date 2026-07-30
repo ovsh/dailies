@@ -15,6 +15,7 @@ import { reconcileEpisodeMembership } from "../membership";
 import { usesFullContentHash } from "../file-hash";
 import { findFfprobeBinary } from "./binaries";
 import { DOC_EXTENSIONS, extractDocument } from "./docs";
+import { isSystemicSpawnError } from "./exec";
 import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo, type OpAtomClip } from "./opatom";
 import { computeFileIdentity } from "./probe";
 import { createWatcher, type Watcher } from "./watcher";
@@ -40,7 +41,7 @@ export interface Discovery {
   unwatchFolder(path: string): void;
   scanFolder(folder: ProjectFolder): Promise<void>;
   ingestDocument(path: string, episodeId: number | null): Promise<boolean>;
-  close(): Promise<void>;
+  close(mode?: "drain" | "abort"): Promise<void>;
 }
 
 interface LocatedFile {
@@ -120,6 +121,7 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
   const pendingOpAtomClips = new Map<string, PendingOpAtomClip>();
   const groupers = new Map<string, OpAtomGrouper>();
   let lifecycle: "open" | "closing" | "closed" = "open";
+  let closeMode: "drain" | "abort" = "drain";
   let watcher: Watcher | null = null;
   let closeTask: Promise<void> | null = null;
 
@@ -334,6 +336,12 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
   }
 
   function queueOpAtomClip(bundle: OpAtomBundle, clip: OpAtomClip): void {
+    // During an abort close (project switch, quit) no new clip updates may
+    // start: each one re-probes members and writes to a database that is
+    // about to close. The clips are rediscovered by the next scan.
+    if (lifecycle === "closed" || (lifecycle === "closing" && closeMode === "abort")) {
+      return;
+    }
     const previous = opAtomClipTails.get(clip.clipKey) ?? Promise.resolve();
     const current = previous
       .then(() => onOpAtomClip(bundle, clip))
@@ -354,7 +362,7 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     const atomByPath = new Map(clip.atoms.map((atom) => [atom.path, atom]));
     for (const path of existingLocation?.memberPaths ?? []) {
       if (atomByPath.has(path)) continue;
-      const restored = await analyzeMxf(findFfprobeBinary(), path);
+      const restored = await analyzeMxf(findFfprobeBinary(), path).catch(() => null);
       if (restored?.clipKey === clip.clipKey) atomByPath.set(path, restored);
     }
 
@@ -452,6 +460,47 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     }
   }
 
+  /**
+   * Unreadable media (corrupt file, unsupported MXF variant) must remain
+   * VISIBLE as an error rather than silently disappearing — otherwise the
+   * clip count doesn't match what the editor put in the folder and it
+   * looks like the app "lost" a file. Record a stub in error state; a later
+   * successful discovery of the same path clears it.
+   */
+  function recordUnreadable(
+    path: string,
+    err: unknown,
+    located: ReturnType<typeof locationForPath>,
+    existing: MediaFile | null,
+  ): void {
+    let unreadable = existing;
+    const unreadableHash = `unreadable:${path}`;
+    if (located && located.file.fileHash !== unreadableHash) {
+      removeLocation(located.location.path);
+      unreadable = null;
+    }
+    if (!unreadable) {
+      unreadable = db.registerFileLocation({
+        path,
+        filename: basenameOf(path),
+        durationS: 0,
+        fps: 0,
+        dropFrame: false,
+        startTc: "00:00:00:00",
+        codec: "unknown",
+        audioChannels: 0,
+        fileHash: unreadableHash,
+        role: roleForPath(path),
+      }).file;
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    db.setDiscoveryFailure(unreadable.id, message);
+    reconcile(unreadable.id);
+    reconcileMemberships([path]);
+    scheduleUpdate();
+    console.warn(`onFileFound: unreadable media ${path}:`, err);
+  }
+
   async function onFileFound(path: string): Promise<void> {
     const ext = extname(path).toLowerCase();
     const located = locationForPath(path);
@@ -459,50 +508,31 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
 
     if (ext === ".mxf") {
       const ffprobeBin = findFfprobeBinary();
-      const atomInfo: MxfAtomInfo | null = await analyzeMxf(ffprobeBin, path);
+      let atomInfo: MxfAtomInfo | null;
+      try {
+        atomInfo = await analyzeMxf(ffprobeBin, path);
+      } catch (err) {
+        // Out-of-descriptors is the process's problem, not the file's:
+        // never record it against the path — surface it to the caller and
+        // let the next scan retry.
+        if (isSystemicSpawnError(err)) throw err;
+        recordUnreadable(path, err, located, existing);
+        return;
+      }
       if (atomInfo) {
         if (existing?.discoveryFailed) db.setDiscoveryFailure(existing.id, null);
         addOpAtom(atomInfo);
         return;
       }
-      // Not OP-Atom (e.g. carries both audio and video) — fall through to
-      // standard ingest below.
+      // Probed cleanly and not OP-Atom (e.g. carries both audio and video)
+      // — fall through to standard ingest below.
     }
 
     let identity: Awaited<ReturnType<typeof computeFileIdentity>>;
     try {
       identity = await computeFileIdentity(path);
     } catch (err) {
-      // Unreadable media (corrupt file, unsupported MXF variant) must remain
-      // VISIBLE as an error rather than silently disappearing — otherwise the
-      // clip count doesn't match what the editor put in the folder and it
-      // looks like the app "lost" a file. Record a stub in error state.
-      let unreadable = existing;
-      const unreadableHash = `unreadable:${path}`;
-      if (located && located.file.fileHash !== unreadableHash) {
-        removeLocation(located.location.path);
-        unreadable = null;
-      }
-      if (!unreadable) {
-        unreadable = db.registerFileLocation({
-          path,
-          filename: basenameOf(path),
-          durationS: 0,
-          fps: 0,
-          dropFrame: false,
-          startTc: "00:00:00:00",
-          codec: "unknown",
-          audioChannels: 0,
-          fileHash: unreadableHash,
-          role: roleForPath(path),
-        }).file;
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      db.setDiscoveryFailure(unreadable.id, message);
-      reconcile(unreadable.id);
-      reconcileMemberships([path]);
-      scheduleUpdate();
-      console.warn(`onFileFound: unreadable media ${path}:`, err);
+      recordUnreadable(path, err, located, existing);
       return;
     }
     if (existing?.discoveryFailed) db.setDiscoveryFailure(existing.id, null);
@@ -596,7 +626,9 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     }
 
     const analyzed = await Promise.all(
-      remainingPaths.map((memberPath) => analyzeMxf(findFfprobeBinary(), memberPath)),
+      remainingPaths.map((memberPath) =>
+        analyzeMxf(findFfprobeBinary(), memberPath).catch(() => null)
+      ),
     );
     const atoms = analyzed.filter((atom): atom is MxfAtomInfo => atom !== null);
     if (atoms.length === 0) {
@@ -620,12 +652,6 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
         if (lifecycle !== "open") return;
         void trackTask(onFileFound(path)).catch((err: unknown) => {
           console.warn(`onFileFound: failed on ${path}:`, err);
-        });
-      },
-      onFileChanged: (path) => {
-        if (lifecycle !== "open") return;
-        void trackTask(onFileFound(path)).catch((err: unknown) => {
-          console.warn(`onFileChanged: failed on ${path}:`, err);
         });
       },
       onFileRemoved: (path) => {
@@ -742,10 +768,11 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     if (result.kind === "failed") throw result.error;
   }
 
-  function close(): Promise<void> {
+  function close(mode: "drain" | "abort" = "drain"): Promise<void> {
     if (lifecycle === "closing" && closeTask) return closeTask;
     if (lifecycle === "closed") return Promise.resolve();
     lifecycle = "closing";
+    closeMode = mode;
     const activeWatcher = watcher;
     watcher = null;
     closeTask = (async () => {
@@ -766,8 +793,15 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
         closeError ??= err;
       }
 
-      for (const pending of pendingOpAtomClips.values()) {
-        queueOpAtomClip(pending.bundle, pending.clip);
+      // Drain mode finishes the clip updates already in hand. Abort mode
+      // drops them: each update re-probes members with ffprobe, and with
+      // thousands of pending clips the flush cannot beat the deadline — the
+      // database would close underneath the stragglers. A dropped clip is
+      // rediscovered by the next scan of its folder.
+      if (mode === "drain") {
+        for (const pending of pendingOpAtomClips.values()) {
+          queueOpAtomClip(pending.bundle, pending.clip);
+        }
       }
       pendingOpAtomClips.clear();
       for (const activeGrouper of groupers.values()) activeGrouper.close();

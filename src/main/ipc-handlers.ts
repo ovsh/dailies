@@ -604,6 +604,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       if (fs.existsSync(logFile)) {
         fs.copyFileSync(logFile, path.join(staging, "dailies.log"));
       }
+      // The rotated-out previous log, when one exists — a fresh rotation
+      // must not leave a bug report without its history.
+      if (fs.existsSync(`${logFile}.1`)) {
+        fs.copyFileSync(`${logFile}.1`, path.join(staging, "dailies.log.1"));
+      }
 
       const versions = [
         `app ${app.getVersion()}`,

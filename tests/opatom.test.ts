@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { mockRun } = vi.hoisted(() => ({ mockRun: vi.fn() }));
-vi.mock("../src/main/pipeline/exec", () => ({ run: mockRun }));
+vi.mock("../src/main/pipeline/exec", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/main/pipeline/exec")>()),
+  run: mockRun,
+}));
 
 import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo } from "../src/main/pipeline/opatom";
 

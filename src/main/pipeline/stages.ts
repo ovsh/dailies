@@ -6,8 +6,9 @@ import type { DailiesDB } from "../db/types";
 import type { Job, JobStage, MediaFile, TextEmbedder } from "../../shared/types";
 import { formatElapsedOffset, tcAddSeconds } from "../../shared/timecode";
 import { findFfprobeBinary, findWhisperBinary, findWhisperModel } from "./binaries";
+import { isSystemicSpawnError } from "./exec";
 import { analyzeMxf } from "./opatom";
-import { extractAudio, extractKeyframe, makeProxy } from "./proxy";
+import { extractAudio, extractKeyframe, isNoAudioStreamError, makeProxy } from "./proxy";
 import { probeFile } from "./probe";
 import { detectScenes } from "./scenes";
 import { computeFileStatus, latestJobsByStage } from "./status";
@@ -120,19 +121,37 @@ export function createStages(opts: StageOptions): Stages {
     if (file.mediaKind === "opatom") {
       const candidates = file.memberPaths ?? [file.path];
       let extracted = false;
+      let lastError: unknown = null;
       for (const candidate of candidates) {
         try {
           await extractAudio(candidate, audioPath, timeoutMs);
           checkActive(signal);
           extracted = true;
           break;
-        } catch {
+        } catch (err) {
           checkActive(signal);
+          // Out-of-descriptors means the PROCESS can't spawn — nothing about
+          // this clip. Surface it as-is so the queue treats it as transient
+          // instead of recording a bogus per-file failure.
+          if (isSystemicSpawnError(err)) throw err;
+          if (!isNoAudioStreamError(err)) lastError = err;
           continue;
         }
       }
       if (!extracted) {
-        throw new Error(`No member path of opatom clip ${file.id} yielded audio`);
+        if (lastError === null) {
+          // Every member is video-only essence (render, motion effect,
+          // still). No dialogue is a fact about the clip, not a failure:
+          // index it with an empty transcript so it is searchable by name.
+          db.replaceTranscript(file.id, []);
+          db.markTranscribed(file.id);
+          db.completeJob(job.id);
+          return;
+        }
+        const message = lastError instanceof Error ? lastError.message : String(lastError);
+        throw new Error(
+          `Audio extraction failed for every member of opatom clip ${file.id}: ${message}`,
+        );
       }
     } else {
       await extractAudio(file.path, audioPath, timeoutMs);

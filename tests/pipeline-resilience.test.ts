@@ -34,7 +34,6 @@ const mocks = vi.hoisted(() => ({
     codec: string;
   }>(),
   watcherOnFileFound: null as ((path: string) => void) | null,
-  watcherOnFileChanged: null as ((path: string) => void) | null,
   watcherOnFileRemoved: null as ((path: string) => void) | null,
   detectedScenes: [{ startS: 0, endS: 5 }],
   detectScenes: vi.fn(),
@@ -61,7 +60,10 @@ vi.mock("../src/main/pipeline/opatom", async (importOriginal) => {
       mocks.mxfAtoms.get(filePath) ?? null),
   };
 });
-vi.mock("../src/main/pipeline/exec", () => ({ run: mocks.run }));
+vi.mock("../src/main/pipeline/exec", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/main/pipeline/exec")>()),
+  run: mocks.run,
+}));
 vi.mock("../src/main/pipeline/proxy", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/main/pipeline/proxy")>();
   mocks.makeProxyForTest = actual.makeProxy;
@@ -81,11 +83,9 @@ vi.mock("../src/main/pipeline/transcribe", () => ({
 vi.mock("../src/main/pipeline/watcher", () => ({
   createWatcher: (opts: {
     onFileFound(path: string): void;
-    onFileChanged(path: string): void;
     onFileRemoved(path: string): void;
   }) => {
     mocks.watcherOnFileFound = opts.onFileFound;
-    mocks.watcherOnFileChanged = opts.onFileChanged;
     mocks.watcherOnFileRemoved = opts.onFileRemoved;
     return { watchFolder() {}, unwatchFolder() {}, async close() {} };
   },
@@ -165,7 +165,6 @@ beforeEach(() => {
   mocks.probeByPath.clear();
   mocks.mxfAtoms.clear();
   mocks.watcherOnFileFound = null;
-  mocks.watcherOnFileChanged = null;
   mocks.watcherOnFileRemoved = null;
   mocks.detectedScenes = [{ startS: 0, endS: 5 }];
   mocks.detectScenes.mockReset().mockImplementation(async () => mocks.detectedScenes);
@@ -1475,7 +1474,9 @@ describe("pipeline prerequisite and applicability handling", () => {
 
     writeFileSync(audioPath, "audio after");
     mocks.probeByPath.set(audioPath, { fileHash: "c".repeat(40) });
-    mocks.watcherOnFileChanged?.(audioPath);
+    // Changed files arrive through the same found callback: the watcher
+    // reports any stable path event and discovery re-ingests idempotently.
+    mocks.watcherOnFileFound?.(audioPath);
     await vi.advanceTimersByTimeAsync(4000);
     await vi.waitFor(() => {
       expect(db.getFile(file.id)?.fileHash).toContain("c".repeat(40));

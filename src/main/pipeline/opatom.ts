@@ -93,22 +93,38 @@ function findPackageUmid(format: FfprobeFormat | undefined, streams: FfprobeStre
  * Runs ffprobe (json, -show_format -show_streams) against an .mxf file and
  * returns its OP-Atom info, or null when the file is not OP-Atom (e.g. it
  * carries both audio and video streams — treat as standard media).
+ *
+ * Null strictly means "probed successfully, and this is not an atom". A
+ * probe that could not run or exited nonzero THROWS instead: treating a
+ * transient failure (spawn error, drive hiccup, timeout) as "not OP-Atom"
+ * sends the atom down the standard-ingest path, which plants a standalone
+ * files row at the atom's path that every later clip registration collides
+ * with.
  */
 export async function analyzeMxf(ffprobePath: string, path: string): Promise<MxfAtomInfo | null> {
-  const args = ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path];
+  const args = [
+    // "error", not "quiet": on failure the stderr tail is the diagnosis.
+    "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path,
+  ];
 
-  const { stdout, code, timedOut } = await run(ffprobePath, args, {
+  const { stdout, stderr, code, timedOut } = await run(ffprobePath, args, {
     timeoutMs: PROBE_TIMEOUT_MS,
   });
-  if (timedOut || code !== 0) {
-    return null;
+  if (timedOut) {
+    throw new Error(`ffprobe timed out after ${PROBE_TIMEOUT_MS}ms for ${path}`);
+  }
+  if (code !== 0) {
+    const detail = stderr.trim().split("\n").slice(-3).join(" · ").slice(0, 300);
+    throw new Error(
+      `ffprobe failed for ${path} (exit ${code ?? "unknown"})${detail ? `: ${detail}` : ""}`,
+    );
   }
 
   let parsed: FfprobeOutput;
   try {
     parsed = JSON.parse(stdout) as FfprobeOutput;
-  } catch {
-    return null;
+  } catch (err) {
+    throw new Error(`ffprobe returned invalid JSON for ${path}: ${(err as Error).message}`);
   }
 
   const streams = parsed.streams ?? [];

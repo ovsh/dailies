@@ -1,11 +1,28 @@
+import { cpus, loadavg } from "node:os";
+
 import { OpenRouterApiError } from "../agents/openrouter-client";
 import type { DailiesDB } from "../db/types";
 import type { Job } from "../../shared/types";
 import { isSystemicSpawnError } from "./exec";
 import { STAGE_POLICY } from "./status";
 
-const MAX_CONCURRENCY = 2;
-const MAX_TRANSCRIBE_CONCURRENCY = 1;
+// Leave two cores for the UI and the OS, and never trust a huge core count to
+// mean huge I/O headroom.
+function defaultConcurrency(): number {
+  return Math.min(8, Math.max(4, cpus().length - 2));
+}
+// Whisper runs on the GPU (Metal): a third concurrent job queues on the same
+// device instead of going faster, whatever the core count is.
+const MAX_TRANSCRIBE_CONCURRENCY = 2;
+// Back-off floor — below this the pipeline stops making useful progress.
+const MIN_CONCURRENCY = 2;
+const LOAD_SAMPLE_MS = 15_000;
+const LOAD_HIGH = 0.9;
+const LOAD_LOW = 0.6;
+// Hysteresis: one spike (or one quiet moment) never moves the cap.
+const LOAD_SAMPLE_STREAK = 2;
+const STEP_DOWN = 2;
+const STEP_UP = 1;
 const IDLE_POLL_MS = 1500;
 const MAX_TRANSIENT_RETRIES = 3;
 const RETRY_BASE_MS = 250;
@@ -22,17 +39,42 @@ const EVENT_LOOP_PROBE_MS = 100;
 export interface PipelineBudgetTotals {
   readonly inFlightCount: number;
   readonly transcribeInFlight: number;
+  readonly concurrency: number;
+  readonly baseConcurrency: number;
+}
+
+export interface PipelineBudgetLimits {
+  concurrency?: number;
+  transcribeConcurrency?: number;
 }
 
 export class PipelineBudget {
   private inFlightCount = 0;
   private transcribeInFlight = 0;
+  private readonly baseConcurrency: number;
+  private readonly maxTranscribeConcurrency: number;
+  /** Gates NEW starts only — a lowered cap never interrupts running work. */
+  private concurrency: number;
+  private highLoadSamples = 0;
+  private lowLoadSamples = 0;
+  private samplers = 0;
+  private sampleTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(limits: PipelineBudgetLimits = {}) {
+    this.baseConcurrency = limits.concurrency ?? defaultConcurrency();
+    this.maxTranscribeConcurrency = limits.transcribeConcurrency ?? MAX_TRANSCRIBE_CONCURRENCY;
+    this.concurrency = this.baseConcurrency;
+  }
+
+  get limit(): number {
+    return this.concurrency;
+  }
 
   acquire(stage: Job["stage"]): boolean {
-    if (this.inFlightCount >= MAX_CONCURRENCY) return false;
+    if (this.inFlightCount >= this.concurrency) return false;
     if (
       stage === "transcribe" &&
-      this.transcribeInFlight >= MAX_TRANSCRIBE_CONCURRENCY
+      this.transcribeInFlight >= this.maxTranscribeConcurrency
     ) {
       return false;
     }
@@ -54,10 +96,82 @@ export class PipelineBudget {
     this.inFlightCount -= 1;
   }
 
+  /**
+   * Load sampling runs only while at least one pipeline is started — every
+   * queue that starts must release, or the interval outlives the pipeline.
+   */
+  retainLoadSampler(): void {
+    this.samplers += 1;
+    if (this.sampleTimer) return;
+    this.sampleTimer = setInterval(() => this.sampleLoad(), LOAD_SAMPLE_MS);
+    this.sampleTimer.unref();
+  }
+
+  releaseLoadSampler(): void {
+    if (this.samplers <= 0) return;
+    this.samplers -= 1;
+    if (this.samplers > 0 || !this.sampleTimer) return;
+    clearInterval(this.sampleTimer);
+    this.sampleTimer = null;
+    this.highLoadSamples = 0;
+    this.lowLoadSamples = 0;
+  }
+
+  /**
+   * EBADF/EMFILE/ENFILE from a child spawn is resource pressure exactly like a
+   * hot CPU: fewer concurrent stages is the only thing that helps. Recovery
+   * goes through the same gradual load-driven step up.
+   */
+  noteSpawnPressure(): void {
+    this.lowLoadSamples = 0;
+    this.stepConcurrency(-STEP_DOWN, "spawn-error");
+  }
+
+  private sampleLoad(): void {
+    const cores = cpus().length || 1;
+    const load = loadavg()[0] / cores;
+    if (load > LOAD_HIGH) {
+      this.lowLoadSamples = 0;
+      this.highLoadSamples += 1;
+      if (this.highLoadSamples < LOAD_SAMPLE_STREAK) return;
+      this.highLoadSamples = 0;
+      this.stepConcurrency(-STEP_DOWN, `load ${load.toFixed(2)}`);
+      return;
+    }
+    if (load < LOAD_LOW) {
+      this.highLoadSamples = 0;
+      this.lowLoadSamples += 1;
+      if (this.lowLoadSamples < LOAD_SAMPLE_STREAK) return;
+      this.lowLoadSamples = 0;
+      this.stepConcurrency(STEP_UP, `load ${load.toFixed(2)}`);
+      return;
+    }
+    this.highLoadSamples = 0;
+    this.lowLoadSamples = 0;
+  }
+
+  private stepConcurrency(delta: number, reason: string): void {
+    const next = Math.min(
+      this.baseConcurrency,
+      Math.max(MIN_CONCURRENCY, this.concurrency + delta),
+    );
+    if (next === this.concurrency) return;
+    const previous = this.concurrency;
+    this.concurrency = next;
+    console.info("[pipeline] concurrency", JSON.stringify({
+      reason,
+      from: previous,
+      to: next,
+      base: this.baseConcurrency,
+    }));
+  }
+
   get totals(): PipelineBudgetTotals {
     return {
       inFlightCount: this.inFlightCount,
       transcribeInFlight: this.transcribeInFlight,
+      concurrency: this.concurrency,
+      baseConcurrency: this.baseConcurrency,
     };
   }
 }
@@ -226,6 +340,7 @@ export function createQueue(opts: QueueOptions): JobQueue {
       const message = err instanceof Error ? err.message : String(err);
       const systemic =
         isSystemicSpawnError(err) || /\bebadf\b|\bemfile\b|\benfile\b/i.test(message);
+      if (systemic) budget.noteSpawnPressure();
       const transient = systemic || (job.stage === "embed"
         ? isTransientEmbedError(err)
         : isTransientError(err));
@@ -302,7 +417,7 @@ export function createQueue(opts: QueueOptions): JobQueue {
   function kick(): void {
     if (!running) return;
 
-    while (activity.inFlightCount < MAX_CONCURRENCY) {
+    while (activity.inFlightCount < budget.limit) {
       const job = db.claimNextJob();
       if (!job) break;
       activity.queuedClaims += 1;
@@ -364,6 +479,7 @@ export function createQueue(opts: QueueOptions): JobQueue {
   function start(): void {
     if (running) return;
     running = true;
+    budget.retainLoadSampler();
     db.resetRunningJobs();
     const requeued = db.requeueSystemicFailures();
     if (requeued > 0) {
@@ -377,6 +493,7 @@ export function createQueue(opts: QueueOptions): JobQueue {
 
   function stop(mode: StopMode = "drain"): Promise<void> {
     const startedAt = Date.now();
+    if (running) budget.releaseLoadSampler();
     running = false;
     if (loopTimer) {
       clearTimeout(loopTimer);

@@ -214,8 +214,10 @@ void app.whenReady().then(async () => {
   };
   const origError = console.error.bind(console);
   const origWarn = console.warn.bind(console);
+  const origInfo = console.info.bind(console);
   console.error = (...args: unknown[]) => (logLine("error", args), origError(...args));
   console.warn = (...args: unknown[]) => (logLine("warn", args), origWarn(...args));
+  console.info = (...args: unknown[]) => (logLine("info", args), origInfo(...args));
   process.on("uncaughtException", (err) => logLine("uncaught", [err]));
   process.on("unhandledRejection", (reason) => logLine("unhandledRejection", [reason]));
 

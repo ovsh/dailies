@@ -114,7 +114,9 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
       return this.getOpenRouterKey() !== null;
     },
     getWhisperModel() {
-      return read().whisperModel ?? "large-v3-turbo";
+      // q8_0: same model quantized to 8 bits — ~30-60% faster, half the
+      // download (870MB vs 1.6GB), WER loss under measurement noise.
+      return read().whisperModel ?? "large-v3-turbo-q8_0";
     },
     getChatModelId() {
       return read().chatModelId ?? null;

@@ -274,7 +274,14 @@ export function createStages(opts: StageOptions): Stages {
       return;
     }
 
-    const modelPath = findWhisperModel(whisperModel, dataDir);
+    // Pre-0.5.2 installs have ggml-large-v3-turbo.bin on disk but not the
+    // q8_0 default — keep transcribing with the old file rather than parking
+    // every job until the user downloads the new one.
+    const modelPath =
+      findWhisperModel(whisperModel, dataDir) ??
+      (whisperModel === "large-v3-turbo-q8_0"
+        ? findWhisperModel("large-v3-turbo", dataDir)
+        : null);
     if (!modelPath) {
       db.waitJob(job.id, "Speech model not downloaded — Settings → Transcription");
       return;

@@ -718,7 +718,11 @@ describe("pipeline prerequisite and applicability handling", () => {
   });
 
   it("keeps a throttled transcription queued while one transcription runs", async () => {
-    const { db, pipeline } = setup();
+    // Pinned limits: the real caps scale with the machine's core count.
+    const { db, pipeline } = setup(new PipelineBudget({
+      concurrency: 2,
+      transcribeConcurrency: 1,
+    }));
     mocks.whisperReady = true;
 
     const transcription = deferred<SegmentInput[]>();
@@ -776,7 +780,7 @@ describe("pipeline prerequisite and applicability handling", () => {
   });
 
   it("shares a two-stage, one-transcription budget across pipelines", async () => {
-    const budget = new PipelineBudget();
+    const budget = new PipelineBudget({ concurrency: 2, transcribeConcurrency: 1 });
     const first = setup(budget);
     const second = setup(budget);
     mocks.whisperReady = true;
@@ -844,6 +848,8 @@ describe("pipeline prerequisite and applicability handling", () => {
     expect(budget.totals).toEqual({
       inFlightCount: 2,
       transcribeInFlight: 1,
+      concurrency: 2,
+      baseConcurrency: 2,
     });
     expect(maxActiveStages).toBe(2);
     expect(maxActiveTranscriptions).toBe(1);
@@ -861,6 +867,8 @@ describe("pipeline prerequisite and applicability handling", () => {
     expect(budget.totals).toEqual({
       inFlightCount: 0,
       transcribeInFlight: 0,
+      concurrency: 2,
+      baseConcurrency: 2,
     });
     await first.pipeline.stop();
     await second.pipeline.stop();

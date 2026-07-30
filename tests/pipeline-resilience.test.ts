@@ -34,6 +34,8 @@ const mocks = vi.hoisted(() => ({
     codec: string;
   }>(),
   watcherOnFileFound: null as ((path: string) => void) | null,
+  watcherOnFileChanged: null as ((path: string) => void) | null,
+  watcherOnFileRemoved: null as ((path: string) => void) | null,
   detectedScenes: [{ startS: 0, endS: 5 }],
   detectScenes: vi.fn(),
   makeProxy: vi.fn(),
@@ -77,13 +79,20 @@ vi.mock("../src/main/pipeline/transcribe", () => ({
   transcribeAudio: mocks.transcribe,
 }));
 vi.mock("../src/main/pipeline/watcher", () => ({
-  createWatcher: (opts: { onFileFound(path: string): void }) => {
+  createWatcher: (opts: {
+    onFileFound(path: string): void;
+    onFileChanged(path: string): void;
+    onFileRemoved(path: string): void;
+  }) => {
     mocks.watcherOnFileFound = opts.onFileFound;
+    mocks.watcherOnFileChanged = opts.onFileChanged;
+    mocks.watcherOnFileRemoved = opts.onFileRemoved;
     return { watchFolder() {}, unwatchFolder() {}, async close() {} };
   },
 }));
 
 import { openDatabase } from "../src/main/db/database";
+import { FULL_CONTENT_HASH_LIMIT_BYTES } from "../src/main/file-hash";
 import { createPipeline, PipelineBudget } from "../src/main/pipeline";
 import type { DailiesDB } from "../src/main/db/types";
 import type { SegmentInput } from "../src/shared/types";
@@ -149,13 +158,15 @@ beforeEach(() => {
       path: filePath,
       filename: path.basename(filePath),
       fileHash: input.fileHash,
-      size: 1,
+      size: typeof input.size === "number" ? input.size : 1,
     };
   });
   mocks.probeInput = null;
   mocks.probeByPath.clear();
   mocks.mxfAtoms.clear();
   mocks.watcherOnFileFound = null;
+  mocks.watcherOnFileChanged = null;
+  mocks.watcherOnFileRemoved = null;
   mocks.detectedScenes = [{ startS: 0, endS: 5 }];
   mocks.detectScenes.mockReset().mockImplementation(async () => mocks.detectedScenes);
   mocks.makeProxy.mockReset().mockImplementation(
@@ -1178,20 +1189,25 @@ describe("pipeline prerequisite and applicability handling", () => {
     await pipeline.stop();
   });
 
-  it("keeps a duplicate as a new file when the hash-matched old path still exists", async () => {
+  it("registers duplicate standard media as two locations with one job history", async () => {
     const { dataDir, db, pipeline } = setup();
-    const scanDir = path.join(dataDir, "copies");
-    mkdirSync(scanDir);
-    const oldPath = path.join(dataDir, "original.mov");
-    const newPath = path.join(scanDir, "copy.mov");
-    writeFileSync(oldPath, "same bytes");
-    writeFileSync(newPath, "same bytes");
-    makeStable(oldPath);
-    makeStable(newPath);
-
-    const original = db.upsertFile({
-      path: oldPath,
-      filename: "original.mov",
+    const episodeA = db.createEpisode("201");
+    const episodeB = db.createEpisode("202");
+    const folderAPath = path.join(dataDir, "episode-a");
+    const folderBPath = path.join(dataDir, "episode-b");
+    mkdirSync(folderAPath);
+    mkdirSync(folderBPath);
+    const folderA = db.addFolder(folderAPath, "raw", episodeA.id);
+    const folderB = db.addFolder(folderBPath, "final", episodeB.id);
+    pipeline.watchFolder(folderA);
+    pipeline.watchFolder(folderB);
+    const pathA = path.join(folderAPath, "shared.mov");
+    const pathB = path.join(folderBPath, "shared-copy.mov");
+    writeFileSync(pathA, "same bytes");
+    writeFileSync(pathB, "same bytes");
+    makeStable(pathA);
+    makeStable(pathB);
+    const identity = {
       durationS: 5,
       fps: 24,
       dropFrame: false,
@@ -1200,35 +1216,280 @@ describe("pipeline prerequisite and applicability handling", () => {
       audioChannels: 2,
       fileHash: "duplicate-hash",
       hasVideo: true,
-    });
-    mocks.probeByPath.set(newPath, {
-      path: newPath,
-      filename: "copy.mov",
+    };
+    mocks.probeByPath.set(pathA, { ...identity, path: pathA, filename: "shared.mov" });
+    mocks.probeByPath.set(pathB, { ...identity, path: pathB, filename: "shared-copy.mov" });
+
+    await pipeline.scanFolder(folderA);
+    await pipeline.scanFolder(folderB);
+
+    const files = db.listFiles();
+    expect(files).toHaveLength(1);
+    expect(files[0]?.locations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: pathA, role: "raw" }),
+      expect.objectContaining({ path: pathB, role: "final" }),
+    ]));
+    expect(files[0]?.role).toBe("final");
+    expect(db.listJobs()).toEqual([
+      expect.objectContaining({ fileId: files[0]?.id, stage: "probe" }),
+    ]);
+    expect(db.getEpisodeMemberIds(episodeA.id)).toEqual([files[0]?.id]);
+    expect(db.getEpisodeMemberIds(episodeB.id)).toEqual([files[0]?.id]);
+    await pipeline.stop();
+  });
+
+  it("promotes a remaining location and deletes media only after the last removal", async () => {
+    const { dataDir, db, pipeline } = setup();
+    const folderAPath = path.join(dataDir, "remove-a");
+    const folderBPath = path.join(dataDir, "remove-b");
+    mkdirSync(folderAPath);
+    mkdirSync(folderBPath);
+    const folderA = db.addFolder(folderAPath, "raw", null);
+    const folderB = db.addFolder(folderBPath, "raw", null);
+    pipeline.watchFolder(folderA);
+    pipeline.watchFolder(folderB);
+    const pathA = path.join(folderAPath, "remove.mov");
+    const pathB = path.join(folderBPath, "remove-copy.mov");
+    writeFileSync(pathA, "same bytes");
+    writeFileSync(pathB, "same bytes");
+    makeStable(pathA);
+    makeStable(pathB);
+    const identity = {
       durationS: 5,
       fps: 24,
       dropFrame: false,
       startTc: "01:00:00:00",
       codec: "prores",
       audioChannels: 2,
-      fileHash: "duplicate-hash",
+      fileHash: "remove-hash",
       hasVideo: true,
-    });
+    };
+    mocks.probeByPath.set(pathA, { ...identity, path: pathA, filename: "remove.mov" });
+    mocks.probeByPath.set(pathB, { ...identity, path: pathB, filename: "remove-copy.mov" });
+    await pipeline.scanFolder(folderA);
+    await pipeline.scanFolder(folderB);
+    const file = db.listFiles()[0]!;
+    const mediaDir = path.join(dataDir, "media", String(file.id));
+    mkdirSync(mediaDir, { recursive: true });
+    writeFileSync(path.join(mediaDir, "proxy.mp4"), "proxy");
 
-    await pipeline.scanFolder({
-      id: 1,
-      path: scanDir,
-      role: "raw",
-      episodeId: null,
-      lastScannedAt: null,
+    rmSync(pathA);
+    mocks.watcherOnFileRemoved?.(pathA);
+    await vi.waitFor(() => {
+      expect(db.getFile(file.id)?.locations).toHaveLength(1);
+      expect(db.getFile(file.id)?.path).toBe(pathB);
     });
+    expect(existsSync(mediaDir)).toBe(true);
 
-    const copy = db.getFileByPath(newPath);
-    expect(copy?.id).not.toBe(original.id);
+    rmSync(pathB);
+    mocks.watcherOnFileRemoved?.(pathB);
+    await vi.waitFor(() => expect(db.getFile(file.id)).toBeNull());
+    expect(existsSync(mediaDir)).toBe(false);
+    await pipeline.stop();
+  });
+
+  it("keeps zero-byte and large different-stem files separate", async () => {
+    const { dataDir, db, pipeline } = setup();
+    const folderAPath = path.join(dataDir, "safety-a");
+    const folderBPath = path.join(dataDir, "safety-b");
+    const folderCPath = path.join(dataDir, "safety-c");
+    mkdirSync(folderAPath);
+    mkdirSync(folderBPath);
+    mkdirSync(folderCPath);
+    const folderA = db.addFolder(folderAPath, "raw", null);
+    const folderB = db.addFolder(folderBPath, "raw", null);
+    const folderC = db.addFolder(folderCPath, "raw", null);
+    pipeline.watchFolder(folderA);
+    pipeline.watchFolder(folderB);
+    pipeline.watchFolder(folderC);
+
+    const emptyA = path.join(folderAPath, "empty-a.mov");
+    const emptyB = path.join(folderBPath, "empty-b.mov");
+    writeFileSync(emptyA, "");
+    writeFileSync(emptyB, "");
+    makeStable(emptyA);
+    makeStable(emptyB);
+    mocks.probeByPath.set(emptyA, { fileHash: "empty-hash", size: 0 });
+    mocks.probeByPath.set(emptyB, { fileHash: "empty-hash", size: 0 });
+    await pipeline.scanFolder(folderA);
+    await pipeline.scanFolder(folderB);
     expect(db.listFiles()).toHaveLength(2);
-    expect(db.listJobs()).toContainEqual(expect.objectContaining({
-      fileId: copy?.id,
-      stage: "probe",
-    }));
+
+    const largeSize = FULL_CONTENT_HASH_LIMIT_BYTES + 1;
+    const largeA = path.join(folderAPath, "camera-a.mov");
+    const largeB = path.join(folderBPath, "camera-a.mov");
+    const largeC = path.join(folderCPath, "camera-b.mov");
+    const bytes = Buffer.alloc(largeSize, 1);
+    writeFileSync(largeA, bytes);
+    writeFileSync(largeB, bytes);
+    writeFileSync(largeC, bytes);
+    makeStable(largeA);
+    makeStable(largeB);
+    makeStable(largeC);
+    mocks.probeByPath.set(largeA, { fileHash: "large-hash", size: largeSize });
+    mocks.probeByPath.set(largeB, { fileHash: "large-hash", size: largeSize });
+    mocks.probeByPath.set(largeC, { fileHash: "large-hash", size: largeSize });
+    await pipeline.scanFolder(folderA);
+    await pipeline.scanFolder(folderB);
+    await pipeline.scanFolder(folderC);
+
+    const largeFiles = db.listFiles().filter((file) => file.fileHash === "large-hash");
+    expect(largeFiles).toHaveLength(2);
+    expect(largeFiles.map((file) => file.locations?.length).sort()).toEqual([1, 2]);
+    await pipeline.stop();
+  });
+
+  it("keeps interleaved OP-Atom copies as separate bundles and shrinks one bundle", async () => {
+    vi.useFakeTimers();
+    const { dataDir, db, pipeline } = setup();
+    const episodeA = db.createEpisode("301");
+    const episodeB = db.createEpisode("302");
+    const folderAPath = path.join(dataDir, "atom-a");
+    const folderBPath = path.join(dataDir, "atom-b");
+    mkdirSync(folderAPath);
+    mkdirSync(folderBPath);
+    const folderA = db.addFolder(folderAPath, "raw", episodeA.id);
+    const folderB = db.addFolder(folderBPath, "raw", episodeB.id);
+    pipeline.watchFolder(folderA);
+    pipeline.watchFolder(folderB);
+    const paths = [
+      path.join(folderAPath, "CLIPV01.mxf"),
+      path.join(folderBPath, "CLIPV01.mxf"),
+      path.join(folderAPath, "CLIPA01.mxf"),
+      path.join(folderBPath, "CLIPA01.mxf"),
+    ];
+    for (const filePath of paths) writeFileSync(filePath, path.basename(filePath));
+    const clipKey = "umid-two-bundles";
+    for (const filePath of paths) {
+      mocks.mxfAtoms.set(filePath, {
+        path: filePath,
+        clipKey,
+        clipName: "Two Bundles",
+        essence: path.basename(filePath).includes("V") ? "video" : "audio",
+        durationS: 5,
+        fps: 24,
+        dropFrame: false,
+        startTc: "01:00:00:00",
+        codec: path.basename(filePath).includes("V") ? "dnxhd" : "pcm_s24le",
+      });
+      mocks.probeByPath.set(filePath, {
+        fileHash: filePath.includes("atom-a") ? "a".repeat(40) : "b".repeat(40),
+      });
+      mocks.watcherOnFileFound?.(filePath);
+    }
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.waitFor(() => expect(db.listFiles()).toHaveLength(1));
+    const file = db.listFiles()[0]!;
+    expect(file.locations).toHaveLength(2);
+    expect(file.locations?.map((location) =>
+      location.memberPaths?.every((memberPath) =>
+        path.dirname(memberPath) === path.dirname(location.path)
+      )
+    )).toEqual([true, true]);
+    expect(db.listJobs()).toEqual([
+      expect.objectContaining({ fileId: file.id, stage: "probe" }),
+    ]);
+    expect(db.getEpisodeMemberIds(episodeA.id)).toEqual([file.id]);
+    expect(db.getEpisodeMemberIds(episodeB.id)).toEqual([file.id]);
+
+    const removedBundlePath = paths[0];
+    if (!removedBundlePath) throw new Error("Missing OP-Atom fixture path");
+    rmSync(removedBundlePath);
+    mocks.mxfAtoms.delete(removedBundlePath);
+    mocks.watcherOnFileRemoved?.(removedBundlePath);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => {
+      const locations = db.getFile(file.id)?.locations ?? [];
+      expect(locations).toHaveLength(2);
+      expect(locations.find((location) => location.folderId === folderA.id)?.memberPaths)
+        .toEqual([paths[2]]);
+      expect(locations.find((location) => location.folderId === folderB.id)?.memberPaths)
+        .toEqual([paths[1], paths[3]]);
+    });
+    expect(db.listJobs()).toEqual([
+      expect.objectContaining({ fileId: file.id, stage: "probe" }),
+    ]);
+    expect(db.getEpisodeMemberIds(episodeA.id)).toEqual([file.id]);
+    expect(db.getEpisodeMemberIds(episodeB.id)).toEqual([file.id]);
+    await pipeline.stop();
+  });
+
+  it("invalidates OP-Atom derived state when content changes at the same member paths", async () => {
+    vi.useFakeTimers();
+    const { dataDir, db, pipeline } = setup();
+    const folder = db.addFolder(dataDir, "raw", null);
+    pipeline.watchFolder(folder);
+    const videoPath = path.join(dataDir, "OVERWRITEV01.mxf");
+    const audioPath = path.join(dataDir, "OVERWRITEA01.mxf");
+    writeFileSync(videoPath, "video before");
+    writeFileSync(audioPath, "audio before");
+    const base = {
+      clipKey: "umid-overwritten-in-place",
+      clipName: "Overwritten In Place",
+      durationS: 5,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+    };
+    mocks.mxfAtoms.set(videoPath, {
+      ...base,
+      path: videoPath,
+      essence: "video",
+      codec: "dnxhd",
+    });
+    mocks.mxfAtoms.set(audioPath, {
+      ...base,
+      path: audioPath,
+      essence: "audio",
+      codec: "pcm_s24le",
+    });
+    mocks.probeByPath.set(videoPath, { fileHash: "a".repeat(40) });
+    mocks.probeByPath.set(audioPath, { fileHash: "b".repeat(40) });
+    mocks.watcherOnFileFound?.(videoPath);
+    mocks.watcherOnFileFound?.(audioPath);
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.waitFor(() => expect(db.getFileByClipKey(base.clipKey)).not.toBeNull());
+    const file = db.getFileByClipKey(base.clipKey);
+    if (!file) throw new Error("Missing OP-Atom file");
+    const originalProbe = db.claimNextJob();
+    if (!originalProbe) throw new Error("Missing initial probe job");
+    db.completeJob(originalProbe.id);
+    db.replaceTranscript(file.id, [{
+      startS: 0,
+      endS: 1,
+      text: "stale transcript",
+      avgConf: 1,
+      words: [],
+    }]);
+    db.markTranscribed(file.id);
+    db.setFileProxy(file.id, "/cache/stale-proxy.mp4");
+    db.replaceScenes(file.id, [{
+      startS: 0,
+      endS: 5,
+      startTc: "01:00:00:00",
+      endTc: "01:00:05:00",
+      keyframePath: "/cache/stale-keyframe.jpg",
+    }]);
+
+    writeFileSync(audioPath, "audio after");
+    mocks.probeByPath.set(audioPath, { fileHash: "c".repeat(40) });
+    mocks.watcherOnFileChanged?.(audioPath);
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.waitFor(() => {
+      expect(db.getFile(file.id)?.fileHash).toContain("c".repeat(40));
+    });
+
+    expect(db.getFile(file.id)).toMatchObject({
+      hasTranscript: false,
+      proxyPath: null,
+    });
+    expect(db.listSegments(file.id)).toEqual([]);
+    expect(db.listScenes(file.id)).toEqual([]);
+    expect(db.listJobsForFile(file.id)).toEqual([
+      expect.objectContaining({ stage: "probe", status: "queued" }),
+    ]);
     await pipeline.stop();
   });
 
@@ -1298,6 +1559,9 @@ describe("pipeline prerequisite and applicability handling", () => {
     await vi.waitFor(() => {
       expect(db.getFileByClipKey(base.clipKey)?.memberPaths).toEqual([videoPath, audioPath]);
     });
+    expect(db.getFileByClipKey(base.clipKey)?.locations).toEqual([
+      expect.objectContaining({ memberPaths: [videoPath, audioPath] }),
+    ]);
     await pipeline.stop();
   });
 
@@ -1365,6 +1629,9 @@ describe("pipeline prerequisite and applicability handling", () => {
       expect(db.getFile(audioOnly.id)?.memberPaths).toEqual([videoPath, audioPath]));
 
     const joined = db.getFile(audioOnly.id)!;
+    expect(joined.locations).toEqual([
+      expect.objectContaining({ memberPaths: [videoPath, audioPath] }),
+    ]);
     expect(joined.hasTranscript).toBe(true);
     expect(db.listSegments(joined.id)[0]?.text).toBe("finished before video arrived");
     const newStages = db.listJobs()

@@ -1,13 +1,18 @@
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { dirname, extname, join, parse as parsePath } from "node:path";
 
-import type { DailiesDB } from "../db/types";
+import type { DailiesDB, FileLocationRemoval } from "../db/types";
 import type {
   FileInput,
+  FileLocation,
+  MediaFile,
   MediaRole,
   ProjectFolder,
 } from "../../shared/types";
+import { normalizeClipName } from "../../shared/types";
+import { reconcileEpisodeMembership } from "../membership";
+import { usesFullContentHash } from "../file-hash";
 import { findFfprobeBinary } from "./binaries";
 import { DOC_EXTENSIONS, extractDocument } from "./docs";
 import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo, type OpAtomClip } from "./opatom";
@@ -26,6 +31,7 @@ export interface DiscoveryOptions {
   scheduleUpdate: () => void;
   reconcile: (fileId: number) => void;
   ensureWork: (fileId: number) => void;
+  onFileDeleted: (fileId: number) => void;
   delay: (ms: number) => Promise<void>;
 }
 
@@ -35,6 +41,22 @@ export interface Discovery {
   scanFolder(folder: ProjectFolder): Promise<void>;
   ingestDocument(path: string, episodeId: number | null): Promise<boolean>;
   close(): Promise<void>;
+}
+
+interface LocatedFile {
+  file: MediaFile;
+  location: FileLocation;
+}
+
+interface OpAtomBundle {
+  key: string;
+  folderId: number | null;
+  root: string;
+}
+
+interface PendingOpAtomClip {
+  bundle: OpAtomBundle;
+  clip: OpAtomClip;
 }
 
 function parseMemberHashMap(fileHash: string): Map<string, string> {
@@ -88,16 +110,17 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     scheduleUpdate,
     reconcile,
     ensureWork,
+    onFileDeleted,
     delay,
   } = opts;
 
   const watchedFolders: ProjectFolder[] = [];
   const discoveryTasks = new Set<Promise<void>>();
   const opAtomClipTails = new Map<string, Promise<void>>();
-  const pendingOpAtomClips = new Map<string, OpAtomClip>();
+  const pendingOpAtomClips = new Map<string, PendingOpAtomClip>();
+  const groupers = new Map<string, OpAtomGrouper>();
   let lifecycle: "open" | "closing" | "closed" = "open";
   let watcher: Watcher | null = null;
-  let grouper: OpAtomGrouper | null = null;
   let closeTask: Promise<void> | null = null;
 
   function openTaskIntake(): boolean {
@@ -119,11 +142,15 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     return task;
   }
 
-  /** Longest-prefix-matching watched folder for `path`, if any. */
+  function pathIsWithin(path: string, root: string): boolean {
+    const normalizedRoot = root.endsWith("/") ? root.slice(0, -1) : root;
+    return path === normalizedRoot || path.startsWith(`${normalizedRoot}/`);
+  }
+
   function folderForPath(path: string): ProjectFolder | null {
     let best: ProjectFolder | null = null;
     for (const folder of watchedFolders) {
-      if (!path.startsWith(folder.path)) continue;
+      if (!pathIsWithin(path, folder.path)) continue;
       if (!best || folder.path.length > best.path.length) {
         best = folder;
       }
@@ -137,6 +164,102 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
 
   function episodeIdForPath(path: string): number | null {
     return folderForPath(path)?.episodeId ?? null;
+  }
+
+  function locationForPath(path: string): LocatedFile | null {
+    for (const file of db.listFiles()) {
+      const location = file.locations?.find((candidate) => candidate.path === path);
+      if (location) return { file, location };
+    }
+    return null;
+  }
+
+  function locationContainingMember(path: string): LocatedFile | null {
+    for (const file of db.listFiles()) {
+      const location = file.locations?.find((candidate) =>
+        candidate.memberPaths?.includes(path) ?? false
+      );
+      if (location) return { file, location };
+    }
+    return null;
+  }
+
+  function reconcileMemberships(
+    paths: string[],
+    additionalFolderEpisodes: Iterable<number> = [],
+  ): void {
+    const episodeIds = new Set(additionalFolderEpisodes);
+    for (const folder of db.listFolders()) {
+      if (
+        folder.episodeId !== null &&
+        paths.some((path) => pathIsWithin(path, folder.path))
+      ) {
+        episodeIds.add(folder.episodeId);
+      }
+    }
+    for (const episode of db.listEpisodes()) {
+      if (db.getEpisodeMembershipSource(episode.id) === "list") {
+        episodeIds.add(episode.id);
+      }
+    }
+    for (const episodeId of episodeIds) {
+      reconcileEpisodeMembership(db, episodeId);
+    }
+  }
+
+  function removeLocation(path: string): FileLocationRemoval | null {
+    const removal = db.removeFileLocation(path);
+    if (removal?.kind === "deleted") onFileDeleted(removal.file.id);
+    return removal;
+  }
+
+  function bundleForPath(path: string): OpAtomBundle {
+    const folder = folderForPath(path);
+    if (folder) {
+      return {
+        key: `folder:${folder.id}`,
+        folderId: folder.id,
+        root: folder.path,
+      };
+    }
+    const root = dirname(path);
+    return {
+      key: `path:${root}`,
+      folderId: null,
+      root,
+    };
+  }
+
+  function bundleForLocation(location: FileLocation): OpAtomBundle {
+    const folder = location.folderId === null
+      ? null
+      : db.listFolders().find((candidate) => candidate.id === location.folderId) ?? null;
+    if (folder) {
+      return {
+        key: `folder:${folder.id}`,
+        folderId: folder.id,
+        root: folder.path,
+      };
+    }
+    const root = dirname(location.path);
+    return {
+      key: `path:${root}`,
+      folderId: null,
+      root,
+    };
+  }
+
+  function locationForBundle(
+    file: MediaFile | null,
+    bundle: OpAtomBundle,
+  ): FileLocation | null {
+    if (!file) return null;
+    return file.locations?.find((location) =>
+      bundle.folderId === null
+        ? pathIsWithin(location.path, bundle.root)
+        : location.folderId === bundle.folderId ||
+          (location.folderId === null && pathIsWithin(location.path, bundle.root))
+    ) ?? null;
   }
 
   async function onDocFound(path: string): Promise<void> {
@@ -174,35 +297,46 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     }
   }
 
-  function ensureGrouper(): OpAtomGrouper {
-    if (grouper) return grouper;
-    grouper = new OpAtomGrouper({
+  function pendingClipKey(bundle: OpAtomBundle, clipKey: string): string {
+    return `${bundle.key}\u0000${clipKey}`;
+  }
+
+  function ensureGrouper(bundle: OpAtomBundle): OpAtomGrouper {
+    const existing = groupers.get(bundle.key);
+    if (existing) return existing;
+    const created = new OpAtomGrouper({
       onClip: (clip) => {
-        pendingOpAtomClips.delete(clip.clipKey);
-        queueOpAtomClip(clip);
+        pendingOpAtomClips.delete(pendingClipKey(bundle, clip.clipKey));
+        queueOpAtomClip(bundle, clip);
       },
     });
-    return grouper;
+    groupers.set(bundle.key, created);
+    return created;
   }
 
   function addOpAtom(atom: MxfAtomInfo): void {
-    const pending = pendingOpAtomClips.get(atom.clipKey);
-    const atoms = pending ? [...pending.atoms] : [];
+    const bundle = bundleForPath(atom.path);
+    const key = pendingClipKey(bundle, atom.clipKey);
+    const pending = pendingOpAtomClips.get(key);
+    const atoms = pending ? [...pending.clip.atoms] : [];
     const matchingIndex = atoms.findIndex((candidate) => candidate.path === atom.path);
     if (matchingIndex >= 0) atoms[matchingIndex] = atom;
     else atoms.push(atom);
-    pendingOpAtomClips.set(atom.clipKey, {
-      clipKey: atom.clipKey,
-      clipName: atoms.find((candidate) => candidate.clipName)?.clipName ?? null,
-      atoms,
+    pendingOpAtomClips.set(key, {
+      bundle,
+      clip: {
+        clipKey: atom.clipKey,
+        clipName: atoms.find((candidate) => candidate.clipName)?.clipName ?? null,
+        atoms,
+      },
     });
-    ensureGrouper().addAtom(atom);
+    ensureGrouper(bundle).addAtom(atom);
   }
 
-  function queueOpAtomClip(clip: OpAtomClip): void {
+  function queueOpAtomClip(bundle: OpAtomBundle, clip: OpAtomClip): void {
     const previous = opAtomClipTails.get(clip.clipKey) ?? Promise.resolve();
     const current = previous
-      .then(() => onOpAtomClip(clip))
+      .then(() => onOpAtomClip(bundle, clip))
       .catch((err: unknown) => {
         console.error(`[pipeline] failed to update OP-Atom clip ${clip.clipKey}:`, err);
       });
@@ -214,10 +348,11 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     });
   }
 
-  async function onOpAtomClip(clip: OpAtomClip): Promise<void> {
+  async function onOpAtomClip(bundle: OpAtomBundle, clip: OpAtomClip): Promise<void> {
     const existing = db.getFileByClipKey(clip.clipKey);
+    const existingLocation = locationForBundle(existing, bundle);
     const atomByPath = new Map(clip.atoms.map((atom) => [atom.path, atom]));
-    for (const path of existing?.memberPaths ?? []) {
+    for (const path of existingLocation?.memberPaths ?? []) {
       if (atomByPath.has(path)) continue;
       const restored = await analyzeMxf(findFfprobeBinary(), path);
       if (restored?.clipKey === clip.clipKey) atomByPath.set(path, restored);
@@ -240,18 +375,6 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     );
     const fileHash = memberHashes.join("|");
     const newHashMap = parseMemberHashMap(fileHash);
-    if (
-      existing &&
-      existing.memberPaths &&
-      existing.memberPaths.length === memberPaths.length &&
-      existing.memberPaths.every((path, index) => path === memberPaths[index]) &&
-      existing.fileHash === fileHash
-    ) {
-      reconcile(existing.id);
-      ensureWork(existing.id);
-      return;
-    }
-
     const input: FileInput = {
       path: primaryAtom.path,
       filename: clip.clipName ?? basenameOf(primaryAtom.path),
@@ -263,7 +386,6 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
       audioChannels: audioAtoms.length > 0 ? 1 : 0,
       fileHash,
       role: roleForPath(primaryAtom.path),
-      episodeId: episodeIdForPath(primaryAtom.path),
       clipName: atoms.find((atom) => atom.clipName)?.clipName ?? clip.clipName,
       mediaKind: "opatom",
       memberPaths,
@@ -271,19 +393,53 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
       hasVideo: videoAtoms.length > 0,
     };
 
-    if (existing && isUnchangedSuperset(existing.fileHash, newHashMap)) {
-      // Member set grew (e.g. video atom finally landed) but every
-      // previously-known atom is byte-identical — preserve finished work.
+    const locationHash = existingLocation
+      ? existingLocation.memberPaths
+        ?.map((path) => `${path}:${parseMemberHashMap(existing?.fileHash ?? "").get(path) ?? ""}`)
+        .join("|") ?? ""
+      : "";
+    const exactMatch =
+      existing !== null &&
+      existingLocation?.memberPaths !== null &&
+      existingLocation?.memberPaths.length === memberPaths.length &&
+      existingLocation.memberPaths.every((path, index) => path === memberPaths[index]) &&
+      locationHash === fileHash;
+    const unchangedSuperset = existing !== null &&
+      existingLocation !== null &&
+      isUnchangedSuperset(locationHash, newHashMap);
+
+    if (exactMatch) {
+      const registered = db.registerFileLocation(input);
+      reconcile(registered.file.id);
+      ensureWork(registered.file.id);
+      reconcileMemberships(memberPaths);
+      return;
+    }
+
+    if (existing && existingLocation && unchangedSuperset) {
       const updated = db.updateOpAtomMembers(existing.id, input);
       reconcile(updated.id);
       ensureWork(updated.id);
+      reconcileMemberships([...memberPaths, existingLocation.path]);
       scheduleUpdate();
       return;
     }
 
-    const file = db.upsertFile(input);
-    db.enqueueJob(file.id, "probe");
-    reconcile(file.id);
+    if (existing && existingLocation) db.clearDerivedState(existing.id);
+    const registered = existing && existingLocation
+      ? {
+        file: db.updateOpAtomMembers(existing.id, input),
+        canonicalFileCreated: false,
+      }
+      : db.registerFileLocation(input);
+    if (registered.canonicalFileCreated || existingLocation !== null) {
+      db.enqueueJob(registered.file.id, "probe");
+    }
+    reconcile(registered.file.id);
+    reconcileMemberships([
+      ...memberPaths,
+      ...(existingLocation ? [existingLocation.path] : []),
+    ]);
     scheduleUpdate();
   }
 
@@ -298,7 +454,8 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
 
   async function onFileFound(path: string): Promise<void> {
     const ext = extname(path).toLowerCase();
-    const existing = db.getFileByPath(path);
+    const located = locationForPath(path);
+    const existing = located?.file ?? db.getFileByPath(path);
 
     if (ext === ".mxf") {
       const ffprobeBin = findFfprobeBinary();
@@ -321,8 +478,13 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
       // clip count doesn't match what the editor put in the folder and it
       // looks like the app "lost" a file. Record a stub in error state.
       let unreadable = existing;
+      const unreadableHash = `unreadable:${path}`;
+      if (located && located.file.fileHash !== unreadableHash) {
+        removeLocation(located.location.path);
+        unreadable = null;
+      }
       if (!unreadable) {
-        unreadable = db.upsertFile({
+        unreadable = db.registerFileLocation({
           path,
           filename: basenameOf(path),
           durationS: 0,
@@ -331,45 +493,21 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
           startTc: "00:00:00:00",
           codec: "unknown",
           audioChannels: 0,
-          fileHash: `unreadable:${path}`,
+          fileHash: unreadableHash,
           role: roleForPath(path),
-          episodeId: episodeIdForPath(path),
-        });
+        }).file;
       }
       const message = err instanceof Error ? err.message : String(err);
       db.setDiscoveryFailure(unreadable.id, message);
       reconcile(unreadable.id);
+      reconcileMemberships([path]);
       scheduleUpdate();
       console.warn(`onFileFound: unreadable media ${path}:`, err);
       return;
     }
     if (existing?.discoveryFailed) db.setDiscoveryFailure(existing.id, null);
 
-    if (!existing) {
-      const byHash = db.getFileByHash(identity.fileHash);
-      if (
-        byHash?.mediaKind === "standard" &&
-        byHash.path !== path &&
-        !existsSync(byHash.path)
-      ) {
-        // A remounted drive or renamed folder changes the absolute path but
-        // not the content hash, so keep the existing clip's derived state.
-        const repointed = db.repointFilePath(byHash.id, path, identity.filename);
-        reconcile(repointed.id);
-        ensureWork(repointed.id);
-        scheduleUpdate();
-        return;
-      }
-    }
-
-    if (existing && existing.fileHash === identity.fileHash) {
-      // File identity is unchanged, but derived processing may be incomplete.
-      reconcile(existing.id);
-      ensureWork(existing.id);
-      return;
-    }
-
-    const file = db.upsertFile({
+    const input: FileInput = {
       path: identity.path,
       filename: identity.filename,
       durationS: existing?.durationS ?? 0,
@@ -380,12 +518,99 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
       audioChannels: existing?.audioChannels ?? 0,
       fileHash: identity.fileHash,
       role: roleForPath(path),
-      episodeId: episodeIdForPath(path),
-    });
-    db.setFileHasVideo(file.id, null);
-    db.enqueueJob(file.id, "probe");
-    reconcile(file.id);
+    };
+
+    if (located && existing?.fileHash === identity.fileHash) {
+      const registered = db.registerFileLocation(input);
+      reconcile(registered.file.id);
+      ensureWork(registered.file.id);
+      reconcileMemberships([path]);
+      return;
+    }
+
+    if (located) removeLocation(located.location.path);
+
+    if (!located) {
+      const missingCandidate = db.listFiles().find((candidate) =>
+        candidate.mediaKind === "standard" &&
+        candidate.fileHash === identity.fileHash &&
+        candidate.path !== path &&
+        !existsSync(candidate.path) &&
+        identity.size > 0 &&
+        (
+          usesFullContentHash(identity.size) ||
+          normalizeClipName(parsePath(candidate.filename).name) ===
+            normalizeClipName(parsePath(identity.filename).name)
+        )
+      );
+      if (missingCandidate) {
+        const oldPath = missingCandidate.path;
+        db.repointFilePath(missingCandidate.id, path, identity.filename);
+        const registered = db.registerFileLocation({
+          ...input,
+          durationS: missingCandidate.durationS,
+          fps: missingCandidate.fps,
+          dropFrame: missingCandidate.dropFrame,
+          startTc: missingCandidate.startTc,
+          codec: missingCandidate.codec,
+          audioChannels: missingCandidate.audioChannels,
+        });
+        removeLocation(oldPath);
+        reconcile(registered.file.id);
+        ensureWork(registered.file.id);
+        reconcileMemberships([oldPath, path]);
+        scheduleUpdate();
+        return;
+      }
+    }
+
+    const registered = db.registerFileLocation(input);
+    if (registered.canonicalFileCreated) {
+      db.setFileHasVideo(registered.file.id, null);
+      db.enqueueJob(registered.file.id, "probe");
+    } else {
+      ensureWork(registered.file.id);
+    }
+    reconcile(registered.file.id);
+    reconcileMemberships([path]);
     scheduleUpdate();
+  }
+
+  async function onFileRemoved(path: string): Promise<void> {
+    const located = locationForPath(path) ?? locationContainingMember(path);
+    if (!located) return;
+    if (located.file.mediaKind !== "opatom") {
+      removeLocation(located.location.path);
+      reconcileMemberships([path]);
+      scheduleUpdate();
+      return;
+    }
+
+    const remainingPaths = (located.location.memberPaths ?? [])
+      .filter((memberPath) => memberPath !== path && existsSync(memberPath));
+    if (remainingPaths.length === 0) {
+      removeLocation(located.location.path);
+      reconcileMemberships([path]);
+      scheduleUpdate();
+      return;
+    }
+
+    const analyzed = await Promise.all(
+      remainingPaths.map((memberPath) => analyzeMxf(findFfprobeBinary(), memberPath)),
+    );
+    const atoms = analyzed.filter((atom): atom is MxfAtomInfo => atom !== null);
+    if (atoms.length === 0) {
+      removeLocation(located.location.path);
+      reconcileMemberships([path]);
+      scheduleUpdate();
+      return;
+    }
+    const bundle = bundleForLocation(located.location);
+    queueOpAtomClip(bundle, {
+      clipKey: located.file.clipKey ?? atoms[0].clipKey,
+      clipName: atoms.find((atom) => atom.clipName)?.clipName ?? located.file.clipName,
+      atoms,
+    });
   }
 
   function ensureWatcher(): Watcher {
@@ -395,6 +620,18 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
         if (lifecycle !== "open") return;
         void trackTask(onFileFound(path)).catch((err: unknown) => {
           console.warn(`onFileFound: failed on ${path}:`, err);
+        });
+      },
+      onFileChanged: (path) => {
+        if (lifecycle !== "open") return;
+        void trackTask(onFileFound(path)).catch((err: unknown) => {
+          console.warn(`onFileChanged: failed on ${path}:`, err);
+        });
+      },
+      onFileRemoved: (path) => {
+        if (lifecycle !== "open") return;
+        void trackTask(onFileRemoved(path)).catch((err: unknown) => {
+          console.warn(`onFileRemoved: failed on ${path}:`, err);
         });
       },
       onDocFound: (path) => {
@@ -463,6 +700,10 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
         console.warn(`scanFolder: failed on ${file}:`, err);
       }
     }
+    reconcileMemberships(
+      [],
+      folder.episodeId === null ? [] : [folder.episodeId],
+    );
   }
 
   function scanFolder(folder: ProjectFolder): Promise<void> {
@@ -525,11 +766,12 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
         closeError ??= err;
       }
 
-      const activeGrouper = grouper;
-      grouper = null;
-      for (const clip of pendingOpAtomClips.values()) queueOpAtomClip(clip);
+      for (const pending of pendingOpAtomClips.values()) {
+        queueOpAtomClip(pending.bundle, pending.clip);
+      }
       pendingOpAtomClips.clear();
-      activeGrouper?.close();
+      for (const activeGrouper of groupers.values()) activeGrouper.close();
+      groupers.clear();
       try {
         await waitForCloseTasks([...opAtomClipTails.values()], "OP-Atom updates", deadline);
       } catch (err) {

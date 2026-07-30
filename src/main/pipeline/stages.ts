@@ -99,7 +99,6 @@ export function createStages(opts: StageOptions): Stages {
       db.upsertFile({
         ...probed,
         role: file.role,
-        episodeId: file.episodeId,
       });
     } else {
       await hasVideoAtom(file, signal);

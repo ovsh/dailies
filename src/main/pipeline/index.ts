@@ -5,6 +5,9 @@
  * renderer. Also ingests documents (producer notes, scripts) alongside
  * media, and groups Avid OP-Atom MXF essence atoms into single clips.
  */
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+
 import type { DailiesDB } from "../db/types";
 import type {
   ProjectFolder,
@@ -68,6 +71,7 @@ function settleStop(task: Promise<void>): Promise<StopResult> {
 export function createPipeline(opts: PipelineOptions): Pipeline {
   let updateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   const budget = opts.budget ?? new PipelineBudget();
+  opts.db.consolidateDuplicateFiles();
 
   function scheduleUpdate(): void {
     if (updateDebounceTimer) return;
@@ -91,6 +95,9 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     scheduleUpdate,
     reconcile: stages.reconcile,
     ensureWork: stages.ensureWork,
+    onFileDeleted: (fileId) => {
+      rmSync(join(opts.dataDir, "media", String(fileId)), { recursive: true, force: true });
+    },
     delay,
   });
 

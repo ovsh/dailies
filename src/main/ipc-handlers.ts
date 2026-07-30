@@ -10,6 +10,7 @@ import type {
   ApiKeyStatus,
   ChatEvent,
   ChatScope,
+  ClipListInput,
   DiagnosticsExportOutcome,
   ExportItem,
   ExportKind,
@@ -31,17 +32,64 @@ import { runChatTurn } from "./agents/supervisor";
 import { createOpenRouterClient, validateOpenRouterKey } from "./agents/openrouter-client";
 import { createOpenRouterEmbedder } from "./agents/openrouter";
 import { writeExport, writeLocatorExport } from "./export";
+import { parseClipList } from "./clip-list";
+import {
+  readEpisodeMembershipReport,
+  reconcileEpisodeMembership,
+  replaceEpisodeClipList,
+  setEpisodeMembershipSource,
+} from "./membership";
 import { resolvePlaybackPath } from "./playback-path";
 import { computePipelineSnapshot } from "./pipeline/status";
 
-/** Builds the derived pipeline snapshot for a scope from fact + document queries. */
 function projectSnapshot(db: DailiesDB, scope: ChatScope): PipelineSnapshot {
   const facts = db.listPipelineFileFacts(scope);
-  const producerNoteCount = db
-    .listDocuments()
-    .filter((doc) => scope.episodeId === null || doc.episodeId === scope.episodeId)
-    .length;
+  const producerNoteCount = db.countDocuments(scope);
   return computePipelineSnapshot(facts, producerNoteCount);
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function episodeIdFrom(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("Invalid episode membership request");
+  }
+  return value;
+}
+
+function membershipSourceFrom(value: unknown): "folder" | "list" {
+  if (value !== "folder" && value !== "list") {
+    throw new Error("Invalid episode membership source");
+  }
+  return value;
+}
+
+function clipListInputFrom(value: unknown): ClipListInput {
+  if (!isUnknownRecord(value) || typeof value["kind"] !== "string") {
+    throw new Error("Invalid clip-list import");
+  }
+  if (value["kind"] === "paste") {
+    if (typeof value["text"] !== "string") {
+      throw new Error("Invalid clip-list import");
+    }
+    return { kind: "paste", text: value["text"] };
+  }
+  if (value["kind"] === "file") {
+    const sourceName = value["sourceName"];
+    const text = value["text"];
+    if (
+      typeof sourceName !== "string" ||
+      sourceName.trim() === "" ||
+      /[/\\]/.test(sourceName) ||
+      typeof text !== "string"
+    ) {
+      throw new Error("Invalid clip-list import");
+    }
+    return { kind: "file", sourceName, text };
+  }
+  throw new Error("Invalid clip-list import");
 }
 
 interface FailureExportRow {
@@ -137,6 +185,55 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     return ep;
   });
 
+  ipcMain.handle(IPC.getEpisodeMembership, (_e, rawEpisodeId: unknown) => {
+    const { db } = requireProject();
+    const episodeId = episodeIdFrom(rawEpisodeId);
+    if (!db.listEpisodes().some((episode) => episode.id === episodeId)) {
+      throw new Error("Episode not found");
+    }
+    return readEpisodeMembershipReport(db, episodeId);
+  });
+
+  ipcMain.handle(
+    IPC.setEpisodeMembershipSource,
+    (_e, rawEpisodeId: unknown, rawSource: unknown) => {
+      const { db } = requireProject();
+      const episodeId = episodeIdFrom(rawEpisodeId);
+      const source = membershipSourceFrom(rawSource);
+      if (!db.listEpisodes().some((episode) => episode.id === episodeId)) {
+        throw new Error("Episode not found");
+      }
+      const report = setEpisodeMembershipSource(db, episodeId, source);
+      emitProjectUpdate();
+      return report;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.replaceEpisodeClipList,
+    (_e, rawEpisodeId: unknown, rawInput: unknown) => {
+      const { db } = requireProject();
+      const episodeId = episodeIdFrom(rawEpisodeId);
+      const input = clipListInputFrom(rawInput);
+      if (!db.listEpisodes().some((episode) => episode.id === episodeId)) {
+        throw new Error("Episode not found");
+      }
+      const parsed = parseClipList(input);
+      if (parsed.diagnostics.length > 0) {
+        return { kind: "blocked", diagnostics: parsed.diagnostics };
+      }
+      const entries = parsed.entries.map((entry) => ({
+        ordinal: entry.ordinal,
+        rawName: entry.rawName,
+        clipName: entry.clipName,
+        clipKey: entry.clipKey,
+      }));
+      const report = replaceEpisodeClipList(db, episodeId, entries);
+      emitProjectUpdate();
+      return report;
+    },
+  );
+
   ipcMain.handle(IPC.addProjectFolder, async (
     _e,
     role: MediaRole,
@@ -175,13 +272,31 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     const folder = c.db.listFolders().find((f) => f.id === folderId);
     if (folder) {
       c.pipeline.unwatchFolder(folder.path);
-      const deletedFiles = c.db.deleteFilesUnderPath(folder.path);
+      const locations = c.db.listFiles().flatMap((file) => file.locations ?? [])
+        .filter((location) => {
+          const relative = path.relative(folder.path, location.path);
+          return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+        });
+      const deletedFileIds: number[] = [];
+      for (const location of locations) {
+        const removal = c.db.removeFileLocation(location.path);
+        if (removal?.kind === "deleted") deletedFileIds.push(removal.file.id);
+      }
       await Promise.all(
-        deletedFiles.map((file) =>
-          fs.promises.rm(path.join(c.mediaDir, String(file.id)), { recursive: true, force: true })
+        deletedFileIds.map((fileId) =>
+          fs.promises.rm(path.join(c.mediaDir, String(fileId)), { recursive: true, force: true })
         ),
       );
       c.db.removeFolder(folderId);
+      const episodeIds = new Set(
+        c.db.listEpisodes()
+          .filter((episode) => c.db.getEpisodeMembershipSource(episode.id) === "list")
+          .map((episode) => episode.id),
+      );
+      if (folder.episodeId !== null) episodeIds.add(folder.episodeId);
+      for (const episodeId of episodeIds) {
+        reconcileEpisodeMembership(c.db, episodeId);
+      }
       emitProjectUpdate();
     }
   });
@@ -421,12 +536,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     (_e, scope: ChatScope, items: ExportItem[]): LocatorExportOutcome => {
       const { db } = requireProject();
       if (items.length === 0) return { kind: "blocked", reason: "no-hits" };
-      const allValid = items.every((item) => {
-        const file = db.getFile(item.fileId);
-        if (!file) return false;
-        if (scope.episodeId !== null && file.episodeId !== scope.episodeId) return false;
-        return true;
-      });
+      const allValid = items.every((item) => db.fileIsInScope(item.fileId, scope));
       if (!allValid) return { kind: "blocked", reason: "no-valid-sources" };
       const outDir = path.join(app.getPath("documents"), "Dailies Exports");
       return writeLocatorExport(items, (fid) => db.getFile(fid), outDir);
@@ -448,10 +558,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     const t0 = Date.now();
     const facts = db.listPipelineFileFacts(scope);
     const tFacts = Date.now();
-    const producerNoteCount = db
-      .listDocuments()
-      .filter((doc) => scope.episodeId === null || doc.episodeId === scope.episodeId)
-      .length;
+    const producerNoteCount = db.countDocuments(scope);
     const snapshot = computePipelineSnapshot(facts, producerNoteCount);
     const tDone = Date.now();
     console.log(

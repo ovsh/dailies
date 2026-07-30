@@ -3,10 +3,12 @@ import { IPC, type DailiesAPI } from "../shared/ipc";
 import type {
   ChatEvent,
   ChatScope,
+  ClipListInput,
   ExportItem,
   ExportKind,
   IndexUpdate,
   MediaRole,
+  MembershipSource,
   ModelDownloadProgress,
   UpdaterState,
 } from "../shared/types";
@@ -20,6 +22,12 @@ const api: DailiesAPI = {
 
   // episodes & folders
   createEpisode: (code: string) => ipcRenderer.invoke(IPC.createEpisode, code),
+  getEpisodeMembership: (episodeId: number) =>
+    ipcRenderer.invoke(IPC.getEpisodeMembership, episodeId),
+  setEpisodeMembershipSource: (episodeId: number, source: MembershipSource) =>
+    ipcRenderer.invoke(IPC.setEpisodeMembershipSource, episodeId, source),
+  replaceEpisodeClipList: (episodeId: number, input: ClipListInput) =>
+    ipcRenderer.invoke(IPC.replaceEpisodeClipList, episodeId, input),
   addProjectFolder: (role: MediaRole, episodeId: number | null, e2eFolderPath?: string) =>
     ipcRenderer.invoke(IPC.addProjectFolder, role, episodeId, e2eFolderPath),
   removeProjectFolder: (folderId: number) =>

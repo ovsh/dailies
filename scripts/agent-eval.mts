@@ -9,8 +9,6 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import Database from "better-sqlite3";
-
 import { runChatTurn } from "../src/main/agents/supervisor";
 import { createOpenRouterClient } from "../src/main/agents/openrouter-client";
 import { createOpenRouterEmbedder } from "../src/main/agents/openrouter";
@@ -77,7 +75,7 @@ interface GoldManifest {
 interface FixtureFile {
   id: number;
   clipName: string;
-  episodeId: number | null;
+  memberEpisodeIds: number[];
 }
 
 interface FixtureSegment {
@@ -99,8 +97,7 @@ type EvalAnswer =
   | { kind: "results"; summary: string | null; hits: GroundedAnswerHit[] };
 
 interface HitContext {
-  episodeId: number | null;
-  episodeCode: string | null;
+  episodeCodes: string[];
 }
 
 interface UnexpectedHit {
@@ -154,25 +151,6 @@ interface CliOptions {
   casesPath: string;
   databases: Map<string, string>;
   reportPath: string;
-}
-
-interface RawFixtureFile {
-  id: number;
-  filename: string;
-  clip_name: string | null;
-  episode_id: number | null;
-}
-
-interface RawFixtureSegment {
-  file_id: number;
-  start_s: number;
-  end_s: number;
-  text: string;
-}
-
-interface RawFixtureEpisode {
-  id: number;
-  code: string;
 }
 
 const CATEGORY_COUNTS = new Map([
@@ -370,31 +348,31 @@ function validateDistribution(manifest: GoldManifest): string[] {
   return errors;
 }
 
-function readFixtureSnapshot(databasePath: string): FixtureSnapshot {
-  const db = new Database(databasePath, { readonly: true, fileMustExist: true });
-  try {
-    const files = db.prepare<[], RawFixtureFile>(
-      "SELECT id, filename, clip_name, episode_id FROM files",
-    ).all().map((file) => ({
-      id: file.id,
-      clipName: file.clip_name ?? file.filename,
-      episodeId: file.episode_id,
-    }));
-    const segments = db.prepare<[], RawFixtureSegment>(
-      "SELECT file_id, start_s, end_s, text FROM transcript_segments",
-    ).all().map((segment) => ({
-      fileId: segment.file_id,
-      startS: segment.start_s,
-      endS: segment.end_s,
-      text: segment.text,
-    }));
-    const episodes = db.prepare<[], RawFixtureEpisode>(
-      "SELECT id, code FROM episodes",
-    ).all();
-    return { files, segments, episodes };
-  } finally {
-    db.close();
+function readFixtureSnapshot(db: DailiesDB): FixtureSnapshot {
+  const episodes = db.listEpisodes().map(({ id, code }) => ({ id, code }));
+  const episodeIdsByFile = new Map<number, number[]>();
+  for (const episode of episodes) {
+    for (const file of db.listFiles(episode.id)) {
+      const episodeIds = episodeIdsByFile.get(file.id) ?? [];
+      episodeIds.push(episode.id);
+      episodeIdsByFile.set(file.id, episodeIds);
+    }
   }
+  const storedFiles = db.listFiles();
+  const files = storedFiles.map((file) => ({
+    id: file.id,
+    clipName: file.clipName ?? file.filename,
+    memberEpisodeIds: episodeIdsByFile.get(file.id) ?? [],
+  }));
+  const segments = storedFiles.flatMap((file) =>
+    db.listSegments(file.id).map((segment) => ({
+      fileId: file.id,
+      startS: segment.startS,
+      endS: segment.endS,
+      text: segment.text,
+    }))
+  );
+  return { files, segments, episodes };
 }
 
 function validateEvidence(
@@ -408,7 +386,7 @@ function validateEvidence(
   if (namedFiles.length === 0) return `${label} clip not found: ${evidence.clipName}`;
   const scopedFiles = episodeId === null
     ? namedFiles
-    : namedFiles.filter((file) => file.episodeId === episodeId);
+    : namedFiles.filter((file) => file.memberEpisodeIds.includes(episodeId));
   if (scopedFiles.length === 0) {
     return `${label} clip ${evidence.clipName} is outside episode ${goldCase.episodeCode}`;
   }
@@ -503,7 +481,7 @@ function matchesForbidden(
   if (forbidden.kind === "quote") {
     return (hit.quote ?? "").toLowerCase().includes(forbidden.quoteSubstring.toLowerCase());
   }
-  return context?.episodeCode === forbidden.episodeCode;
+  return context?.episodeCodes.includes(forbidden.episodeCode) === true;
 }
 
 function answerSignature(answer: EvalAnswer): string {
@@ -571,7 +549,9 @@ function assessCase(
   const selectedEpisode = goldCase.episodeCode;
   const scopeLeaks = selectedEpisode === null
     ? 0
-    : hits.filter((hit) => getHitContext(hit.fileId)?.episodeCode !== selectedEpisode).length;
+    : hits.filter(
+      (hit) => getHitContext(hit.fileId)?.episodeCodes.includes(selectedEpisode) !== true,
+    ).length;
   const summaryPresent = answer.kind === "results" && answer.summary !== null;
   const summarySupportCount = answer.kind === "results"
     ? answer.hits.filter((hit) => hit.supportsSummary).length
@@ -819,13 +799,14 @@ async function runOnce(
       results.push(errorCase(goldCase, new Error(`missing episode ${goldCase.episodeCode}`)));
       continue;
     }
-    const episodeCodeById = new Map(db.listEpisodes().map((item) => [item.id, item.code]));
+    const episodes = db.listEpisodes();
     const getHitContext = (fileId: number): HitContext | null => {
       const file = db.getFile(fileId);
       if (!file) return null;
       return {
-        episodeId: file.episodeId,
-        episodeCode: file.episodeId === null ? null : episodeCodeById.get(file.episodeId) ?? null,
+        episodeCodes: episodes
+          .filter(({ id }) => db.fileIsInScope(fileId, { episodeId: id }))
+          .map(({ code }) => code),
       };
     };
     try {
@@ -925,7 +906,7 @@ function runSelfTest(manifestPath: string): void {
   const goldCase = selfTestCase();
   const snapshot: FixtureSnapshot = {
     episodes: [{ id: 1, code: "101" }],
-    files: [{ id: 1, clipName: "A001", episodeId: 1 }],
+    files: [{ id: 1, clipName: "A001", memberEpisodeIds: [1] }],
     segments: [{
       fileId: 1,
       startS: 5,
@@ -957,8 +938,8 @@ function runSelfTest(manifestPath: string): void {
   );
 
   const getContext = (fileId: number): HitContext | null => {
-    if (fileId === 1) return { episodeId: 1, episodeCode: "101" };
-    if (fileId === 2) return { episodeId: 2, episodeCode: "202" };
+    if (fileId === 1) return { episodeCodes: ["101"] };
+    if (fileId === 2) return { episodeCodes: ["202"] };
     return null;
   };
   const unsupported = assessCase(goldCase, {
@@ -1070,21 +1051,6 @@ async function main(options: CliOptions): Promise<void> {
       placeholders.map((entry) => entry.id).join(", "),
     );
   }
-  const snapshots = new Map<string, FixtureSnapshot>();
-  for (const [projectKey, databasePath] of options.databases) {
-    snapshots.set(projectKey, readFixtureSnapshot(databasePath));
-  }
-  const fixtureErrors = validateFixtures(manifest, snapshots, options.strict);
-  if (fixtureErrors.length > 0) {
-    throw new Error(`fixture validation failed\n${fixtureErrors.map((error) => `- ${error}`).join("\n")}`);
-  }
-
-  const apiKey = process.env["OPENROUTER_API_KEY"];
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is required after fixture validation");
-
-  const reviewedCases = manifest.cases.filter(
-    (entry): entry is GoldCase => !("placeholder" in entry),
-  );
   const tempDir = mkdtempSync(path.join(tmpdir(), "dailies-agent-eval-"));
   const databases = new Map<string, DailiesDB>();
   try {
@@ -1097,6 +1063,20 @@ async function main(options: CliOptions): Promise<void> {
       databases.set(projectKey, openDatabase(targetPath));
     }
 
+    const snapshots = new Map(
+      [...databases].map(([projectKey, db]) => [projectKey, readFixtureSnapshot(db)]),
+    );
+    const fixtureErrors = validateFixtures(manifest, snapshots, options.strict);
+    if (fixtureErrors.length > 0) {
+      throw new Error(`fixture validation failed\n${fixtureErrors.map((error) => `- ${error}`).join("\n")}`);
+    }
+
+    const apiKey = process.env["OPENROUTER_API_KEY"];
+    if (!apiKey) throw new Error("OPENROUTER_API_KEY is required after fixture validation");
+
+    const reviewedCases = manifest.cases.filter(
+      (entry): entry is GoldCase => !("placeholder" in entry),
+    );
     const client = createOpenRouterClient(() => apiKey);
     const embedder = createOpenRouterEmbedder(client);
     for (const db of databases.values()) await ensureEmbeddings(db, embedder);

@@ -8,6 +8,7 @@ import type {
   ChatMessageRecord,
   ChatSummary,
   Episode,
+  EpisodeMembershipReport,
   ExportItem,
   FileDetail,
   LocatorExportOutcome,
@@ -188,6 +189,7 @@ export function ChatScreen({
   const [conversationLoading, setConversationLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [coverage, setCoverage] = useState<PipelineSnapshot["coverage"] | null>(null);
+  const [membership, setMembership] = useState<EpisodeMembershipReport | null>(null);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [previewPendingHit, setPreviewPendingHit] = useState<AnswerHit | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -322,6 +324,26 @@ export function ChatScreen({
   }, [refreshCoverage]);
 
   useLiveRefresh(refreshCoverage);
+
+  const refreshMembership = useCallback(async () => {
+    if (episodeId === null) {
+      setMembership(null);
+      return;
+    }
+    const result = await runIpc(() => api.getEpisodeMembership(episodeId), {
+      setError: () => {
+        // Non-critical banner data; a failed fetch just leaves it hidden.
+      },
+      fallback: "Could not load episode membership.",
+    });
+    if (result.ok) setMembership(result.value);
+  }, [episodeId]);
+
+  useEffect(() => {
+    void refreshMembership();
+  }, [refreshMembership]);
+
+  useLiveRefresh(refreshMembership);
 
   // Scope changed: the rail is about to reload for the new episode. Drop the
   // visible conversation now rather than let a stale one linger, and release
@@ -484,6 +506,12 @@ export function ChatScreen({
       ? `INDEXING · ${coverage.pendingFiles} OF ${coverage.totalFiles} FILES REMAIN · ANSWERS COVER INDEXED FILES ONLY`
       : `${coverage.failedFiles} ${coverage.failedFiles === 1 ? "FILE" : "FILES"} NOT SEARCHABLE · ANSWERS COVER INDEXED FILES ONLY`
     : "";
+  const membershipUnresolvedCount =
+    membership && membership.source === "list" ? membership.ambiguousCount + membership.unmatchedCount : 0;
+  const membershipBannerText =
+    membershipUnresolvedCount > 0 && membership
+      ? `CLIP LIST · ${membership.ambiguousCount} AMBIGUOUS · ${membership.unmatchedCount} NOT FOUND · ANSWERS COVER MATCHED CLIPS ONLY`
+      : "";
   const activePreviewHit = preview?.hit ?? previewPendingHit ?? null;
   const activePreviewKey = activePreviewHit ? previewReturnFocusRef.current : null;
 
@@ -540,6 +568,15 @@ export function ChatScreen({
                 </button>
               ) : (
                 <div className="coverage-banner mono">{coverageBannerText}</div>
+              ))}
+
+            {membershipUnresolvedCount > 0 &&
+              (onOpenSettings ? (
+                <button type="button" className="coverage-banner mono" onClick={onOpenSettings}>
+                  {membershipBannerText}
+                </button>
+              ) : (
+                <div className="coverage-banner mono">{membershipBannerText}</div>
               ))}
 
             {conversationLoading && <p className="chat-conversation-loading mono">Loading conversation…</p>}

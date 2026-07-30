@@ -6,6 +6,8 @@ import type {
   AnswerHit,
   ChatScope,
   Episode,
+  EpisodeListEntry,
+  FileLocation,
   ChatMessageRecord,
   ChatSummary,
   DocumentHit,
@@ -17,6 +19,7 @@ import type {
   JobStage,
   MediaFile,
   MediaRole,
+  MembershipSource,
   ProjectFolder,
   Scene,
   SceneInput,
@@ -37,6 +40,17 @@ export interface PipelineFileFacts {
   discoveryError: string | null;
 }
 
+export interface FileLocationRegistration {
+  file: MediaFile;
+  location: FileLocation;
+  canonicalFileCreated: boolean;
+}
+
+export type FileLocationRemoval =
+  | { kind: "retained"; file: MediaFile; removed: FileLocation }
+  | { kind: "promoted"; file: MediaFile; removed: FileLocation }
+  | { kind: "deleted"; file: MediaFile; removed: FileLocation };
+
 export interface DailiesDB {
   // files
   upsertFile(input: FileInput): MediaFile;
@@ -46,6 +60,12 @@ export interface DailiesDB {
   repointFilePath(fileId: number, newPath: string, newFilename: string): MediaFile;
   /** OP-Atom lookup by material package UMID. */
   getFileByClipKey(clipKey: string): MediaFile | null;
+  registerFileLocation(input: FileInput): FileLocationRegistration;
+  listFileLocations(fileId: number): FileLocation[];
+  promoteFileLocation(fileId: number, locationId: number): MediaFile;
+  removeFileLocation(path: string): FileLocationRemoval | null;
+  consolidateDuplicateFiles(): number;
+  fileIsInScope(fileId: number, scope: SemanticSearchScope): boolean;
   /** Update OP-Atom structure without invalidating byte-identical derived state. */
   updateOpAtomMembers(fileId: number, input: FileInput): MediaFile;
   /** Delete files at or below a watched-folder path, including all derived state. */
@@ -65,7 +85,22 @@ export interface DailiesDB {
   // episodes
   createEpisode(code: string): Episode;
   listEpisodes(): Episode[];
-
+  getEpisodeMembershipSource(episodeId: number): MembershipSource;
+  setEpisodeMembershipSource(episodeId: number, source: MembershipSource): void;
+  getEpisodeListEntries(episodeId: number): EpisodeListEntry[];
+  replaceEpisodeListEntries(episodeId: number, entries: EpisodeListEntry[]): void;
+  getEpisodeMemberIds(episodeId: number): number[];
+  replaceEpisodeMembers(episodeId: number, fileIds: number[]): void;
+  setEpisodeMembershipSourceAndMembers(
+    episodeId: number,
+    source: MembershipSource,
+    fileIds: number[],
+  ): void;
+  replaceEpisodeListMembership(
+    episodeId: number,
+    entries: EpisodeListEntry[],
+    fileIds: number[],
+  ): void;
   // watched folders (per project, optionally assigned to an episode)
   addFolder(path: string, role: MediaRole, episodeId: number | null): ProjectFolder;
   listFolders(): ProjectFolder[];
@@ -92,6 +127,7 @@ export interface DailiesDB {
   upsertDocument(input: DocumentInput): DocumentRecord;
   getDocumentByPath(path: string): DocumentRecord | null;
   listDocuments(): DocumentRecord[];
+  countDocuments(scope: SemanticSearchScope): number;
   searchDocuments(terms: string[], limit?: number, episodeId?: number): DocumentHit[];
   getDocChunk(chunkId: number): DocumentHit | null;
 

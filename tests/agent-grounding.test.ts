@@ -29,7 +29,6 @@ function addFile(
   db: ReturnType<typeof openDatabase>,
   name: string,
   durationS: number,
-  episodeId: number | null,
   clipName: string | null = null,
 ) {
   return db.upsertFile({
@@ -42,7 +41,6 @@ function addFile(
     codec: "prores",
     audioChannels: 2,
     fileHash: `${name}-hash`,
-    episodeId,
     clipName,
   });
 }
@@ -52,9 +50,12 @@ describe("final answer grounding", () => {
     const db = makeDb("spoken");
     const selected = db.createEpisode("201");
     const other = db.createEpisode("202");
-    const goodFile = addFile(db, "A001.mov", 30, selected.id, "A001 INTERVIEW");
-    const outsideFile = addFile(db, "B001.mov", 30, other.id);
-    const invalidFile = addFile(db, "C001.mov", 5, selected.id);
+    db.setEpisodeMembershipSource(other.id, "list");
+    const goodFile = addFile(db, "A001.mov", 30, "A001 INTERVIEW");
+    const outsideFile = addFile(db, "B001.mov", 30);
+    const invalidFile = addFile(db, "C001.mov", 5);
+    db.replaceEpisodeMembers(selected.id, [goodFile.id, invalidFile.id]);
+    db.replaceEpisodeMembers(other.id, [goodFile.id, outsideFile.id]);
 
     db.replaceTranscript(goodFile.id, [{
       startS: 4,
@@ -131,12 +132,20 @@ describe("final answer grounding", () => {
     expect(warnings.join("\n")).toContain("not returned by a transcript tool");
     expect(warnings.join("\n")).toContain("outside the selected episode");
     expect(warnings.join("\n")).toContain("outside the file duration");
+
+    const listAnswer = hydrateFinalAnswer({
+      disposition: "results",
+      hits: [{ source: "segment", id: good.segmentId, confidence: "high" }],
+    }, db, registry, other.id);
+    expect(listAnswer.kind).toBe("results");
+    if (listAnswer.kind !== "results") throw new Error("expected list-source results");
+    expect(listAnswer.hits[0]?.fileId).toBe(goodFile.id);
     db.close();
   });
 
   it("injects the supervisor client and cannot emit an unregistered DB ID", async () => {
     const db = makeDb("supervisor-client");
-    const file = addFile(db, "I001.mov", 20, null);
+    const file = addFile(db, "I001.mov", 20);
     db.replaceTranscript(file.id, [{
       startS: 1,
       endS: 2,
@@ -189,8 +198,10 @@ describe("final answer grounding", () => {
     const db = makeDb("turn-inputs");
     const selected = db.createEpisode("301");
     const other = db.createEpisode("302");
-    const selectedFile = addFile(db, "selected.mov", 30, selected.id);
-    addFile(db, "outside.mov", 30, other.id);
+    const selectedFile = addFile(db, "selected.mov", 30);
+    const outsideFile = addFile(db, "outside.mov", 30);
+    db.replaceEpisodeMembers(selected.id, [selectedFile.id]);
+    db.replaceEpisodeMembers(other.id, [outsideFile.id]);
     db.replaceTranscript(selectedFile.id, [{
       startS: 1,
       endS: 3,
@@ -278,7 +289,7 @@ describe("flat agent loop", () => {
 
   it("resolves Where are they from ordered context into concrete location terms", async () => {
     const db = makeDb("implicit-location");
-    const file = addFile(db, "E001.mov", 40, null, "EVAN YARD");
+    const file = addFile(db, "E001.mov", 40, "EVAN YARD");
     db.replaceTranscript(file.id, [{
       startS: 5,
       endS: 9,
@@ -414,9 +425,11 @@ describe("flat agent loop", () => {
     const other = db.createEpisode("402");
     const queryVector = new Float32Array(768);
     queryVector[0] = 1;
+    const outsideFileIds: number[] = [];
 
     for (let index = 0; index < 45; index += 1) {
-      const file = addFile(db, `outside-${index}.mov`, 20, other.id);
+      const file = addFile(db, `outside-${index}.mov`, 20);
+      outsideFileIds.push(file.id);
       db.replaceTranscript(file.id, [{
         startS: 1,
         endS: 2,
@@ -427,7 +440,9 @@ describe("flat agent loop", () => {
       db.upsertEmbedding("segment", db.listSegments(file.id)[0]!.id, queryVector);
     }
 
-    const selectedFile = addFile(db, "selected-scope.mov", 20, selected.id);
+    db.replaceEpisodeMembers(other.id, outsideFileIds);
+    const selectedFile = addFile(db, "selected-scope.mov", 20);
+    db.replaceEpisodeMembers(selected.id, [selectedFile.id]);
     db.replaceTranscript(selectedFile.id, [{
       startS: 3,
       endS: 5,
@@ -464,8 +479,18 @@ describe("flat agent loop", () => {
     const db = makeDb("scoped-metadata");
     const selected = db.createEpisode("501");
     const other = db.createEpisode("502");
-    const selectedFile = addFile(db, "selected-info.mov", 20, selected.id);
-    const outsideFile = addFile(db, "outside-info.mov", 20, other.id);
+    db.setEpisodeMembershipSource(other.id, "list");
+    const selectedFile = addFile(db, "selected-info.mov", 20);
+    const outsideFile = addFile(db, "outside-info.mov", 20);
+    db.replaceEpisodeMembers(selected.id, [selectedFile.id]);
+    db.replaceEpisodeMembers(other.id, [selectedFile.id, outsideFile.id]);
+    db.replaceTranscript(selectedFile.id, [{
+      startS: 2,
+      endS: 4,
+      text: "Shared episode source.",
+      avgConf: 1,
+      words: [],
+    }]);
     db.upsertDocument({
       path: "/notes/selected.txt",
       filename: "selected.txt",
@@ -488,6 +513,21 @@ describe("flat agent loop", () => {
     expect(getFileInfoTool(db, selectedFile.id, selected.id)).toMatchObject({
       id: selectedFile.id,
     });
+    expect(getFileInfoTool(db, selectedFile.id, other.id)).toMatchObject({
+      id: selectedFile.id,
+    });
+    expect(getTranscriptWindowTool(
+      db,
+      selectedFile.id,
+      { kind: "seconds", value: 3 },
+      selected.id,
+    )).toHaveLength(1);
+    expect(getTranscriptWindowTool(
+      db,
+      selectedFile.id,
+      { kind: "seconds", value: 3 },
+      other.id,
+    )).toHaveLength(1);
 
     const client: OpenRouterClient = {
       chat: vi.fn(async () => ({
@@ -527,7 +567,7 @@ describe("flat agent loop", () => {
 
   it("drops an unsupported summary and keeps hydrated rows", () => {
     const db = makeDb("summary-support");
-    const file = addFile(db, "summary.mov", 20, null);
+    const file = addFile(db, "summary.mov", 20);
     db.replaceTranscript(file.id, [{
       startS: 2,
       endS: 4,
@@ -559,7 +599,7 @@ describe("flat agent loop", () => {
 
   it("keeps only the first grounded summary sentence", () => {
     const db = makeDb("summary-sentence");
-    const file = addFile(db, "summary.mov", 20, null);
+    const file = addFile(db, "summary.mov", 20);
     db.replaceTranscript(file.id, [{
       startS: 2,
       endS: 4,
@@ -588,7 +628,7 @@ describe("flat agent loop", () => {
 
   it("keeps up to three grounded sentences for an analytical question", () => {
     const db = makeDb("analytical-summary");
-    const file = addFile(db, "houses.mov", 20, null);
+    const file = addFile(db, "houses.mov", 20);
     db.replaceTranscript(file.id, [{
       startS: 2,
       endS: 4,
@@ -619,7 +659,7 @@ describe("flat agent loop", () => {
 
   it("sanitizes and caps a model-written hit reason without changing the stored quote", () => {
     const db = makeDb("hit-reason");
-    const file = addFile(db, "reason.mov", 20, null);
+    const file = addFile(db, "reason.mov", 20);
     db.replaceTranscript(file.id, [{
       startS: 2,
       endS: 4,
@@ -771,7 +811,7 @@ describe("flat agent loop", () => {
 
   it("hard-caps bounded transcript windows", () => {
     const db = makeDb("bounded-window");
-    const file = addFile(db, "C001.mov", 90, null);
+    const file = addFile(db, "C001.mov", 90);
     db.replaceTranscript(
       file.id,
       Array.from({ length: 40 }, (_, index) => ({
@@ -824,7 +864,7 @@ describe("flat agent loop", () => {
 
   it("registers direct search results and passes model-expanded terms", async () => {
     const db = makeDb("direct-search");
-    const file = addFile(db, "S001.mov", 30, null);
+    const file = addFile(db, "S001.mov", 30);
     db.replaceTranscript(file.id, [{
       startS: 4,
       endS: 8,
@@ -909,7 +949,7 @@ describe("flat agent loop", () => {
 
   it("registers semantic-only direct search results", async () => {
     const db = makeDb("semantic-search");
-    const file = addFile(db, "V001.mov", 30, null);
+    const file = addFile(db, "V001.mov", 30);
     db.replaceTranscript(file.id, [{
       startS: 4,
       endS: 8,
@@ -989,7 +1029,7 @@ describe("flat agent loop", () => {
 
   it("registers every segment returned by a bounded source-timecode window", async () => {
     const db = makeDb("direct-window");
-    const file = addFile(db, "W001.mov", 90, null);
+    const file = addFile(db, "W001.mov", 90);
     db.replaceTranscript(file.id, [
       { startS: 10, endS: 14, text: "First context line.", speaker: "Luis", avgConf: 1, words: [] },
       { startS: 20, endS: 24, text: "The timecoded answer.", speaker: "Maya", avgConf: 1, words: [] },
@@ -1121,7 +1161,7 @@ describe("flat agent loop", () => {
 
   it("forces final_answer after the 16-round tool budget", async () => {
     const db = makeDb("forced-final");
-    const file = addFile(db, "B001.mov", 30, null);
+    const file = addFile(db, "B001.mov", 30);
     let calls = 0;
     const client: OpenRouterClient = {
       chat: vi.fn(async (request) => {

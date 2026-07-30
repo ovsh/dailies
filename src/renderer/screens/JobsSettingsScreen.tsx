@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { chatModelOption, EMBEDDING_MODEL } from "../../shared/types";
 import type {
+  ClipListInput,
+  EpisodeMembershipReport,
+  EpisodeMembershipResolution,
+  MembershipSource,
   ModelDownloadProgress, AppSettings, Episode, Job, PipelineSnapshot, ProjectFolder, UpdaterState } from "../../shared/types";
+import type { ClipListImportBlocked, ClipListImportDiagnostic } from "../../shared/ipc";
 import { InlineError } from "../components/InlineError";
 import { Toast } from "../components/Toast";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
@@ -80,6 +85,33 @@ function formatRate(filesPerMinute: number | null): string {
   return filesPerMinute === null ? "—" : filesPerMinute.toFixed(1);
 }
 
+const MEMBERSHIP_SOURCE_LABEL: Record<MembershipSource, string> = {
+  folder: "Folders",
+  list: "Clip list",
+};
+
+function isBlockedImport(
+  result: EpisodeMembershipReport | ClipListImportBlocked,
+): result is ClipListImportBlocked {
+  return "kind" in result && result.kind === "blocked";
+}
+
+function countNonBlankLines(text: string): number {
+  return text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
+}
+
+const RESOLUTION_LABEL: Record<EpisodeMembershipResolution["kind"], string> = {
+  matched: "Matched",
+  ambiguous: "Ambiguous",
+  unmatched: "Not found",
+};
+
+const RESOLUTION_COLOR: Record<EpisodeMembershipResolution["kind"], string> = {
+  matched: "var(--status-ok)",
+  ambiguous: "var(--status-warn)",
+  unmatched: "var(--status-error)",
+};
+
 interface JobsSettingsScreenProps {
   onSettingsChanged?: () => void;
   folders: ProjectFolder[];
@@ -125,6 +157,8 @@ export function JobsSettingsScreen({
   const [telemetryPending, setTelemetryPending] = useState(false);
   const [diagnosticsPending, setDiagnosticsPending] = useState(false);
   const [toast, setToast] = useState<{ message: string; actionLabel?: string; onAction?: () => void } | null>(null);
+  const [episodeReports, setEpisodeReports] = useState<Record<number, EpisodeMembershipReport>>({});
+  const [expandedEpisodeId, setExpandedEpisodeId] = useState<number | null>(null);
 
   const refreshJobs = useCallback(async () => {
     const result = await runIpc(api.listJobs, {
@@ -179,6 +213,29 @@ export function JobsSettingsScreen({
     return unsub;
   }, [refreshSettings]);
 
+  const refreshEpisodeReports = useCallback(async () => {
+    const entries = await Promise.all(
+      episodes.map(async (ep) => {
+        try {
+          return [ep.id, await api.getEpisodeMembership(ep.id)] as const;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    setEpisodeReports((prev) => {
+      const next = { ...prev };
+      for (const entry of entries) {
+        if (entry) next[entry[0]] = entry[1];
+      }
+      return next;
+    });
+  }, [episodes]);
+
+  useEffect(() => {
+    void refreshEpisodeReports();
+  }, [refreshEpisodeReports]);
+
   async function handleRemoveFolder(folderId: number, folderPath: string) {
     const confirmed = window.confirm(
       `Remove watched folder "${folderPath}"? Every clip, transcript, and piece of derived media under it will be permanently removed from this project. Your source files will not be touched.`,
@@ -210,6 +267,24 @@ export function JobsSettingsScreen({
       setNewEpisodeCode("");
       setRetryAction(null);
     }
+  }
+
+  async function handleSetMembershipSource(episodeId: number, source: MembershipSource) {
+    const report = await api.setEpisodeMembershipSource(episodeId, source);
+    setEpisodeReports((prev) => ({ ...prev, [episodeId]: report }));
+    await onRefresh();
+  }
+
+  async function handleImportClipList(
+    episodeId: number,
+    input: ClipListInput,
+  ): Promise<EpisodeMembershipReport | ClipListImportBlocked> {
+    const result = await api.replaceEpisodeClipList(episodeId, input);
+    if (!isBlockedImport(result)) {
+      setEpisodeReports((prev) => ({ ...prev, [episodeId]: result }));
+      await onRefresh();
+    }
+    return result;
   }
 
   async function handleSaveKey(provider: "openrouter") {
@@ -805,14 +880,44 @@ export function JobsSettingsScreen({
               <h2 className="display panel-title">Episodes</h2>
 
               <div className="folder-list">
-                {episodes.map((ep) => (
-                  <div key={ep.id} className="folder-row">
-                    <span className="folder-path-row">
-                      <span className="mono episode-code">{ep.code}</span>
-                      <span className="folder-scanned mono">{formatDate(ep.createdAt)}</span>
-                    </span>
-                  </div>
-                ))}
+                {episodes.map((ep) => {
+                  const report = episodeReports[ep.id] ?? null;
+                  const source = report?.source ?? ep.membershipSource;
+                  const isExpanded = expandedEpisodeId === ep.id;
+                  return (
+                    <div key={ep.id} className="episode-row-wrap">
+                      <div className="folder-row">
+                        <span className="folder-path-row">
+                          <span className="mono episode-code">{ep.code}</span>
+                          <span className="episode-source-tag label">{MEMBERSHIP_SOURCE_LABEL[source]}</span>
+                          <span className="episode-count mono">
+                            {report ? `${report.memberCount} ${report.memberCount === 1 ? "member" : "members"}` : "…"}
+                          </span>
+                          {report && report.unresolvedCount > 0 && (
+                            <span className="episode-unresolved mono">{report.unresolvedCount} unresolved</span>
+                          )}
+                          <span className="folder-scanned mono">{formatDate(ep.createdAt)}</span>
+                        </span>
+                        <button
+                          type="button"
+                          className="ghost-btn label"
+                          aria-expanded={isExpanded}
+                          onClick={() => setExpandedEpisodeId(isExpanded ? null : ep.id)}
+                        >
+                          {isExpanded ? "Close" : "Manage"}
+                        </button>
+                      </div>
+                      {isExpanded && (
+                        <EpisodeMembershipPanel
+                          episode={ep}
+                          report={report}
+                          onSourceChange={(next) => handleSetMembershipSource(ep.id, next)}
+                          onImport={(input) => handleImportClipList(ep.id, input)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
                 {episodes.length === 0 && <p className="jobs-empty mono">No episodes yet.</p>}
               </div>
               <div className="episode-add-row" style={{ marginTop: 14 }}>
@@ -1545,6 +1650,178 @@ export function JobsSettingsScreen({
           background: #d2d6d9;
           color: var(--ink-dim);
         }
+        .episode-row-wrap {
+          display: flex;
+          flex-direction: column;
+        }
+        .episode-source-tag {
+          color: var(--ink-dimmer);
+          font-size: 9.5px;
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          padding: 2px 6px;
+        }
+        .episode-count {
+          font-size: 10.5px;
+          color: var(--ink-dim);
+        }
+        .episode-unresolved {
+          font-size: 10.5px;
+          color: var(--status-warn);
+          border: 1px solid var(--status-warn);
+          border-radius: 2px;
+          padding: 1px 6px;
+        }
+        .episode-panel {
+          margin: 2px 0 14px;
+          padding: 16px;
+          background: var(--ground-card, #fff);
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .episode-panel-row {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+        .episode-panel-hint {
+          font-size: 10.5px;
+          color: var(--ink-faint);
+          margin: 0;
+          line-height: 1.5;
+        }
+        .episode-panel-error {
+          font-size: 11px;
+          color: var(--status-error);
+          margin: 0;
+        }
+        .episode-drop {
+          border: 1px dashed var(--chrome-lo);
+          border-radius: 2px;
+          padding: 16px;
+          text-align: center;
+          background: #fff;
+        }
+        .episode-drop.over {
+          border-color: var(--accent);
+        }
+        .episode-drop-text {
+          font-size: 11px;
+          color: var(--ink-dim);
+          margin: 0;
+        }
+        .episode-drop-choose {
+          margin-left: 4px;
+          background: none;
+          border: none;
+          padding: 0;
+          color: var(--accent);
+          text-decoration: underline;
+          cursor: pointer;
+          font-size: 11px;
+        }
+        .episode-file-input {
+          display: none;
+        }
+        .episode-paste-label {
+          display: block;
+        }
+        .episode-paste {
+          width: 100%;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
+          padding: 9px 12px;
+          color: var(--ink);
+          font-size: 12px;
+          resize: vertical;
+        }
+        .episode-paste:focus {
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
+        }
+        .episode-diagnostics {
+          background: rgba(158, 58, 48, 0.08);
+          border: 1px solid var(--status-error);
+          border-radius: 2px;
+          padding: 8px 10px;
+        }
+        .episode-diagnostics-list {
+          margin: 6px 0 0;
+          padding-left: 16px;
+          color: var(--status-error);
+          font-size: 11px;
+        }
+        .episode-panel-actions {
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .episode-confirm {
+          background: #fff;
+          border: 1px solid var(--panel-border);
+          border-radius: 2px;
+          padding: 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .episode-confirm p {
+          margin: 0;
+          font-size: 11.5px;
+          color: var(--ink);
+          line-height: 1.5;
+        }
+        .episode-confirm-btn {
+          font-family: var(--font-body);
+          font-size: 10.5px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          background: var(--select-bg);
+          color: var(--select-ink);
+          border: 1px solid var(--select-bg);
+          border-radius: 2px;
+          padding: 8px 14px;
+          cursor: pointer;
+        }
+        .episode-confirm-btn:hover:not(:disabled) {
+          opacity: 0.88;
+        }
+        .episode-confirm-btn:disabled {
+          opacity: 0.5;
+          cursor: default;
+        }
+        .episode-report {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .episode-report-summary {
+          font-size: 11px;
+          color: var(--ink-dim);
+        }
+        .episode-report-raw {
+          color: var(--ink);
+          word-break: break-word;
+          white-space: normal;
+        }
+        .episode-candidates {
+          margin: 0;
+          padding-left: 14px;
+        }
+        .episode-candidates li {
+          color: var(--ink-dim);
+        }
+        .episode-report-dash {
+          color: var(--ink-faint);
+        }
       `}</style>
     </div>
   );
@@ -1627,6 +1904,284 @@ function ApiKeyField({ label, connected, value, onChange, onSave, saving }: ApiK
           outline-offset: -1px;
         }
       `}</style>
+    </div>
+  );
+}
+
+interface EpisodeMembershipPanelProps {
+  episode: Episode;
+  report: EpisodeMembershipReport | null;
+  onSourceChange: (source: MembershipSource) => Promise<void>;
+  onImport: (input: ClipListInput) => Promise<EpisodeMembershipReport | ClipListImportBlocked>;
+}
+
+function EpisodeMembershipPanel({ episode, report, onSourceChange, onImport }: EpisodeMembershipPanelProps) {
+  const [sourcePending, setSourcePending] = useState(false);
+  const [sourceError, setSourceError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [draftText, setDraftText] = useState("");
+  const [draftSourceName, setDraftSourceName] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<ClipListImportDiagnostic[] | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const source = report?.source ?? episode.membershipSource;
+  const lineCount = draftText.trim().length > 0 ? countNonBlankLines(draftText) : 0;
+
+  async function handleSource(next: MembershipSource) {
+    if (next === source || sourcePending) return;
+    setSourcePending(true);
+    setSourceError(null);
+    try {
+      await onSourceChange(next);
+    } catch (err) {
+      setSourceError(err instanceof Error ? err.message : `Could not switch to ${MEMBERSHIP_SOURCE_LABEL[next]}.`);
+    } finally {
+      setSourcePending(false);
+    }
+  }
+
+  function loadFileText(file: File, sourceName: string) {
+    file
+      .text()
+      .then((text) => {
+        setDraftText(text);
+        setDraftSourceName(sourceName);
+        setConfirming(false);
+        setDiagnostics(null);
+        setImportError(null);
+      })
+      .catch(() => {
+        setImportError(`Could not read ${sourceName}.`);
+      });
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) loadFileText(file, file.name);
+  }
+
+  function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) loadFileText(file, file.name);
+    e.target.value = "";
+  }
+
+  function handlePasteChange(value: string) {
+    setDraftText(value);
+    setDraftSourceName(null);
+    setConfirming(false);
+    setDiagnostics(null);
+    setImportError(null);
+  }
+
+  async function commitImport() {
+    setImporting(true);
+    setImportError(null);
+    try {
+      const input: ClipListInput = draftSourceName
+        ? { kind: "file", sourceName: draftSourceName, text: draftText }
+        : { kind: "paste", text: draftText };
+      const result = await onImport(input);
+      if (isBlockedImport(result)) {
+        setDiagnostics(result.diagnostics);
+        setConfirming(false);
+        return;
+      }
+      setDiagnostics(null);
+      setConfirming(false);
+      setDraftText("");
+      setDraftSourceName(null);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Could not replace the clip list.");
+      setConfirming(false);
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const resolutions = report?.resolutions ?? [];
+
+  return (
+    <div className="episode-panel">
+      <div className="episode-panel-row">
+        <span className="label">Membership source</span>
+        <div className="segmented-toggle" role="group" aria-label={`Membership source for episode ${episode.code}`}>
+          <button
+            type="button"
+            className={`segmented-btn label${source === "folder" ? " active" : ""}`}
+            onClick={() => void handleSource("folder")}
+            disabled={sourcePending}
+          >
+            Folders
+          </button>
+          <button
+            type="button"
+            className={`segmented-btn label${source === "list" ? " active" : ""}`}
+            onClick={() => void handleSource("list")}
+            disabled={sourcePending}
+          >
+            Clip list
+          </button>
+        </div>
+      </div>
+      <p className="episode-panel-hint mono">
+        Watched folders still decide what Dailies indexes. This source decides which indexed clips belong to episode{" "}
+        {episode.code}. Switching sources does not delete stored list entries.
+      </p>
+      {sourceError && <p className="episode-panel-error mono">{sourceError}</p>}
+
+      {source === "list" && (
+        <>
+          <div
+            className={`episode-drop${dragOver ? " over" : ""}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+          >
+            <p className="episode-drop-text mono">
+              Drop an ALE, EDL, or CSV file, or{" "}
+              <button type="button" className="episode-drop-choose" onClick={() => fileInputRef.current?.click()}>
+                choose a file
+              </button>
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".ale,.edl,.csv,.txt"
+              className="episode-file-input"
+              onChange={handleFileInput}
+              aria-label={`Clip list file for episode ${episode.code}`}
+            />
+          </div>
+
+          <label className="episode-panel-hint label episode-paste-label" htmlFor={`episode-paste-${episode.id}`}>
+            Or paste clip names, one per line
+          </label>
+          <textarea
+            id={`episode-paste-${episode.id}`}
+            className="episode-paste mono"
+            rows={4}
+            placeholder={"A002_C003_0716\nA002_C009_0716_b\n…"}
+            value={draftText}
+            onChange={(e) => handlePasteChange(e.target.value)}
+          />
+          {draftText.trim().length > 0 && (
+            <p className="episode-panel-hint mono">
+              {draftSourceName ? `From ${draftSourceName} · ` : ""}
+              {lineCount} {lineCount === 1 ? "line" : "lines"} ready
+            </p>
+          )}
+
+          {diagnostics && diagnostics.length > 0 && (
+            <div className="episode-diagnostics">
+              <span className="label">Could not import</span>
+              <ul className="episode-diagnostics-list mono">
+                {diagnostics.map((d, i) => (
+                  <li key={i}>
+                    {d.sourceName}:{d.line} — {d.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {importError && <p className="episode-panel-error mono">{importError}</p>}
+
+          {!confirming ? (
+            <div className="episode-panel-actions">
+              <button
+                type="button"
+                className="ghost-btn label"
+                disabled={lineCount === 0 || importing}
+                onClick={() => setConfirming(true)}
+              >
+                Replace list…
+              </button>
+            </div>
+          ) : (
+            <div className="episode-confirm mono">
+              <p>
+                Replace the stored clip list for episode {episode.code} with {lineCount}{" "}
+                {lineCount === 1 ? "line" : "lines"}
+                {draftSourceName ? ` from ${draftSourceName}` : ""}? Previously matched, ambiguous, and unmatched
+                entries will be replaced.
+              </p>
+              <div className="episode-panel-actions">
+                <button
+                  type="button"
+                  className="episode-confirm-btn label"
+                  onClick={() => void commitImport()}
+                  disabled={importing}
+                >
+                  {importing ? "Replacing…" : "Replace list"}
+                </button>
+                <button
+                  type="button"
+                  className="ghost-btn label"
+                  onClick={() => setConfirming(false)}
+                  disabled={importing}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {report && (
+        <div className="episode-report">
+          <div className="episode-report-summary mono">
+            {report.matchedCount} matched · {report.ambiguousCount} ambiguous · {report.unmatchedCount} not found
+          </div>
+          {resolutions.length > 0 ? (
+            <table className="jobs-table mono">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Input name</th>
+                  <th>Status</th>
+                  <th>Resolved to</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resolutions.map((r) => (
+                  <tr key={r.ordinal}>
+                    <td>{r.ordinal + 1}</td>
+                    <td className="episode-report-raw">{r.rawName}</td>
+                    <td>
+                      <span className="job-status">
+                        <span className="job-status-dot" style={{ background: RESOLUTION_COLOR[r.kind] }} />
+                        {RESOLUTION_LABEL[r.kind]}
+                      </span>
+                    </td>
+                    <td>
+                      {r.kind === "matched" && r.displayName}
+                      {r.kind === "ambiguous" && (
+                        <ul className="episode-candidates">
+                          {r.candidates.map((c) => (
+                            <li key={c.fileId}>{c.displayName}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {r.kind === "unmatched" && <span className="episode-report-dash">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            source === "list" && <p className="jobs-empty mono">No list entries imported yet.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

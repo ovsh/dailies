@@ -1,11 +1,16 @@
 /**
  * Full in-browser mock of DailiesAPI so `vite dev` runs with no Electron.
  */
-import type { DailiesAPI } from "../../shared/ipc";
-import type { ModelDownloadProgress,
+import type { ClipListImportBlocked, DailiesAPI } from "../../shared/ipc";
+import type {
+  ClipListInput,
+  EpisodeMembershipReport,
+  MembershipSource,
+  ModelDownloadProgress,
   ChatEvent,
   ChatScope,
   Episode,
+  EpisodeMembershipResolution,
   ExportItem,
   ExportKind,
   ExportWriteOutcome,
@@ -24,7 +29,7 @@ import type { ModelDownloadProgress,
   UpdaterState,
   WordTiming,
 } from "../../shared/types";
-import { chatModelOption } from "../../shared/types";
+import { chatModelOption, normalizeClipName } from "../../shared/types";
 import {
   AGENT_STAGES,
   buildMockAnswer,
@@ -35,6 +40,8 @@ import {
   MOCK_FILES,
   MOCK_FOLDERS,
   MOCK_JOBS,
+  MOCK_EPISODE_MEMBERS,
+  MOCK_MEMBERSHIP_REPORTS,
   MOCK_PROJECTS,
   MOCK_SETTINGS,
   MOCK_UPDATE_AVAILABLE_VERSION,
@@ -167,6 +174,15 @@ export function createMockApi(): DailiesAPI {
   const foldersByProject: Record<string, ProjectFolder[]> = Object.fromEntries(
     Object.entries(MOCK_FOLDERS).map(([id, folders]) => [id, folders.map((f) => ({ ...f }))]),
   );
+  const episodeMembers = new Map(
+    [...MOCK_EPISODE_MEMBERS].map(([episodeId, fileIds]) => [episodeId, new Set(fileIds)]),
+  );
+  const membershipReports = new Map(
+    [...MOCK_MEMBERSHIP_REPORTS].map(([episodeId, report]) => [
+      episodeId,
+      { ...report, resolutions: [...report.resolutions] },
+    ]),
+  );
   let nextEpisodeId = Math.max(0, ...Object.values(episodesByProject).flat().map((e) => e.id)) + 1;
   let nextFolderId = Math.max(0, ...Object.values(foldersByProject).flat().map((f) => f.id)) + 1;
 
@@ -200,7 +216,112 @@ export function createMockApi(): DailiesAPI {
   function filesForScope(scope: ChatScope) {
     return scope.episodeId === null
       ? MOCK_FILES
-      : MOCK_FILES.filter((file) => file.episodeId === scope.episodeId);
+      : MOCK_FILES.filter((file) => episodeMembers.get(scope.episodeId ?? -1)?.has(file.id));
+  }
+
+  async function getEpisodeMembership(episodeId: number): Promise<EpisodeMembershipReport> {
+    const report = membershipReports.get(episodeId);
+    if (!report) throw new Error(`Unknown episode ${episodeId}`);
+    return report;
+  }
+
+  async function setEpisodeMembershipSource(
+    episodeId: number,
+    source: MembershipSource,
+  ): Promise<EpisodeMembershipReport> {
+    const report = await getEpisodeMembership(episodeId);
+    const next = { ...report, source };
+    membershipReports.set(episodeId, next);
+    return next;
+  }
+
+  async function replaceEpisodeClipList(
+    episodeId: number,
+    input: ClipListInput,
+  ): Promise<EpisodeMembershipReport | ClipListImportBlocked> {
+    const sourceName = input.kind === "file" ? input.sourceName : "Pasted clip list";
+    const rows = input.text
+      .split(/\r\n|\n|\r/)
+      .map((row) => row.trim())
+      .filter((row) => row !== "");
+    const first = normalizeClipName(rows[0] ?? "");
+    const names = input.kind === "file" &&
+        ["clip", "clip name", "name", "key", "umid"].includes(first)
+      ? rows.slice(1)
+      : rows;
+    if (names.length === 0) {
+      return {
+        kind: "blocked",
+        diagnostics: [{
+          sourceName,
+          line: 1,
+          message: `${sourceName} has no clip rows`,
+        }],
+      };
+    }
+
+    const resolutions: EpisodeMembershipResolution[] = names.map((rawName, ordinal) => {
+      const normalized = normalizeClipName(rawName.replace(/^"|"$/g, ""));
+      const exactMatches = MOCK_FILES.filter((file) => {
+        const filenameStem = file.filename.replace(/\.[^.]+$/, "");
+        return [file.clipName, filenameStem]
+          .filter((name): name is string => name !== null)
+          .some((name) => normalizeClipName(name) === normalized);
+      });
+      const candidates = exactMatches.length > 0
+        ? exactMatches
+        : MOCK_FILES.filter((file) => {
+            const displayName = normalizeClipName(file.clipName ?? file.filename);
+            return normalized.split(/\s+/).every((token) => displayName.includes(token));
+          });
+      if (candidates.length === 1) {
+        const file = candidates[0];
+        if (!file) throw new Error("Missing mock membership candidate");
+        return {
+          kind: "matched",
+          ordinal,
+          rawName,
+          fileId: file.id,
+          displayName: file.clipName ?? file.filename,
+        };
+      }
+      if (candidates.length > 1) {
+        return {
+          kind: "ambiguous",
+          ordinal,
+          rawName,
+          candidates: candidates.map((file) => ({
+            fileId: file.id,
+            displayName: file.clipName ?? file.filename,
+          })),
+        };
+      }
+      return { kind: "unmatched", ordinal, rawName };
+    });
+    const matchedFileIds = new Set(
+      resolutions
+        .filter((resolution) => resolution.kind === "matched")
+        .map((resolution) => resolution.fileId),
+    );
+    const ambiguousCount = resolutions.filter(
+      (resolution) => resolution.kind === "ambiguous",
+    ).length;
+    const unmatchedCount = resolutions.filter(
+      (resolution) => resolution.kind === "unmatched",
+    ).length;
+    const report: EpisodeMembershipReport = {
+      episodeId,
+      source: "list",
+      memberCount: matchedFileIds.size,
+      matchedCount: resolutions.length - ambiguousCount - unmatchedCount,
+      ambiguousCount,
+      unmatchedCount,
+      unresolvedCount: ambiguousCount + unmatchedCount,
+      resolutions,
+    };
+    episodeMembers.set(episodeId, matchedFileIds);
+    membershipReports.set(episodeId, report);
+    return report;
   }
 
   function buildPipelineSnapshot(scope: ChatScope): PipelineSnapshot {
@@ -320,11 +441,16 @@ export function createMockApi(): DailiesAPI {
         id: nextEpisodeId++,
         code: code.trim(),
         createdAt: new Date().toISOString(),
+        membershipSource: "folder",
       };
       episodesByProject[currentProjectId] = [...(episodesByProject[currentProjectId] ?? []), episode];
       notifyProjectUpdate();
       return episode;
     },
+
+    getEpisodeMembership,
+    setEpisodeMembershipSource,
+    replaceEpisodeClipList,
 
     async addProjectFolder(role: MediaRole, episodeId: number | null) {
       if (!currentProjectId) throw new Error("No project open");
@@ -376,7 +502,7 @@ export function createMockApi(): DailiesAPI {
 
     async listFiles(episodeId?: number) {
       if (episodeId === undefined) return MOCK_FILES;
-      return MOCK_FILES.filter((f) => f.episodeId === episodeId);
+      return MOCK_FILES.filter((file) => episodeMembers.get(episodeId)?.has(file.id));
     },
 
     async getFileDetail(fileId: number): Promise<FileDetail> {

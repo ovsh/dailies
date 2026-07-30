@@ -315,13 +315,9 @@ function coerceGroundedSummary(raw: unknown): GroundedSummary | null {
 }
 
 function scopedCoverage(db: DailiesDB, episodeId: number | null): SearchCoverage {
-  const producerNoteCount = db
-    .listDocuments()
-    .filter((document) => episodeId === null || document.episodeId === episodeId)
-    .length;
   return computePipelineSnapshot(
     db.listPipelineFileFacts({ episodeId }),
-    producerNoteCount,
+    db.countDocuments({ episodeId }),
   ).coverage;
 }
 
@@ -399,7 +395,7 @@ export function hydrateFinalAnswer(
       drop(ref, "file is missing");
       continue;
     }
-    if (episodeId !== null && file.episodeId !== episodeId) {
+    if (!db.fileIsInScope(file.id, { episodeId })) {
       drop(ref, "outside the selected episode");
       continue;
     }
@@ -485,10 +481,7 @@ function buildLibraryDigest(db: DailiesDB, episodeId: number | null): string {
   const usable = files.filter((f) => f.status !== "error");
   const errored = files.length - usable.length;
   const transcribed = files.filter((f) => f.hasTranscript).length;
-  const docCount = db
-    .listDocuments()
-    .filter((document) => episodeId === null || document.episodeId === episodeId)
-    .length;
+  const docCount = db.countDocuments({ episodeId });
   const totalS = usable.reduce((sum, f) => sum + (f.durationS || 0), 0);
   const mins = Math.round(totalS / 60);
 

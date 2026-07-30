@@ -315,7 +315,7 @@ export function getTranscriptWindowTool(
 ): TranscriptToolHit[] {
   const file = db.getFile(fileId);
   if (!file) throw new Error(`file ${fileId} not found`);
-  if (episodeId !== null && file.episodeId !== episodeId) {
+  if (!db.fileIsInScope(fileId, { episodeId })) {
     throw new Error(`file ${fileId} is outside the selected episode`);
   }
 
@@ -349,7 +349,7 @@ export function getFileInfoTool(
 ): object {
   const file = db.getFile(fileId);
   if (!file) return { error: `file ${fileId} not found` };
-  if (episodeId !== null && file.episodeId !== episodeId) {
+  if (!db.fileIsInScope(fileId, { episodeId })) {
     return { error: `file ${fileId} is outside the selected episode` };
   }
   return {

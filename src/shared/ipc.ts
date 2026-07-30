@@ -11,7 +11,9 @@ import type {
   ChatEvent,
   ChatMessageRecord,
   ChatSummary,
+  ClipListInput,
   Episode,
+  EpisodeMembershipReport,
   ExportItem,
   ExportKind,
   DiagnosticsExportOutcome,
@@ -22,6 +24,7 @@ import type {
   MediaFile,
   ModelDownloadProgress,
   MediaRole,
+  MembershipSource,
   LocatorExportOutcome,
   PipelineSnapshot,
   ProjectActivity,
@@ -33,6 +36,17 @@ import type {
   WordTiming,
 } from "./types";
 
+export interface ClipListImportDiagnostic {
+  sourceName: string;
+  line: number;
+  message: string;
+}
+
+export interface ClipListImportBlocked {
+  kind: "blocked";
+  diagnostics: ClipListImportDiagnostic[];
+}
+
 export interface DailiesAPI {
   // projects
   listProjects(): Promise<Project[]>;
@@ -43,6 +57,15 @@ export interface DailiesAPI {
 
   // episodes & folders (current project)
   createEpisode(code: string): Promise<Episode>;
+  getEpisodeMembership(episodeId: number): Promise<EpisodeMembershipReport>;
+  setEpisodeMembershipSource(
+    episodeId: number,
+    source: MembershipSource,
+  ): Promise<EpisodeMembershipReport>;
+  replaceEpisodeClipList(
+    episodeId: number,
+    input: ClipListInput,
+  ): Promise<EpisodeMembershipReport | ClipListImportBlocked>;
   /** Opens a native folder picker; returns the new folder or null if cancelled. */
   addProjectFolder(
     role: MediaRole,
@@ -129,6 +152,9 @@ export const IPC = {
   openProject: "dailies:openProject",
   getProjectState: "dailies:getProjectState",
   createEpisode: "dailies:createEpisode",
+  getEpisodeMembership: "dailies:getEpisodeMembership",
+  setEpisodeMembershipSource: "dailies:setEpisodeMembershipSource",
+  replaceEpisodeClipList: "dailies:replaceEpisodeClipList",
   addProjectFolder: "dailies:addProjectFolder",
   removeProjectFolder: "dailies:removeProjectFolder",
   clearProjectCache: "dailies:clearProjectCache",

@@ -182,7 +182,6 @@ const fileA: MediaFile = {
   hasTranscript: false,
   hasVideo: true,
   proxyPath: null,
-  episodeId: null,
   role: "raw" as const,
   clipName: null,
   mediaKind: "standard" as const,
@@ -190,6 +189,16 @@ const fileA: MediaFile = {
   clipKey: null,
   videoUnplayable: false,
   discoveryFailed: false,
+  locations: [{
+    id: 1,
+    fileId: 1,
+    path: "/media/A001.mov",
+    filename: "A001.mov",
+    clipName: null,
+    role: "raw",
+    folderId: null,
+    memberPaths: null,
+  }],
 };
 
 const fileB: MediaFile = {
@@ -208,7 +217,6 @@ const fileB: MediaFile = {
   hasTranscript: false,
   hasVideo: true,
   proxyPath: null,
-  episodeId: null,
   role: "raw" as const,
   clipName: null,
   mediaKind: "standard" as const,
@@ -216,6 +224,16 @@ const fileB: MediaFile = {
   clipKey: null,
   videoUnplayable: false,
   discoveryFailed: false,
+  locations: [{
+    id: 2,
+    fileId: 2,
+    path: "/media/B001.mov",
+    filename: "B001.mov",
+    clipName: null,
+    role: "raw",
+    folderId: null,
+    memberPaths: null,
+  }],
 };
 
 function getFile(id: number): MediaFile | null {

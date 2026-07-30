@@ -185,7 +185,8 @@ export function LibraryScreen({
   }
 
   const isEmpty = files !== null && files.length === 0;
-  const visibleFiles = files?.filter((f) => roleFilter === "all" || f.role === roleFilter) ?? null;
+  const visibleFiles =
+    files?.filter((f) => roleFilter === "all" || f.locations.some((loc) => loc.role === roleFilter)) ?? null;
 
   // A request from Chat's "Open in library" may arrive before the target file's
   // role is visible under the current filter, or before the grid has rendered
@@ -333,6 +334,9 @@ export function LibraryScreen({
                   finishing={pendingFileIds.has(f.id)}
                   pipelineFailed={failedFileIds.has(f.id)}
                 />
+                {f.locations.length > 1 && (
+                  <span className="clip-locations mono">{f.locations.length} locations</span>
+                )}
               </div>
             ))}
           </div>
@@ -510,6 +514,13 @@ export function LibraryScreen({
         .clip-focus-wrap.selected .clip-glyphs {
           color: var(--select-ink);
           opacity: 0.85;
+        }
+        .clip-locations {
+          display: block;
+          margin-top: 4px;
+          font-size: 10px;
+          letter-spacing: 0.02em;
+          color: var(--ink-faint);
         }
       `}</style>
     </div>

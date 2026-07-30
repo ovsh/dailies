@@ -3,8 +3,11 @@
  */
 import Database from "better-sqlite3";
 import type { Database as BetterSqlite3Database } from "better-sqlite3";
+import { constants as fsConstants, copyFileSync, existsSync, statSync } from "node:fs";
+import { dirname, join, parse as parsePath } from "node:path";
 import { SCHEMA_SQL } from "./schema";
 import { cachedBetterSqlite3Binding, repairBetterSqlite3Binding } from "./native-binding";
+import { usesFullContentHash } from "../file-hash";
 import type {
   AnswerHit,
   ChatScope,
@@ -15,6 +18,8 @@ import type {
   DocumentRecord,
   EmbeddingKind,
   Episode,
+  EpisodeListEntry,
+  FileLocation,
   FileInput,
   FileStatus,
   Job,
@@ -31,9 +36,17 @@ import type {
   TranscriptHit,
   TranscriptSegment,
   WordTiming,
+  MembershipSource,
 } from "../../shared/types";
+import { normalizeClipKey, normalizeClipName } from "../../shared/types";
 import { sourceTcAtOffset } from "../../shared/timecode";
-import type { DailiesDB, PipelineFileFacts, SemanticSearchScope } from "./types";
+import type {
+  DailiesDB,
+  FileLocationRegistration,
+  FileLocationRemoval,
+  PipelineFileFacts,
+  SemanticSearchScope,
+} from "./types";
 
 const fileStatusWriters = new WeakMap<
   DailiesDB,
@@ -77,13 +90,13 @@ interface FileRow {
   video_unplayable: number;
   discovery_failed: number;
   discovery_error: string | null;
-  episode_id: number | null;
 }
 
 interface EpisodeRow {
   id: number;
   code: string;
   created_at: string;
+  membership_source: string;
 }
 
 interface FolderRow {
@@ -92,6 +105,25 @@ interface FolderRow {
   role: string;
   episode_id: number | null;
   last_scanned_at: string | null;
+}
+
+interface FileLocationRow {
+  id: number;
+  file_id: number;
+  path: string;
+  filename: string;
+  clip_name: string | null;
+  role: string;
+  folder_id: number | null;
+  member_paths: string | null;
+}
+
+interface EpisodeListEntryRow {
+  episode_id: number;
+  ordinal: number;
+  raw_name: string;
+  clip_name: string;
+  clip_key: string | null;
 }
 
 interface SceneRow {
@@ -159,7 +191,6 @@ interface TranscriptSearchRow {
   file_id: number;
   filename: string;
   role: string;
-  episode_id: number | null;
   fps: number;
   drop_frame: number;
   start_tc: string;
@@ -210,9 +241,15 @@ interface PipelineFactsRow extends FileRow {
   job_updated_at: string | null;
 }
 
+interface ConsolidationRow extends FileRow {
+  derived_count: number;
+}
+
 // ---------- row -> domain mapping helpers ----------
 
-function mapFile(row: FileRow): MediaFile {
+type CanonicalFile = Omit<MediaFile, "locations">;
+
+function mapFile(row: FileRow): CanonicalFile {
   return {
     id: row.id,
     path: row.path,
@@ -236,8 +273,12 @@ function mapFile(row: FileRow): MediaFile {
     clipKey: row.clip_key,
     videoUnplayable: row.video_unplayable === 1,
     discoveryFailed: row.discovery_failed === 1,
-    episodeId: row.episode_id,
   };
+}
+
+function mapMembershipSource(value: string): MembershipSource {
+  if (value === "folder" || value === "list") return value;
+  throw new Error(`Invalid membership source: ${value}`);
 }
 
 function mapEpisode(row: EpisodeRow): Episode {
@@ -245,6 +286,7 @@ function mapEpisode(row: EpisodeRow): Episode {
     id: row.id,
     code: row.code,
     createdAt: row.created_at,
+    membershipSource: mapMembershipSource(row.membership_source),
   };
 }
 
@@ -255,6 +297,37 @@ function mapFolder(row: FolderRow): ProjectFolder {
     role: row.role as MediaRole,
     episodeId: row.episode_id,
     lastScannedAt: row.last_scanned_at,
+  };
+}
+
+function parseMemberPaths(value: string | null): string[] | null {
+  if (value === null) return null;
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || parsed.some((path) => typeof path !== "string")) {
+    throw new Error("Invalid member_paths JSON");
+  }
+  return parsed;
+}
+
+function mapFileLocation(row: FileLocationRow): FileLocation {
+  return {
+    id: row.id,
+    fileId: row.file_id,
+    path: row.path,
+    filename: row.filename,
+    clipName: row.clip_name,
+    role: row.role === "final" ? "final" : "raw",
+    folderId: row.folder_id,
+    memberPaths: parseMemberPaths(row.member_paths),
+  };
+}
+
+function mapEpisodeListEntry(row: EpisodeListEntryRow): EpisodeListEntry {
+  return {
+    ordinal: row.ordinal,
+    rawName: row.raw_name,
+    clipName: row.clip_name,
+    clipKey: row.clip_key,
   };
 }
 
@@ -352,6 +425,21 @@ function mapDocument(row: DocumentRow, chunkCount: number): DocumentRecord {
   };
 }
 
+function remapStoredFileIds(value: unknown, replacements: ReadonlyMap<number, number>): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => remapStoredFileIds(entry, replacements));
+  }
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => {
+      if (key === "fileId" && typeof entry === "number") {
+        return [key, replacements.get(entry) ?? entry];
+      }
+      return [key, remapStoredFileIds(entry, replacements)];
+    }),
+  );
+}
+
 // ---------- embedding helpers ----------
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -372,6 +460,58 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 
 /** Reject weak nearest-neighbour guesses instead of always returning a top hit. */
 const SEMANTIC_RELEVANCE_FLOOR = 0.35;
+
+type FileSizeResult =
+  | { kind: "known"; size: number }
+  | { kind: "unavailable"; path: string; reason: string };
+
+type StandardConsolidationDecision =
+  | { kind: "merge" }
+  | { kind: "keep-separate" }
+  | { kind: "size-unavailable"; reason: string };
+
+function fileSize(path: string): FileSizeResult {
+  try {
+    return { kind: "known", size: statSync(path).size };
+  } catch (error) {
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    return {
+      kind: "unavailable",
+      path,
+      reason: detail.replace(/\s+/g, " "),
+    };
+  }
+}
+
+function filenameStem(filename: string): string {
+  return normalizeClipName(parsePath(filename).name);
+}
+
+function standardFilesCanConsolidate(
+  left: Pick<FileRow, "path" | "filename" | "file_hash">,
+  right: Pick<FileRow, "path" | "filename" | "file_hash">,
+): StandardConsolidationDecision {
+  if (left.file_hash !== right.file_hash) return { kind: "keep-separate" };
+  const leftSize = fileSize(left.path);
+  const rightSize = fileSize(right.path);
+  if (leftSize.kind === "unavailable" || rightSize.kind === "unavailable") {
+    const failures: string[] = [];
+    if (leftSize.kind === "unavailable") {
+      failures.push(`${leftSize.path}: ${leftSize.reason}`);
+    }
+    if (rightSize.kind === "unavailable") {
+      failures.push(`${rightSize.path}: ${rightSize.reason}`);
+    }
+    return { kind: "size-unavailable", reason: failures.join("; ") };
+  }
+  if (leftSize.size !== rightSize.size || leftSize.size === 0) {
+    return { kind: "keep-separate" };
+  }
+  if (usesFullContentHash(leftSize.size)) return { kind: "merge" };
+  return filenameStem(left.filename) === filenameStem(right.filename)
+    ? { kind: "merge" }
+    : { kind: "keep-separate" };
+}
 
 // ---------- FTS helpers ----------
 
@@ -404,6 +544,68 @@ interface TableInfoRow {
 }
 
 const VISUAL_CLEANUP_MIGRATION_KEY = "migration_visual_cleanup_done";
+const PRE_V05_BACKUP_FILENAME = "dailies-pre-0.5.bak";
+
+function tableInfo(db: BetterSqlite3Database, table: string): TableInfoRow[] {
+  const rows: unknown = db.pragma(`table_info(${table})`);
+  if (!Array.isArray(rows)) throw new Error(`Could not read ${table} columns`);
+  return rows.map((row) => {
+    if (
+      typeof row !== "object" ||
+      row === null ||
+      !("name" in row) ||
+      typeof row.name !== "string"
+    ) {
+      throw new Error(`Invalid ${table} column metadata`);
+    }
+    return { name: row.name };
+  });
+}
+
+function tableHasColumn(
+  db: BetterSqlite3Database,
+  table: string,
+  column: string,
+): boolean {
+  return tableInfo(db, table).some(({ name }) => name === column);
+}
+
+function createFinalFileIndexes(db: BetterSqlite3Database): void {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_files_clip_key
+      ON files(clip_key)
+      WHERE media_kind = 'opatom' AND clip_key IS NOT NULL;
+  `);
+}
+
+function copyPreV05Backup(db: BetterSqlite3Database, dbPath: string): void {
+  const checkpoint: unknown = db.pragma("wal_checkpoint(TRUNCATE)");
+  if (
+    !Array.isArray(checkpoint) ||
+    checkpoint.length !== 1 ||
+    typeof checkpoint[0] !== "object" ||
+    checkpoint[0] === null ||
+    !("busy" in checkpoint[0]) ||
+    checkpoint[0].busy !== 0
+  ) {
+    throw new Error("Could not checkpoint the database before creating the v0.5 backup");
+  }
+  const backupPath = join(dirname(dbPath), PRE_V05_BACKUP_FILENAME);
+  try {
+    copyFileSync(dbPath, backupPath, fsConstants.COPYFILE_EXCL);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "EEXIST"
+    ) {
+      return;
+    }
+    throw error;
+  }
+}
 
 /** Adds any missing columns from `wantedColumns` to `table`, reading PRAGMA table_info. */
 function addMissingColumns(
@@ -411,9 +613,7 @@ function addMissingColumns(
   table: string,
   wantedColumns: Array<[string, string]>,
 ): void {
-  const existingColumns = new Set(
-    (db.pragma(`table_info(${table})`) as TableInfoRow[]).map((c) => c.name),
-  );
+  const existingColumns = new Set(tableInfo(db, table).map((column) => column.name));
   for (const [name, ddl] of wantedColumns) {
     if (!existingColumns.has(name)) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
@@ -468,6 +668,12 @@ function migrateWatchedFoldersKv(db: BetterSqlite3Database): void {
  * are missing columns added later; ALTER them in when absent. Idempotent.
  */
 function migrate(db: BetterSqlite3Database): void {
+  addMissingColumns(db, "episodes", [
+    [
+      "membership_source",
+      "TEXT NOT NULL DEFAULT 'folder' CHECK (membership_source IN ('folder', 'list'))",
+    ],
+  ]);
   addMissingColumns(db, "files", [
     ["role", "TEXT NOT NULL DEFAULT 'raw'"],
     ["clip_name", "TEXT"],
@@ -478,7 +684,6 @@ function migrate(db: BetterSqlite3Database): void {
     ["video_unplayable", "INTEGER NOT NULL DEFAULT 0"],
     ["discovery_failed", "INTEGER NOT NULL DEFAULT 0"],
     ["discovery_error", "TEXT"],
-    ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
   ]);
   addMissingColumns(db, "chats", [
     ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
@@ -486,9 +691,59 @@ function migrate(db: BetterSqlite3Database): void {
   addMissingColumns(db, "documents", [
     ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
   ]);
-  db.exec("CREATE INDEX IF NOT EXISTS idx_files_clip_key ON files(clip_key)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_files_file_hash ON files(file_hash)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_files_episode_id ON files(episode_id)");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS episode_members (
+      episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+      file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+      PRIMARY KEY (episode_id, file_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_episode_members_file_id
+      ON episode_members(file_id);
+    CREATE TABLE IF NOT EXISTS episode_list_entries (
+      episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+      ordinal INTEGER NOT NULL,
+      raw_name TEXT NOT NULL,
+      clip_name TEXT NOT NULL,
+      clip_key TEXT,
+      PRIMARY KEY (episode_id, ordinal)
+    );
+    CREATE TABLE IF NOT EXISTS file_locations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+      path TEXT NOT NULL UNIQUE,
+      filename TEXT NOT NULL,
+      clip_name TEXT,
+      role TEXT NOT NULL DEFAULT 'raw' CHECK (role IN ('raw', 'final')),
+      folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+      member_paths TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_locations_file_id
+      ON file_locations(file_id);
+    CREATE INDEX IF NOT EXISTS idx_file_locations_folder_id
+      ON file_locations(folder_id);
+  `);
+  db.exec(`
+    INSERT OR IGNORE INTO file_locations (
+      file_id, path, filename, clip_name, role, folder_id, member_paths
+    )
+    SELECT
+      files.id,
+      files.path,
+      files.filename,
+      files.clip_name,
+      files.role,
+      (
+        SELECT folders.id
+        FROM folders
+        WHERE files.path = folders.path
+           OR files.path LIKE rtrim(folders.path, '/') || '/%'
+        ORDER BY length(folders.path) DESC, folders.id ASC
+        LIMIT 1
+      ),
+      files.member_paths
+    FROM files;
+  `);
+  if (!tableHasColumn(db, "files", "episode_id")) createFinalFileIndexes(db);
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_chats_episode_id ON chats(episode_id)");
   const visualCleanupDone = db
@@ -509,9 +764,127 @@ function migrate(db: BetterSqlite3Database): void {
   migrateWatchedFoldersKv(db);
 }
 
+function migrateLegacyFileScope(
+  db: BetterSqlite3Database,
+  consolidateDuplicateFiles: () => number,
+): void {
+  if (!tableHasColumn(db, "files", "episode_id")) return;
+
+  const migration = db.transaction(() => {
+    db.exec(`
+      INSERT OR IGNORE INTO episode_members (episode_id, file_id)
+      SELECT legacy.episode_id, legacy.id
+      FROM files AS legacy
+      JOIN episodes ON episodes.id = legacy.episode_id
+      WHERE legacy.episode_id IS NOT NULL;
+    `);
+    const missing = db.prepare<[], { count: number }>(
+      `SELECT COUNT(*) AS count
+       FROM files AS legacy
+       WHERE legacy.episode_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1
+           FROM episode_members
+           WHERE episode_members.episode_id = legacy.episode_id
+             AND episode_members.file_id = legacy.id
+         )`,
+    ).get()?.count ?? 0;
+    if (missing > 0) {
+      throw new Error(
+        `v0.5 migration aborted: ${missing} legacy file episode assignment(s) were not backfilled`,
+      );
+    }
+
+    consolidateDuplicateFiles();
+    db.exec(`
+      DROP TABLE IF EXISTS files_v05;
+      CREATE TABLE files_v05 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL UNIQUE,
+        filename TEXT NOT NULL,
+        duration_s REAL NOT NULL,
+        fps REAL NOT NULL,
+        drop_frame INTEGER NOT NULL,
+        start_tc TEXT NOT NULL,
+        codec TEXT NOT NULL,
+        audio_channels INTEGER NOT NULL,
+        file_hash TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        added_at TEXT NOT NULL,
+        has_transcript INTEGER NOT NULL DEFAULT 0,
+        proxy_path TEXT,
+        role TEXT NOT NULL DEFAULT 'raw',
+        clip_name TEXT,
+        media_kind TEXT NOT NULL DEFAULT 'standard',
+        member_paths TEXT,
+        clip_key TEXT,
+        has_video INTEGER,
+        video_unplayable INTEGER NOT NULL DEFAULT 0,
+        discovery_failed INTEGER NOT NULL DEFAULT 0,
+        discovery_error TEXT
+      );
+      INSERT INTO files_v05 (
+        id, path, filename, duration_s, fps, drop_frame, start_tc, codec,
+        audio_channels, file_hash, status, added_at, has_transcript, proxy_path,
+        role, clip_name, media_kind, member_paths, clip_key, has_video,
+        video_unplayable, discovery_failed, discovery_error
+      )
+      SELECT
+        id, path, filename, duration_s, fps, drop_frame, start_tc, codec,
+        audio_channels, file_hash, status, added_at, has_transcript, proxy_path,
+        role, clip_name, media_kind, member_paths, clip_key, has_video,
+        video_unplayable, discovery_failed, discovery_error
+      FROM files;
+      DROP TABLE files;
+      ALTER TABLE files_v05 RENAME TO files;
+    `);
+    createFinalFileIndexes(db);
+
+    const violations: unknown = db.pragma("foreign_key_check");
+    if (!Array.isArray(violations)) {
+      throw new Error("v0.5 migration aborted: foreign key check returned invalid data");
+    }
+    const first = violations[0];
+    if (first !== undefined) {
+      if (
+        typeof first !== "object" ||
+        first === null ||
+        !("table" in first) ||
+        typeof first.table !== "string" ||
+        !("rowid" in first) ||
+        (typeof first.rowid !== "number" && first.rowid !== null) ||
+        !("parent" in first) ||
+        typeof first.parent !== "string"
+      ) {
+        throw new Error("v0.5 migration aborted: foreign key check returned invalid data");
+      }
+      throw new Error(
+        `v0.5 migration aborted: foreign key check failed for ${first.table} row ${first.rowid ?? "unknown"} referencing ${first.parent}`,
+      );
+    }
+  });
+
+  db.pragma("foreign_keys = OFF");
+  try {
+    migration();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+}
+
+function fileScopePredicate(fileIdExpression: string): string {
+  return `EXISTS (
+    SELECT 1
+    FROM episode_members
+    WHERE episode_members.file_id = ${fileIdExpression}
+      AND episode_members.episode_id = ?
+  )`;
+}
+
 // ---------- database implementation ----------
 
 export function openDatabase(dbPath: string): DailiesDB {
+  const databaseExisted = existsSync(dbPath);
   let db: BetterSqlite3Database;
   const cachedBinding = cachedBetterSqlite3Binding();
   try {
@@ -523,6 +896,7 @@ export function openDatabase(dbPath: string): DailiesDB {
     const repairedBinding = repairBetterSqlite3Binding();
     db = new Database(dbPath, repairedBinding ? { nativeBinding: repairedBinding } : undefined);
   }
+  if (databaseExisted) copyPreV05Backup(db, dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA_SQL);
@@ -535,8 +909,14 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtGetFileByHash = db.prepare<[string], FileRow>(
     "SELECT * FROM files WHERE file_hash = ? LIMIT 1",
   );
+  const stmtGetFilesByHash = db.prepare<[string], FileRow>(
+    "SELECT * FROM files WHERE file_hash = ? ORDER BY id ASC",
+  );
   const stmtGetFileByClipKey = db.prepare<[string], FileRow>(
     "SELECT * FROM files WHERE clip_key = ?",
+  );
+  const stmtGetFileByNormalizedClipKey = db.prepare<[string], FileRow>(
+    "SELECT * FROM files WHERE lower(trim(clip_key)) = ? ORDER BY id ASC LIMIT 1",
   );
   const stmtInsertFile = db.prepare<
     [
@@ -556,15 +936,14 @@ export function openDatabase(dbPath: string): DailiesDB {
       string | null,
       string | null,
       number | null,
-      number | null,
     ],
     FileRow
   >(
     `INSERT INTO files (
        path, filename, duration_s, fps, drop_frame, start_tc, codec, audio_channels, file_hash,
-       status, added_at, role, clip_name, media_kind, member_paths, clip_key, has_video, episode_id
+       status, added_at, role, clip_name, media_kind, member_paths, clip_key, has_video
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
      RETURNING *`,
   );
   const stmtUpdateFile = db.prepare<
@@ -584,14 +963,13 @@ export function openDatabase(dbPath: string): DailiesDB {
       string | null,
       string | null,
       number | null,
-      number | null,
       number,
     ],
     FileRow
   >(
     `UPDATE files SET path = ?, filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?,
        role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?, has_video = ?,
-       discovery_failed = 0, discovery_error = NULL, episode_id = ?
+       discovery_failed = 0, discovery_error = NULL
      WHERE id = ?
      RETURNING *`,
   );
@@ -601,7 +979,9 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtListFiles = db.prepare<[], FileRow>("SELECT * FROM files ORDER BY added_at DESC");
   const stmtDeleteFile = db.prepare<[number]>("DELETE FROM files WHERE id = ?");
   const stmtListFilesByEpisode = db.prepare<[number], FileRow>(
-    "SELECT * FROM files WHERE episode_id = ? ORDER BY added_at DESC",
+    `SELECT * FROM files
+     WHERE ${fileScopePredicate("files.id")}
+     ORDER BY added_at DESC`,
   );
   const stmtSetFileStatus = db.prepare<[string, number]>("UPDATE files SET status = ? WHERE id = ?");
   const stmtSetFileHasVideo = db.prepare<[number | null, number]>(
@@ -631,7 +1011,76 @@ export function openDatabase(dbPath: string): DailiesDB {
        video_unplayable = 0 WHERE id = ?`,
   );
   const stmtMarkTranscribed = db.prepare<[number]>("UPDATE files SET has_transcript = 1 WHERE id = ?");
+  const stmtGetLocationByPath = db.prepare<[string], FileLocationRow>(
+    "SELECT * FROM file_locations WHERE path = ?",
+  );
+  const stmtGetLocationById = db.prepare<[number], FileLocationRow>(
+    "SELECT * FROM file_locations WHERE id = ?",
+  );
+  const stmtListLocationsByFile = db.prepare<[number], FileLocationRow>(
+    "SELECT * FROM file_locations WHERE file_id = ? ORDER BY id ASC",
+  );
+  const stmtDeleteLocation = db.prepare<[number]>(
+    "DELETE FROM file_locations WHERE id = ?",
+  );
+  const stmtUpdateOpAtomLocation = db.prepare<
+    [string, string, string | null, string, string | null, number],
+    FileLocationRow
+  >(
+    `UPDATE file_locations
+     SET path = ?, filename = ?, clip_name = ?, role = ?, member_paths = ?
+     WHERE id = ?
+     RETURNING *`,
+  );
+  const stmtUpdateCanonicalFromLocation = db.prepare<
+    [string, string, string | null, string | null, string, number],
+    FileRow
+  >(
+    `UPDATE files
+     SET path = ?, filename = ?, clip_name = ?, member_paths = ?, role = ?
+     WHERE id = ?
+     RETURNING *`,
+  );
+  const stmtSetCanonicalRole = db.prepare<[string, number], FileRow>(
+    "UPDATE files SET role = ? WHERE id = ? RETURNING *",
+  );
+  const stmtFileIsInEpisode = db.prepare<[number, number], { found: number }>(
+    `SELECT 1 AS found
+     WHERE ${fileScopePredicate("?")}`,
+  );
 
+  function mapStoredFile(row: FileRow): MediaFile {
+    return {
+      ...mapFile(row),
+      locations: stmtListLocationsByFile.all(row.id).map(mapFileLocation),
+    };
+  }
+  const stmtUpsertCompatibilityLocation = db.prepare<
+    [number, string, string, string | null, string, string, string, string | null]
+  >(
+    `INSERT INTO file_locations (
+       file_id, path, filename, clip_name, role, folder_id, member_paths
+     )
+     VALUES (
+       ?, ?, ?, ?, ?,
+       (
+         SELECT folders.id
+         FROM folders
+         WHERE ? = folders.path
+            OR ? LIKE rtrim(folders.path, '/') || '/%'
+         ORDER BY length(folders.path) DESC, folders.id ASC
+         LIMIT 1
+       ),
+       ?
+     )
+     ON CONFLICT(path) DO UPDATE SET
+       file_id = excluded.file_id,
+       filename = excluded.filename,
+       clip_name = excluded.clip_name,
+       role = excluded.role,
+       folder_id = excluded.folder_id,
+       member_paths = excluded.member_paths`,
+  );
   // ---------- episodes ----------
 
   const stmtInsertEpisode = db.prepare<[string, string], EpisodeRow>(
@@ -641,6 +1090,39 @@ export function openDatabase(dbPath: string): DailiesDB {
     "SELECT * FROM episodes WHERE code = ?",
   );
   const stmtListEpisodes = db.prepare<[], EpisodeRow>("SELECT * FROM episodes ORDER BY code ASC");
+  const stmtGetEpisodeById = db.prepare<[number], EpisodeRow>(
+    "SELECT * FROM episodes WHERE id = ?",
+  );
+  const stmtSetEpisodeMembershipSource = db.prepare<[string, number]>(
+    "UPDATE episodes SET membership_source = ? WHERE id = ?",
+  );
+  const stmtListEpisodeEntries = db.prepare<[number], EpisodeListEntryRow>(
+    `SELECT episode_id, ordinal, raw_name, clip_name, clip_key
+     FROM episode_list_entries
+     WHERE episode_id = ?
+     ORDER BY ordinal ASC`,
+  );
+  const stmtDeleteEpisodeEntries = db.prepare<[number]>(
+    "DELETE FROM episode_list_entries WHERE episode_id = ?",
+  );
+  const stmtInsertEpisodeEntry = db.prepare<
+    [number, number, string, string, string | null]
+  >(
+    `INSERT INTO episode_list_entries (
+       episode_id, ordinal, raw_name, clip_name, clip_key
+     ) VALUES (?, ?, ?, ?, ?)`,
+  );
+  const stmtListEpisodeMemberIds = db.prepare<[number], { file_id: number }>(
+    `SELECT file_id FROM episode_members
+     WHERE episode_id = ?
+     ORDER BY file_id ASC`,
+  );
+  const stmtDeleteEpisodeMembers = db.prepare<[number]>(
+    "DELETE FROM episode_members WHERE episode_id = ?",
+  );
+  const stmtInsertEpisodeMember = db.prepare<[number, number]>(
+    "INSERT OR IGNORE INTO episode_members (episode_id, file_id) VALUES (?, ?)",
+  );
 
   // ---------- folders ----------
 
@@ -669,6 +1151,10 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtGetScene = db.prepare<[number], SceneRow>("SELECT * FROM scenes WHERE id = ?");
 
   const stmtDeleteSegments = db.prepare<[number]>("DELETE FROM transcript_segments WHERE file_id = ?");
+  const stmtDeleteWordsForFile = db.prepare<[number]>(
+    `DELETE FROM words
+     WHERE segment_id IN (SELECT id FROM transcript_segments WHERE file_id = ?)`,
+  );
   const stmtDeleteTranscriptFts = db.prepare<[number]>("DELETE FROM transcript_fts WHERE file_id = ?");
   const stmtInsertSegment = db.prepare<
     [number, number, number, string, string | null, number],
@@ -722,6 +1208,12 @@ export function openDatabase(dbPath: string): DailiesDB {
   );
   const stmtListDocuments = db.prepare<[], DocumentRow>(
     "SELECT * FROM documents ORDER BY added_at DESC",
+  );
+  const stmtCountDocuments = db.prepare<[], { count: number }>(
+    "SELECT COUNT(*) AS count FROM documents",
+  );
+  const stmtCountDocumentsByEpisode = db.prepare<[number], { count: number }>(
+    "SELECT COUNT(*) AS count FROM documents WHERE episode_id = ?",
   );
   const stmtCountDocChunks = db.prepare<[number], { count: number }>(
     "SELECT COUNT(*) AS count FROM doc_chunks WHERE doc_id = ?",
@@ -892,7 +1384,7 @@ export function openDatabase(dbPath: string): DailiesDB {
            AND newer.stage = jobs.stage
            AND newer.id > jobs.id
        )
-     WHERE files.episode_id = ?
+     WHERE ${fileScopePredicate("files.id")}
      ORDER BY files.id ASC, jobs.stage ASC`,
   );
 
@@ -918,6 +1410,12 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtGetChatMessages = db.prepare<[number], ChatMessageRow>(
     "SELECT * FROM chat_messages WHERE chat_id = ? ORDER BY id ASC",
   );
+  const stmtListStoredChatHits = db.prepare<[], { id: number; hits: string }>(
+    "SELECT id, hits FROM chat_messages WHERE hits IS NOT NULL",
+  );
+  const stmtUpdateStoredChatHits = db.prepare<[string, number]>(
+    "UPDATE chat_messages SET hits = ? WHERE id = ?",
+  );
 
   const stmtGetSetting = db.prepare<[string], { value: string }>(
     "SELECT value FROM settings WHERE key = ?",
@@ -928,13 +1426,12 @@ export function openDatabase(dbPath: string): DailiesDB {
 
   function buildSearchTranscriptsStmt(episodeId?: number) {
     const clauses: string[] = ["transcript_fts MATCH ?"];
-    if (episodeId !== undefined) clauses.push("files.episode_id = ?");
+    if (episodeId !== undefined) clauses.push(fileScopePredicate("files.id"));
     const sql = `SELECT
         transcript_fts.segment_id AS segment_id,
         transcript_fts.file_id AS file_id,
         files.filename AS filename,
         files.role AS role,
-        files.episode_id AS episode_id,
         files.fps AS fps,
         files.drop_frame AS drop_frame,
         files.start_tc AS start_tc,
@@ -957,7 +1454,6 @@ export function openDatabase(dbPath: string): DailiesDB {
        transcript_segments.file_id AS file_id,
        files.filename AS filename,
        files.role AS role,
-       files.episode_id AS episode_id,
        files.fps AS fps,
        files.drop_frame AS drop_frame,
        files.start_tc AS start_tc,
@@ -974,6 +1470,47 @@ export function openDatabase(dbPath: string): DailiesDB {
 
   const stmtGetSegmentIdsForFile = db.prepare<[number], { id: number }>(
     "SELECT id FROM transcript_segments WHERE file_id = ?",
+  );
+  const stmtNormalizeClipKeys = db.prepare(
+    `UPDATE files
+     SET clip_key = NULLIF(lower(trim(clip_key)), '')
+     WHERE clip_key IS NOT NULL`,
+  );
+  const stmtListFilesForConsolidation = db.prepare<[], ConsolidationRow>(
+    `SELECT
+       files.*,
+       (
+         (SELECT COUNT(*) FROM scenes WHERE scenes.file_id = files.id) +
+         (SELECT COUNT(*) FROM transcript_segments WHERE transcript_segments.file_id = files.id) +
+         (
+           SELECT COUNT(*)
+           FROM words
+           JOIN transcript_segments ON transcript_segments.id = words.segment_id
+           WHERE transcript_segments.file_id = files.id
+         ) +
+         (
+           SELECT COUNT(*)
+           FROM embeddings
+           JOIN transcript_segments ON transcript_segments.id = embeddings.ref_id
+           WHERE embeddings.kind = 'segment'
+             AND transcript_segments.file_id = files.id
+         ) +
+         (SELECT COUNT(*) FROM jobs WHERE jobs.file_id = files.id)
+       ) AS derived_count
+     FROM files
+     ORDER BY files.id ASC`,
+  );
+  const stmtMoveMemberships = db.prepare<[number, number]>(
+    `INSERT OR IGNORE INTO episode_members (episode_id, file_id)
+     SELECT episode_id, ?
+     FROM episode_members
+     WHERE file_id = ?`,
+  );
+  const stmtDeleteMembershipsByFile = db.prepare<[number]>(
+    "DELETE FROM episode_members WHERE file_id = ?",
+  );
+  const stmtMoveLocations = db.prepare<[number, number]>(
+    "UPDATE file_locations SET file_id = ? WHERE file_id = ?",
   );
 
   const replaceScenesTx = db.transaction((fileId: number, scenes: SceneInput[]): Scene[] => {
@@ -1027,7 +1564,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       let facts = factsByFile.get(row.id);
       if (!facts) {
         facts = {
-          file: mapFile(row),
+          file: mapStoredFile(row),
           latestJobsByStage: new Map(),
           discoveryError: row.discovery_error,
         };
@@ -1061,10 +1598,13 @@ export function openDatabase(dbPath: string): DailiesDB {
     const joins = kind === "segment"
       ? "JOIN transcript_segments ON transcript_segments.id = embeddings.ref_id JOIN files ON files.id = transcript_segments.file_id"
       : "JOIN doc_chunks ON doc_chunks.id = embeddings.ref_id JOIN documents ON documents.id = doc_chunks.doc_id";
-    const episodeColumn = kind === "segment" ? "files.episode_id" : "documents.episode_id";
     const clauses = ["embeddings.kind = ?"];
     if (scope?.episodeId !== null && scope !== undefined) {
-      clauses.push(`${episodeColumn} = ?`);
+      clauses.push(
+        kind === "segment"
+          ? fileScopePredicate("files.id")
+          : "documents.episode_id = ?",
+      );
     }
     return db.prepare<unknown[], EmbeddingRow>(
       `SELECT embeddings.kind, embeddings.ref_id, embeddings.vector
@@ -1106,16 +1646,18 @@ export function openDatabase(dbPath: string): DailiesDB {
     return statement.run(...params).changes;
   });
 
-  const clearDerivedStateTx = db.transaction((fileId: number): void => {
+  function clearDerivedState(fileId: number): void {
     stmtDeleteSegmentEmbeddingsForFile.run(fileId);
+    stmtDeleteWordsForFile.run(fileId);
     stmtDeleteTranscriptFts.run(fileId);
     stmtDeleteSegments.run(fileId);
     stmtDeleteScenes.run(fileId);
     stmtDeleteJobsForFile.run(fileId);
     stmtClearDerivedFileState.run(fileId);
-  });
+  }
+  const clearDerivedStateTx = db.transaction(clearDerivedState);
 
-  function updateExistingFile(existing: FileRow, input: FileInput): MediaFile {
+  function updateExistingFile(existing: FileRow, input: FileInput): CanonicalFile {
     const updated = stmtUpdateFile.get(
       input.path,
       input.filename,
@@ -1132,20 +1674,18 @@ export function openDatabase(dbPath: string): DailiesDB {
       input.memberPaths ? JSON.stringify(input.memberPaths) : null,
       input.clipKey ?? null,
       input.hasVideo === undefined ? existing.has_video : input.hasVideo ? 1 : 0,
-      input.episodeId ?? null,
       existing.id,
     );
     if (!updated) throw new Error(`updateFile: file ${existing.id} not found`);
     return mapFile(updated);
   }
 
-  const upsertFileTx = db.transaction((input: FileInput): MediaFile => {
+  const upsertFileTx = db.transaction((input: FileInput): CanonicalFile => {
     const role = input.role ?? "raw";
     const mediaKind = input.mediaKind ?? "standard";
     const clipName = input.clipName ?? null;
     const memberPaths = input.memberPaths ? JSON.stringify(input.memberPaths) : null;
     const clipKey = input.clipKey ?? null;
-    const episodeId = input.episodeId ?? null;
     const existing = (clipKey ? stmtGetFileByClipKey.get(clipKey) : undefined) ??
       stmtGetFileByPath.get(input.path);
 
@@ -1156,7 +1696,18 @@ export function openDatabase(dbPath: string): DailiesDB {
         // embedding state from masquerading as current content.
         clearDerivedStateTx(existing.id);
       }
-      return updateExistingFile(existing, input);
+      const updated = updateExistingFile(existing, input);
+      stmtUpsertCompatibilityLocation.run(
+        updated.id,
+        input.path,
+        input.filename,
+        clipName,
+        role,
+        input.path,
+        input.path,
+        memberPaths,
+      );
+      return updated;
     }
 
     const row = stmtInsertFile.get(
@@ -1176,9 +1727,18 @@ export function openDatabase(dbPath: string): DailiesDB {
       memberPaths,
       clipKey,
       input.hasVideo === undefined ? null : input.hasVideo ? 1 : 0,
-      episodeId,
     );
     if (!row) throw new Error("upsertFile: insert failed");
+    stmtUpsertCompatibilityLocation.run(
+      row.id,
+      input.path,
+      input.filename,
+      clipName,
+      role,
+      input.path,
+      input.path,
+      memberPaths,
+    );
     return mapFile(row);
   });
 
@@ -1189,11 +1749,12 @@ export function openDatabase(dbPath: string): DailiesDB {
         pathPrefix.endsWith("/") ||
         row.path[pathPrefix.length] === "/")
     );
+    const files = rows.map(mapStoredFile);
     for (const row of rows) {
       clearDerivedStateTx(row.id);
       stmtDeleteFile.run(row.id);
     }
-    return rows.map(mapFile);
+    return files;
   });
 
   const upsertDocumentTx = db.transaction((input: DocumentInput): DocumentRecord => {
@@ -1236,44 +1797,371 @@ export function openDatabase(dbPath: string): DailiesDB {
     return mapDocument(doc, count);
   });
 
+  const replaceEpisodeListEntriesTx = db.transaction((
+    episodeId: number,
+    entries: EpisodeListEntry[],
+  ): void => {
+    stmtDeleteEpisodeEntries.run(episodeId);
+    for (const entry of entries) {
+      stmtInsertEpisodeEntry.run(
+        episodeId,
+        entry.ordinal,
+        entry.rawName,
+        entry.clipName,
+        entry.clipKey,
+      );
+    }
+  });
+
+  const replaceEpisodeMembersTx = db.transaction((
+    episodeId: number,
+    fileIds: number[],
+  ): void => {
+    stmtDeleteEpisodeMembers.run(episodeId);
+    for (const fileId of new Set(fileIds)) {
+      stmtInsertEpisodeMember.run(episodeId, fileId);
+    }
+  });
+
+  const setEpisodeMembershipSourceAndMembersTx = db.transaction((
+    episodeId: number,
+    source: MembershipSource,
+    fileIds: number[],
+  ): void => {
+    const result = stmtSetEpisodeMembershipSource.run(source, episodeId);
+    if (result.changes === 0) throw new Error(`Episode ${episodeId} not found`);
+    replaceEpisodeMembersTx(episodeId, fileIds);
+  });
+
+  const replaceEpisodeListMembershipTx = db.transaction((
+    episodeId: number,
+    entries: EpisodeListEntry[],
+    fileIds: number[],
+  ): void => {
+    replaceEpisodeListEntriesTx(episodeId, entries);
+    setEpisodeMembershipSourceAndMembersTx(episodeId, "list", fileIds);
+  });
+
+  function storedLocationForPath(path: string): FileLocation {
+    const location = stmtGetLocationByPath.get(path);
+    if (!location) throw new Error(`File location not found: ${path}`);
+    return mapFileLocation(location);
+  }
+
+  function recomputeCanonicalRole(fileId: number): MediaFile {
+    const locations = stmtListLocationsByFile.all(fileId);
+    const role = locations.some((location) => location.role === "final") ? "final" : "raw";
+    const row = stmtSetCanonicalRole.get(role, fileId);
+    if (!row) throw new Error(`File ${fileId} not found`);
+    return mapStoredFile(row);
+  }
+
+  const promoteFileLocationTx = db.transaction((
+    fileId: number,
+    locationId: number,
+  ): MediaFile => {
+    const location = stmtGetLocationById.get(locationId);
+    if (!location || location.file_id !== fileId) {
+      throw new Error(`Location ${locationId} does not belong to file ${fileId}`);
+    }
+    const locations = stmtListLocationsByFile.all(fileId);
+    const role = locations.some((candidate) => candidate.role === "final") ? "final" : "raw";
+    const row = stmtUpdateCanonicalFromLocation.get(
+      location.path,
+      location.filename,
+      location.clip_name,
+      location.member_paths,
+      role,
+      fileId,
+    );
+    if (!row) throw new Error(`File ${fileId} not found`);
+    return mapStoredFile(row);
+  });
+
+  const registerFileLocationTx = db.transaction((
+    input: FileInput,
+  ): FileLocationRegistration => {
+    const normalizedClipKey = input.clipKey ? normalizeClipKey(input.clipKey) : null;
+    const normalizedInput: FileInput = {
+      ...input,
+      clipKey: normalizedClipKey || null,
+    };
+    const existingLocation = stmtGetLocationByPath.get(input.path);
+    if (existingLocation) {
+      const existingFile = stmtGetFileById.get(existingLocation.file_id);
+      if (!existingFile) throw new Error(`File ${existingLocation.file_id} not found`);
+      const file = updateExistingFile(existingFile, normalizedInput);
+      stmtUpsertCompatibilityLocation.run(
+        file.id,
+        input.path,
+        input.filename,
+        input.clipName ?? null,
+        input.role ?? "raw",
+        input.path,
+        input.path,
+        input.memberPaths ? JSON.stringify(input.memberPaths) : null,
+      );
+      return {
+        file: recomputeCanonicalRole(file.id),
+        location: storedLocationForPath(input.path),
+        canonicalFileCreated: false,
+      };
+    }
+
+    let canonical: FileRow | undefined;
+    if (normalizedInput.mediaKind === "opatom" && normalizedInput.clipKey) {
+      canonical = stmtGetFileByNormalizedClipKey.get(normalizedInput.clipKey);
+    } else if (normalizedInput.mediaKind !== "opatom") {
+      const inputIdentity = {
+        path: normalizedInput.path,
+        filename: normalizedInput.filename,
+        file_hash: normalizedInput.fileHash,
+      };
+      canonical = stmtGetFilesByHash
+        .all(normalizedInput.fileHash)
+        .find((candidate) =>
+          standardFilesCanConsolidate(candidate, inputIdentity).kind === "merge"
+        );
+    }
+
+    if (!canonical) {
+      const file = upsertFileTx(normalizedInput);
+      return {
+        file: recomputeCanonicalRole(file.id),
+        location: storedLocationForPath(input.path),
+        canonicalFileCreated: true,
+      };
+    }
+
+    stmtUpsertCompatibilityLocation.run(
+      canonical.id,
+      input.path,
+      input.filename,
+      input.clipName ?? null,
+      input.role ?? "raw",
+      input.path,
+      input.path,
+      input.memberPaths ? JSON.stringify(input.memberPaths) : null,
+    );
+    return {
+      file: recomputeCanonicalRole(canonical.id),
+      location: storedLocationForPath(input.path),
+      canonicalFileCreated: false,
+    };
+  });
+
+  const updateOpAtomMembersTx = db.transaction((
+    fileId: number,
+    input: FileInput,
+  ): MediaFile => {
+    const existing = stmtGetFileById.get(fileId);
+    if (!existing) throw new Error(`updateOpAtomMembers: file ${fileId} not found`);
+    if (!input.memberPaths || input.memberPaths.length === 0) {
+      throw new Error("updateOpAtomMembers: member paths are required");
+    }
+
+    const inputMembers = new Set(input.memberPaths);
+    const matchingLocations = stmtListLocationsByFile.all(fileId).filter((location) => {
+      const storedMembers = parseMemberPaths(location.member_paths);
+      if (storedMembers === null || storedMembers.length === 0) return false;
+      const storedMemberSet = new Set(storedMembers);
+      return storedMembers.every((path) => inputMembers.has(path)) ||
+        input.memberPaths?.every((path) => storedMemberSet.has(path)) === true;
+    });
+    if (matchingLocations.length !== 1) {
+      throw new Error(
+        `updateOpAtomMembers: expected one matching location, found ${matchingLocations.length}`,
+      );
+    }
+
+    const location = matchingLocations[0];
+    if (!location) throw new Error("updateOpAtomMembers: matching location not found");
+    const updatedLocation = stmtUpdateOpAtomLocation.get(
+      input.path,
+      input.filename,
+      input.clipName ?? null,
+      input.role ?? "raw",
+      JSON.stringify(input.memberPaths),
+      location.id,
+    );
+    if (!updatedLocation) {
+      throw new Error(`updateOpAtomMembers: location ${location.id} not found`);
+    }
+
+    updateExistingFile(existing, input);
+    return recomputeCanonicalRole(fileId);
+  });
+
+  const removeFileLocationTx = db.transaction((path: string): FileLocationRemoval | null => {
+    const locationRow = stmtGetLocationByPath.get(path);
+    if (!locationRow) return null;
+    const fileRow = stmtGetFileById.get(locationRow.file_id);
+    if (!fileRow) return null;
+    const removed = mapFileLocation(locationRow);
+    const deletedFile: MediaFile = {
+      ...mapFile(fileRow),
+      locations: stmtListLocationsByFile.all(fileRow.id).map(mapFileLocation),
+    };
+    stmtDeleteLocation.run(locationRow.id);
+    const remaining = stmtListLocationsByFile.all(locationRow.file_id);
+    if (remaining.length === 0) {
+      clearDerivedStateTx(locationRow.file_id);
+      stmtDeleteFile.run(locationRow.file_id);
+      return { kind: "deleted", file: deletedFile, removed };
+    }
+    if (fileRow.path === path) {
+      return {
+        kind: "promoted",
+        file: promoteFileLocationTx(locationRow.file_id, remaining[0].id),
+        removed,
+      };
+    }
+    return {
+      kind: "retained",
+      file: recomputeCanonicalRole(locationRow.file_id),
+      removed,
+    };
+  });
+
+  function consolidateDuplicateFiles(logUnavailableSizes = false): number {
+    stmtNormalizeClipKeys.run();
+    const rows = stmtListFilesForConsolidation.all();
+    const opAtomGroups = new Map<string, ConsolidationRow[]>();
+    const standardGroups: ConsolidationRow[][] = [];
+    let unavailableSizePairCount = 0;
+    for (const row of rows) {
+      if (row.media_kind === "opatom" && row.clip_key) {
+        const key = normalizeClipKey(row.clip_key);
+        const group = opAtomGroups.get(key) ?? [];
+        group.push(row);
+        opAtomGroups.set(key, group);
+        continue;
+      }
+      if (row.media_kind === "opatom") continue;
+      const group = standardGroups.find((candidate) => {
+        const decision = standardFilesCanConsolidate(candidate[0], row);
+        if (decision.kind === "size-unavailable" && logUnavailableSizes) {
+          unavailableSizePairCount += 1;
+          console.warn(
+            `[db] v0.5 migration skipped standard consolidation pair ${candidate[0].path} <> ${row.path}: ${decision.reason}`,
+          );
+        }
+        return decision.kind === "merge";
+      });
+      if (group) group.push(row);
+      else standardGroups.push([row]);
+    }
+    if (unavailableSizePairCount > 0 && logUnavailableSizes) {
+      const pairLabel = unavailableSizePairCount === 1 ? "pair" : "pairs";
+      console.warn(
+        `[db] v0.5 migration skipped ${unavailableSizePairCount} standard consolidation ${pairLabel} because file size was unavailable`,
+      );
+    }
+
+    const replacements = new Map<number, number>();
+    const groups = [...opAtomGroups.values(), ...standardGroups];
+    for (const group of groups) {
+      if (group.length < 2) continue;
+      group.sort((left, right) =>
+        Number(right.has_transcript === 1) - Number(left.has_transcript === 1) ||
+        right.derived_count - left.derived_count ||
+        left.id - right.id
+      );
+      const survivor = group[0];
+      for (const loser of group.slice(1)) {
+        stmtMoveMemberships.run(survivor.id, loser.id);
+        stmtDeleteMembershipsByFile.run(loser.id);
+        stmtMoveLocations.run(survivor.id, loser.id);
+        replacements.set(loser.id, survivor.id);
+        clearDerivedState(loser.id);
+        stmtDeleteFile.run(loser.id);
+      }
+      recomputeCanonicalRole(survivor.id);
+    }
+
+    if (replacements.size > 0) {
+      for (const row of stmtListStoredChatHits.all()) {
+        const parsed: unknown = JSON.parse(row.hits);
+        stmtUpdateStoredChatHits.run(
+          JSON.stringify(remapStoredFileIds(parsed, replacements)),
+          row.id,
+        );
+      }
+    }
+    return replacements.size;
+  }
+  const consolidateDuplicateFilesTx = db.transaction(() => consolidateDuplicateFiles());
+  try {
+    migrateLegacyFileScope(db, () => consolidateDuplicateFiles(true));
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+
   // ---------- DailiesDB implementation ----------
 
   const api: DailiesDB = {
     // files
     upsertFile(input: FileInput): MediaFile {
-      return upsertFileTx(input);
+      const file = upsertFileTx(input);
+      const row = stmtGetFileById.get(file.id);
+      if (!row) throw new Error(`File ${file.id} not found`);
+      return mapStoredFile(row);
     },
 
     getFile(id: number): MediaFile | null {
       const row = stmtGetFileById.get(id);
-      return row ? mapFile(row) : null;
+      return row ? mapStoredFile(row) : null;
     },
 
     getFileByPath(path: string): MediaFile | null {
       const row = stmtGetFileByPath.get(path);
-      return row ? mapFile(row) : null;
+      return row ? mapStoredFile(row) : null;
     },
 
     getFileByHash(hash: string): MediaFile | null {
       const row = stmtGetFileByHash.get(hash);
-      return row ? mapFile(row) : null;
+      return row ? mapStoredFile(row) : null;
     },
 
     repointFilePath(fileId: number, newPath: string, newFilename: string): MediaFile {
       const row = stmtRepointFilePath.get(newPath, newFilename, fileId);
       if (!row) throw new Error(`repointFilePath: file ${fileId} not found`);
-      return mapFile(row);
+      return mapStoredFile(row);
     },
 
     getFileByClipKey(clipKey: string): MediaFile | null {
-      const row = stmtGetFileByClipKey.get(clipKey);
-      return row ? mapFile(row) : null;
+      const row = stmtGetFileByNormalizedClipKey.get(normalizeClipKey(clipKey));
+      return row ? mapStoredFile(row) : null;
+    },
+
+    registerFileLocation(input: FileInput): FileLocationRegistration {
+      return registerFileLocationTx(input);
+    },
+
+    listFileLocations(fileId: number): FileLocation[] {
+      return stmtListLocationsByFile.all(fileId).map(mapFileLocation);
+    },
+
+    promoteFileLocation(fileId: number, locationId: number): MediaFile {
+      return promoteFileLocationTx(fileId, locationId);
+    },
+
+    removeFileLocation(path: string): FileLocationRemoval | null {
+      return removeFileLocationTx(path);
+    },
+
+    consolidateDuplicateFiles(): number {
+      return consolidateDuplicateFilesTx();
+    },
+
+    fileIsInScope(fileId: number, scope: SemanticSearchScope): boolean {
+      if (scope.episodeId === null) return stmtGetFileById.get(fileId) !== undefined;
+      return stmtFileIsInEpisode.get(fileId, scope.episodeId) !== undefined;
     },
 
     updateOpAtomMembers(fileId: number, input: FileInput): MediaFile {
-      const existing = stmtGetFileById.get(fileId);
-      if (!existing) throw new Error(`updateOpAtomMembers: file ${fileId} not found`);
-      return updateExistingFile(existing, input);
+      return updateOpAtomMembersTx(fileId, input);
     },
 
     deleteFilesUnderPath(pathPrefix: string): MediaFile[] {
@@ -1281,8 +2169,8 @@ export function openDatabase(dbPath: string): DailiesDB {
     },
 
     listFiles(episodeId?: number): MediaFile[] {
-      if (episodeId === undefined) return stmtListFiles.all().map(mapFile);
-      return stmtListFilesByEpisode.all(episodeId).map(mapFile);
+      if (episodeId === undefined) return stmtListFiles.all().map(mapStoredFile);
+      return stmtListFilesByEpisode.all(episodeId).map(mapStoredFile);
     },
 
     setFileHasVideo(id: number, hasVideo: boolean | null): void {
@@ -1337,6 +2225,49 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     listEpisodes(): Episode[] {
       return stmtListEpisodes.all().map(mapEpisode);
+    },
+
+    getEpisodeMembershipSource(episodeId: number): MembershipSource {
+      const row = stmtGetEpisodeById.get(episodeId);
+      if (!row) throw new Error(`Episode ${episodeId} not found`);
+      return mapMembershipSource(row.membership_source);
+    },
+
+    setEpisodeMembershipSource(episodeId: number, source: MembershipSource): void {
+      const result = stmtSetEpisodeMembershipSource.run(source, episodeId);
+      if (result.changes === 0) throw new Error(`Episode ${episodeId} not found`);
+    },
+
+    getEpisodeListEntries(episodeId: number): EpisodeListEntry[] {
+      return stmtListEpisodeEntries.all(episodeId).map(mapEpisodeListEntry);
+    },
+
+    replaceEpisodeListEntries(episodeId: number, entries: EpisodeListEntry[]): void {
+      replaceEpisodeListEntriesTx(episodeId, entries);
+    },
+
+    getEpisodeMemberIds(episodeId: number): number[] {
+      return stmtListEpisodeMemberIds.all(episodeId).map((row) => row.file_id);
+    },
+
+    replaceEpisodeMembers(episodeId: number, fileIds: number[]): void {
+      replaceEpisodeMembersTx(episodeId, fileIds);
+    },
+
+    setEpisodeMembershipSourceAndMembers(
+      episodeId: number,
+      source: MembershipSource,
+      fileIds: number[],
+    ): void {
+      setEpisodeMembershipSourceAndMembersTx(episodeId, source, fileIds);
+    },
+
+    replaceEpisodeListMembership(
+      episodeId: number,
+      entries: EpisodeListEntry[],
+      fileIds: number[],
+    ): void {
+      replaceEpisodeListMembershipTx(episodeId, entries, fileIds);
     },
 
     // folders
@@ -1414,7 +2345,6 @@ export function openDatabase(dbPath: string): DailiesDB {
         fileId: row.file_id,
         filename: row.filename,
         role: row.role as MediaRole,
-        episodeId: row.episode_id,
         segmentId: row.segment_id,
         startS: row.start_s,
         endS: row.end_s,
@@ -1432,7 +2362,6 @@ export function openDatabase(dbPath: string): DailiesDB {
         fileId: row.file_id,
         filename: row.filename,
         role: row.role as MediaRole,
-        episodeId: row.episode_id,
         segmentId: row.segment_id,
         startS: row.start_s,
         endS: row.end_s,
@@ -1460,6 +2389,11 @@ export function openDatabase(dbPath: string): DailiesDB {
         const { count } = stmtCountDocChunks.get(row.id) ?? { count: 0 };
         return mapDocument(row, count);
       });
+    },
+
+    countDocuments(scope: SemanticSearchScope): number {
+      if (scope.episodeId === null) return stmtCountDocuments.get()?.count ?? 0;
+      return stmtCountDocumentsByEpisode.get(scope.episodeId)?.count ?? 0;
     },
 
     searchDocuments(terms: string[], limit = 20, episodeId?: number): DocumentHit[] {

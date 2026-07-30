@@ -1,0 +1,131 @@
+{
+  "databaseClipKeys": [
+    {
+      "fileId": 1,
+      "path": "/synthetic/media/A01V01.mxf",
+      "clipKey": " urn:smpte:umid:alpha "
+    },
+    {
+      "fileId": 2,
+      "path": "/synthetic/media/B01V01.mxf",
+      "clipKey": "mob-beta"
+    },
+    {
+      "fileId": 3,
+      "path": "/synthetic/media/C01V01.mxf",
+      "clipKey": "umid-gamma"
+    },
+    {
+      "fileId": 4,
+      "path": "/synthetic/media/D01V01.mxf",
+      "clipKey": " duplicate-key "
+    },
+    {
+      "fileId": 5,
+      "path": "/synthetic/media/D01A01.mxf",
+      "clipKey": "DUPLICATE-KEY"
+    }
+  ],
+  "bins": [
+    {
+      "binPath": "synthetic/Episode 101.avb",
+      "binName": "Episode 101",
+      "records": [
+        {
+          "recordIndex": 0,
+          "binName": "Episode 101",
+          "clipName": "A001",
+          "mobType": "MasterMob",
+          "mobId": "mob-alpha",
+          "materialPackageUmid": " URN:SMPTE:UMID:ALPHA ",
+          "sourceFile": "synthetic/Episode 101.avb",
+          "error": null
+        },
+        {
+          "recordIndex": 1,
+          "binName": "Episode 101",
+          "clipName": "B001",
+          "mobType": "MasterMob",
+          "mobId": " MOB-BETA ",
+          "materialPackageUmid": null,
+          "sourceFile": "synthetic/Episode 101.avb",
+          "error": null
+        },
+        {
+          "recordIndex": 2,
+          "binName": "Episode 101",
+          "clipName": "Missing",
+          "mobType": "MasterMob",
+          "mobId": "mob-missing",
+          "materialPackageUmid": null,
+          "sourceFile": "synthetic/Episode 101.avb",
+          "error": null
+        },
+        {
+          "recordIndex": 3,
+          "binName": "Episode 101",
+          "clipName": "Duplicate",
+          "mobType": "MasterMob",
+          "mobId": "DUPLICATE-KEY",
+          "materialPackageUmid": null,
+          "sourceFile": "synthetic/Episode 101.avb",
+          "error": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "binPath": "synthetic/Episode 102.avb",
+      "binName": "Episode 102",
+      "records": [
+        {
+          "recordIndex": 0,
+          "binName": "Episode 102",
+          "clipName": "C001",
+          "mobType": "MasterMob",
+          "mobId": "not-the-key",
+          "materialPackageUmid": "UMID-GAMMA",
+          "sourceFile": "synthetic/Episode 102.avb",
+          "error": null
+        },
+        {
+          "recordIndex": 1,
+          "binName": "Episode 102",
+          "clipName": null,
+          "mobType": null,
+          "mobId": null,
+          "materialPackageUmid": null,
+          "sourceFile": "synthetic/Episode 102.avb",
+          "error": "synthetic unreadable record"
+        }
+      ],
+      "error": null
+    }
+  ],
+  "expected": {
+    "total": {
+      "bins": 2,
+      "parsedBins": 2,
+      "failedBins": 0,
+      "records": 6,
+      "eligibleRecords": 5,
+      "exactMatches": 3,
+      "noMatches": 1,
+      "ambiguousMatches": 1,
+      "errorRecords": 1,
+      "matchRate": 60.0
+    },
+    "bins": [
+      {
+        "binPath": "synthetic/Episode 101.avb",
+        "matchRate": 50.0,
+        "verdict": "stop"
+      },
+      {
+        "binPath": "synthetic/Episode 102.avb",
+        "matchRate": 100.0,
+        "verdict": "build"
+      }
+    ]
+  }
+}

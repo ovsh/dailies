@@ -1,11 +1,213 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { openDatabase } from "../src/main/db/database";
 import { parseTc } from "../src/shared/timecode";
 
 describe("db end-to-end smoke", () => {
+  it("uses membership scope and keeps one canonical file across safe duplicate locations", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-membership-"));
+    const db = openDatabase(path.join(dir, "membership.db"));
+    const firstPath = path.join(dir, "first.mov");
+    const secondPath = path.join(dir, "second.mov");
+    writeFileSync(firstPath, "same content");
+    writeFileSync(secondPath, "same content");
+    const input = {
+      path: firstPath,
+      filename: "first.mov",
+      durationS: 10,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+      codec: "prores",
+      audioChannels: 2,
+      fileHash: "same-small-hash",
+    };
+
+    const first = db.registerFileLocation(input);
+    const second = db.registerFileLocation({
+      ...input,
+      path: secondPath,
+      filename: "second.mov",
+    });
+    expect(first.canonicalFileCreated).toBe(true);
+    expect(second.canonicalFileCreated).toBe(false);
+    expect(second.file.id).toBe(first.file.id);
+    expect(db.listFileLocations(first.file.id)).toHaveLength(2);
+
+    const episode201 = db.createEpisode("201");
+    const episode202 = db.createEpisode("202");
+    db.replaceEpisodeMembers(episode201.id, [first.file.id]);
+    db.replaceEpisodeMembers(episode202.id, [first.file.id, first.file.id]);
+    db.replaceTranscript(first.file.id, [{
+      startS: 0,
+      endS: 1,
+      text: "shared canonical transcript",
+      avgConf: 1,
+      words: [],
+    }]);
+    expect(db.listFiles(episode201.id).map((file) => file.id)).toEqual([first.file.id]);
+    expect(db.listFiles(episode202.id).map((file) => file.id)).toEqual([first.file.id]);
+    expect(db.searchTranscripts(["canonical"], 40, episode201.id)).toHaveLength(1);
+    expect(db.searchTranscripts(["canonical"], 40, episode202.id)).toHaveLength(1);
+    expect(db.listPipelineFileFacts({ episodeId: episode201.id })).toHaveLength(1);
+    expect(db.listPipelineFileFacts({ episodeId: episode202.id })).toHaveLength(1);
+    expect(db.fileIsInScope(first.file.id, { episodeId: episode201.id })).toBe(true);
+    expect(db.fileIsInScope(first.file.id, { episodeId: 999 })).toBe(false);
+
+    const atomA = db.registerFileLocation({
+      ...input,
+      path: path.join(dir, "atom-a.mxf"),
+      filename: "atom-a.mxf",
+      fileHash: "atom-a",
+      mediaKind: "opatom",
+      clipKey: " UMID-ONE ",
+      memberPaths: [path.join(dir, "atom-a.mxf")],
+    });
+    const atomB = db.registerFileLocation({
+      ...input,
+      path: path.join(dir, "atom-b.mxf"),
+      filename: "atom-b.mxf",
+      fileHash: "atom-b",
+      mediaKind: "opatom",
+      clipKey: "umid-one",
+      memberPaths: [path.join(dir, "atom-b.mxf")],
+    });
+    expect(atomB.file.id).toBe(atomA.file.id);
+    expect(db.listFileLocations(atomA.file.id).map((location) => location.memberPaths)).toEqual([
+      [path.join(dir, "atom-a.mxf")],
+      [path.join(dir, "atom-b.mxf")],
+    ]);
+
+    db.upsertDocument({
+      path: path.join(dir, "episode-notes.txt"),
+      filename: "episode-notes.txt",
+      kind: "txt",
+      content: "episode notes",
+      chunks: ["episode notes"],
+      episodeId: episode201.id,
+    });
+    db.upsertDocument({
+      path: path.join(dir, "project-notes.txt"),
+      filename: "project-notes.txt",
+      kind: "txt",
+      content: "project notes",
+      chunks: ["project notes"],
+    });
+    expect(db.countDocuments({ episodeId: null })).toBe(2);
+    expect(db.countDocuments({ episodeId: episode201.id })).toBe(1);
+    expect(db.countDocuments({ episodeId: episode202.id })).toBe(0);
+
+    const promoted = db.removeFileLocation(firstPath);
+    expect(promoted?.kind).toBe("promoted");
+    expect(promoted?.file.id).toBe(first.file.id);
+    expect(db.listSegments(first.file.id)).toHaveLength(1);
+    const deleted = db.removeFileLocation(secondPath);
+    expect(deleted?.kind).toBe("deleted");
+    expect(db.getFile(first.file.id)).toBeNull();
+    db.close();
+  });
+
+  it("consolidates only safe hashes and rewrites stored chat file IDs", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-consolidate-"));
+    const db = openDatabase(path.join(dir, "consolidate.db"));
+    const addFile = (filePath: string, filename: string, fileHash: string) =>
+      db.upsertFile({
+        path: filePath,
+        filename,
+        durationS: 10,
+        fps: 24,
+        dropFrame: false,
+        startTc: "01:00:00:00",
+        codec: "prores",
+        audioChannels: 2,
+        fileHash,
+      });
+
+    const zeroAPath = path.join(dir, "zero-a.mov");
+    const zeroBPath = path.join(dir, "zero-b.mov");
+    writeFileSync(zeroAPath, "");
+    writeFileSync(zeroBPath, "");
+    const zeroA = addFile(zeroAPath, "zero-a.mov", "zero-hash");
+    const zeroB = addFile(zeroBPath, "zero-b.mov", "zero-hash");
+
+    const largeBytes = Buffer.alloc(2 * 1024 * 1024 + 1, 7);
+    const largeAPath = path.join(dir, "large-a.mov");
+    const largeBPath = path.join(dir, "large-b.mov");
+    writeFileSync(largeAPath, largeBytes);
+    writeFileSync(largeBPath, largeBytes);
+    const largeA = addFile(largeAPath, "large-a.mov", "large-different-stem-hash");
+    const largeB = addFile(largeBPath, "large-b.mov", "large-different-stem-hash");
+
+    const sameStemDirA = path.join(dir, "copy-a");
+    const sameStemDirB = path.join(dir, "copy-b");
+    mkdirSync(sameStemDirA);
+    mkdirSync(sameStemDirB);
+    const sameStemPathA = path.join(sameStemDirA, "same.mov");
+    const sameStemPathB = path.join(sameStemDirB, "same.mov");
+    writeFileSync(sameStemPathA, largeBytes);
+    writeFileSync(sameStemPathB, largeBytes);
+    const sameStemA = addFile(sameStemPathA, "same.mov", "large-same-stem-hash");
+    const sameStemB = addFile(sameStemPathB, "same.mov", "large-same-stem-hash");
+
+    const duplicatePathA = path.join(dir, "duplicate-a.mov");
+    const duplicatePathB = path.join(dir, "duplicate-b.mov");
+    writeFileSync(duplicatePathA, "duplicate");
+    writeFileSync(duplicatePathB, "duplicate");
+    const duplicateA = addFile(duplicatePathA, "duplicate-a.mov", "small-duplicate-hash");
+    const duplicateB = addFile(duplicatePathB, "duplicate-b.mov", "small-duplicate-hash");
+    db.markTranscribed(duplicateB.id);
+    const episode = db.createEpisode("301");
+    db.replaceEpisodeMembers(episode.id, [duplicateA.id]);
+    const chat = db.createChat("stored hits");
+    db.addChatMessage(chat.id, "assistant", "legacy", [{
+      fileId: duplicateA.id,
+      filename: duplicateA.filename,
+      kind: "spoken",
+      inTc: "01:00:00:00",
+      outTc: "01:00:01:00",
+      inS: 0,
+      outS: 1,
+      confidence: "high",
+    }]);
+    db.addChatMessage(chat.id, "assistant", "structured", {
+      kind: "results",
+      summary: "duplicate",
+      hits: [{
+        fileId: duplicateA.id,
+        filename: duplicateA.filename,
+        kind: "spoken",
+        inTc: "01:00:00:00",
+        outTc: "01:00:01:00",
+        inS: 0,
+        outS: 1,
+        confidence: "high",
+        segmentId: 1,
+        supportsSummary: true,
+      }],
+    });
+
+    expect(db.consolidateDuplicateFiles()).toBe(2);
+    expect(db.getFile(zeroA.id)).not.toBeNull();
+    expect(db.getFile(zeroB.id)).not.toBeNull();
+    expect(db.getFile(largeA.id)).not.toBeNull();
+    expect(db.getFile(largeB.id)).not.toBeNull();
+    expect(db.getFile(sameStemA.id)).not.toBeNull();
+    expect(db.getFile(sameStemB.id)).toBeNull();
+    expect(db.getFile(duplicateA.id)).toBeNull();
+    expect(db.getFile(duplicateB.id)).not.toBeNull();
+    expect(db.getEpisodeMemberIds(episode.id)).toEqual([duplicateB.id]);
+    const messages = db.getChatMessages(chat.id);
+    expect(messages[0]?.hits?.[0]?.fileId).toBe(duplicateB.id);
+    expect(messages[1]?.answer?.kind).toBe("results");
+    if (messages[1]?.answer?.kind === "results") {
+      expect(messages[1].answer.hits[0].fileId).toBe(duplicateB.id);
+    }
+    expect(db.consolidateDuplicateFiles()).toBe(0);
+    db.close();
+  });
+
   it("keeps chat bindings exact and scopes semantic candidates before limiting", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-db-scope-"));
     const db = openDatabase(path.join(dir, "scope.db"));
@@ -37,8 +239,8 @@ describe("db end-to-end smoke", () => {
       path: "/footage/scoped.mov",
       filename: "scoped.mov",
       fileHash: "scoped",
-      episodeId: firstEpisode.id,
     });
+    db.replaceEpisodeMembers(firstEpisode.id, [scopedFile.id]);
     db.replaceTranscript(scopedFile.id, [{
       startS: 0,
       endS: 1,
@@ -53,14 +255,15 @@ describe("db end-to-end smoke", () => {
     scopedVector[1] = 0.6;
     db.upsertEmbedding("segment", scopedSegment.id, scopedVector);
 
+    const outsideFileIds: number[] = [];
     for (let index = 0; index < 41; index += 1) {
       const file = db.upsertFile({
         ...input,
         path: `/footage/outside-${index}.mov`,
         filename: `outside-${index}.mov`,
         fileHash: `outside-${index}`,
-        episodeId: secondEpisode.id,
       });
+      outsideFileIds.push(file.id);
       db.replaceTranscript(file.id, [{
         startS: 0,
         endS: 1,
@@ -74,6 +277,7 @@ describe("db end-to-end smoke", () => {
       vector[0] = 1;
       db.upsertEmbedding("segment", segment.id, vector);
     }
+    db.replaceEpisodeMembers(secondEpisode.id, outsideFileIds);
 
     const query = new Float32Array(768).fill(0);
     query[0] = 1;
@@ -310,7 +514,7 @@ describe("db end-to-end smoke", () => {
     db.setFolderScanned(folder.id, "2026-07-02T00:00:00.000Z");
     expect(db.listFolders()[0]?.lastScannedAt).toContain("2026");
 
-    db.upsertFile({
+    const scopedFile = db.upsertFile({
       path: "/footage/A001_bear_river.mov",
       filename: "A001_bear_river.mov",
       durationS: 120,
@@ -320,12 +524,11 @@ describe("db end-to-end smoke", () => {
       codec: "prores",
       audioChannels: 2,
       fileHash: "abc123",
-      episodeId: ep.id,
     });
+    db.replaceEpisodeMembers(ep.id, [scopedFile.id]);
     expect(db.listFiles(ep.id)).toHaveLength(1);
     const scoped = db.searchTranscripts(["bears"], 40, ep.id);
     expect(scoped.length).toBeGreaterThan(0);
-    expect(scoped[0].episodeId).toBe(ep.id);
     expect(db.searchTranscripts(["bears"], 40, ep.id + 999)).toHaveLength(0);
 
     // job queue lifecycle

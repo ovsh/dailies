@@ -10,7 +10,9 @@ import type {
   ChatMessageRecord,
   ChatSummary,
   Episode,
+  EpisodeMembershipReport,
   FileDetail,
+  FileLocation,
   Job,
   MediaFile,
   MediaKind,
@@ -73,9 +75,24 @@ export const MOCK_PROJECTS: Project[] = [
 
 export const MOCK_EPISODES: Record<string, Episode[]> = {
   "duck-dynasty": [
-    { id: 201, code: "201", createdAt: new Date(Date.UTC(2026, 3, 2, 9, 5)).toISOString() },
-    { id: 202, code: "202", createdAt: new Date(Date.UTC(2026, 4, 1, 9, 5)).toISOString() },
-    { id: 203, code: "203", createdAt: new Date(Date.UTC(2026, 5, 3, 9, 5)).toISOString() },
+    {
+      id: 201,
+      code: "201",
+      createdAt: new Date(Date.UTC(2026, 3, 2, 9, 5)).toISOString(),
+      membershipSource: "folder",
+    },
+    {
+      id: 202,
+      code: "202",
+      createdAt: new Date(Date.UTC(2026, 4, 1, 9, 5)).toISOString(),
+      membershipSource: "list",
+    },
+    {
+      id: 203,
+      code: "203",
+      createdAt: new Date(Date.UTC(2026, 5, 3, 9, 5)).toISOString(),
+      membershipSource: "folder",
+    },
   ],
   "lonely-island": [],
 };
@@ -132,7 +149,6 @@ interface MockFileSeed {
   role?: MediaRole;
   clipName?: string | null;
   mediaKind?: MediaKind;
-  episodeId?: number | null;
 }
 
 const FILE_SEEDS: MockFileSeed[] = [
@@ -149,7 +165,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     hasTranscript: false,
     clipName: "A001C012_230715_BEAR RIVER WS",
     mediaKind: "opatom",
-    episodeId: 201,
   },
   {
     id: 2,
@@ -162,7 +177,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     audioChannels: 2,
     status: "ready",
     hasTranscript: false,
-    episodeId: 201,
   },
   {
     id: 3,
@@ -175,7 +189,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     audioChannels: 2,
     status: "ready",
     hasTranscript: true,
-    episodeId: 201,
   },
   {
     id: 4,
@@ -188,7 +201,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     audioChannels: 2,
     status: "ready",
     hasTranscript: true,
-    episodeId: 202,
   },
   {
     id: 5,
@@ -203,7 +215,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     hasTranscript: false,
     role: "final",
     clipName: null,
-    episodeId: 201,
   },
   {
     id: 6,
@@ -218,7 +229,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     hasTranscript: false,
     role: "final",
     clipName: null,
-    episodeId: 202,
   },
   {
     id: 7,
@@ -231,7 +241,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     audioChannels: 2,
     status: "ready",
     hasTranscript: true,
-    episodeId: 202,
   },
   {
     id: 8,
@@ -244,7 +253,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     audioChannels: 2,
     status: "processing",
     hasTranscript: false,
-    episodeId: 202,
   },
   {
     id: 9,
@@ -257,7 +265,6 @@ const FILE_SEEDS: MockFileSeed[] = [
     audioChannels: 2,
     status: "ready",
     hasTranscript: true,
-    episodeId: 203,
   },
   {
     id: 10,
@@ -270,42 +277,132 @@ const FILE_SEEDS: MockFileSeed[] = [
     audioChannels: 2,
     status: "ready",
     hasTranscript: false,
-    episodeId: null,
   },
 ];
 
-export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => ({
-  id: s.id,
-  path: `/Volumes/DAILIES_01/footage/${s.filename}`,
-  filename: s.filename,
-  durationS: s.durationS,
-  fps: s.fps,
-  dropFrame: s.dropFrame,
-  startTc: s.startTc,
-  codec: s.codec,
-  audioChannels: s.audioChannels,
-  fileHash: `sha1:${s.id.toString(16).padStart(8, "0")}mock`,
-  status: s.status,
-  addedAt: new Date(Date.UTC(2026, 6, 15 + (s.id % 5), 9, 30)).toISOString(),
-  hasTranscript: s.hasTranscript,
-  hasVideo: true,
-  // File 9 stands in for "proxy generation failed" — exercises the honest
-  // no-preview state instead of a dead player.
-  proxyPath:
-    s.id === 9
-      ? null
-      : s.status === "ready"
-        ? `/Volumes/DAILIES_01/proxies/${s.filename.replace(".mov", "_proxy.mp4")}`
-        : null,
-  episodeId: s.episodeId ?? null,
-  role: s.role ?? "raw",
-  clipName: s.clipName ?? null,
-  mediaKind: s.mediaKind ?? "standard",
-  memberPaths: null,
-  clipKey: null,
-  videoUnplayable: s.id === 9,
-  discoveryFailed: false,
-}));
+export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => {
+  const path = `/Volumes/DAILIES_01/footage/${s.filename}`;
+  const location: FileLocation = {
+    id: s.id,
+    fileId: s.id,
+    path,
+    filename: s.filename,
+    clipName: s.clipName ?? null,
+    role: s.role ?? "raw",
+    folderId: null,
+    memberPaths: null,
+  };
+  const locations = s.id === 2
+    ? [
+        location,
+        {
+          ...location,
+          id: 1_002,
+          path: `/Volumes/DAILIES_ARCHIVE/footage/${s.filename}`,
+        },
+      ]
+    : [location];
+  return {
+    id: s.id,
+    path,
+    filename: s.filename,
+    durationS: s.durationS,
+    fps: s.fps,
+    dropFrame: s.dropFrame,
+    startTc: s.startTc,
+    codec: s.codec,
+    audioChannels: s.audioChannels,
+    fileHash: `sha1:${s.id.toString(16).padStart(8, "0")}mock`,
+    status: s.status,
+    addedAt: new Date(Date.UTC(2026, 6, 15 + (s.id % 5), 9, 30)).toISOString(),
+    hasTranscript: s.hasTranscript,
+    hasVideo: true,
+    proxyPath:
+      s.id === 9
+        ? null
+        : s.status === "ready"
+          ? `/Volumes/DAILIES_01/proxies/${s.filename.replace(".mov", "_proxy.mp4")}`
+          : null,
+    role: s.role ?? "raw",
+    clipName: s.clipName ?? null,
+    mediaKind: s.mediaKind ?? "standard",
+    memberPaths: null,
+    clipKey: null,
+    videoUnplayable: s.id === 9,
+    discoveryFailed: false,
+    locations,
+  };
+});
+
+export const MOCK_EPISODE_MEMBERS = new Map<number, ReadonlySet<number>>([
+  [201, new Set([1, 2, 3, 5])],
+  [202, new Set([4, 6, 7, 8])],
+  [203, new Set([9])],
+]);
+
+export const MOCK_MEMBERSHIP_REPORTS = new Map<number, EpisodeMembershipReport>([
+  [
+    201,
+    {
+      episodeId: 201,
+      source: "folder",
+      memberCount: 4,
+      matchedCount: 4,
+      ambiguousCount: 0,
+      unmatchedCount: 0,
+      unresolvedCount: 0,
+      resolutions: [],
+    },
+  ],
+  [
+    202,
+    {
+      episodeId: 202,
+      source: "list",
+      memberCount: 4,
+      matchedCount: 1,
+      ambiguousCount: 1,
+      unmatchedCount: 1,
+      unresolvedCount: 2,
+      resolutions: [
+        {
+          kind: "matched",
+          ordinal: 0,
+          rawName: "EP102_v08_FINAL",
+          fileId: 6,
+          displayName: "EP102_v08_FINAL.mov",
+        },
+        {
+          kind: "ambiguous",
+          ordinal: 1,
+          rawName: "GUIDE INTERVIEW",
+          candidates: [
+            { fileId: 3, displayName: "A002_C003_0716_guide_interview_marsh.mov" },
+            { fileId: 4, displayName: "A002_C009_0716_guide_interview_marsh_b.mov" },
+          ],
+        },
+        {
+          kind: "unmatched",
+          ordinal: 2,
+          rawName: "MISSING_PICKUP_02",
+        },
+      ],
+    },
+  ],
+  [
+    203,
+    {
+      episodeId: 203,
+      source: "folder",
+      memberCount: 1,
+      matchedCount: 1,
+      ambiguousCount: 0,
+      unmatchedCount: 0,
+      unresolvedCount: 0,
+      resolutions: [],
+    },
+  ],
+]);
 
 // ---------- scenes ----------
 

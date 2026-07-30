@@ -57,7 +57,6 @@ const pipelineFile: MediaFile = {
   hasTranscript: true,
   hasVideo: false,
   proxyPath: null,
-  episodeId: null,
   role: "raw",
   clipName: null,
   mediaKind: "standard",
@@ -65,6 +64,16 @@ const pipelineFile: MediaFile = {
   clipKey: null,
   videoUnplayable: false,
   discoveryFailed: false,
+  locations: [{
+    id: 1,
+    fileId: 1,
+    path: "/footage/clip.mov",
+    filename: "clip.mov",
+    clipName: null,
+    role: "raw",
+    folderId: null,
+    memberPaths: null,
+  }],
 };
 
 function pipelineFacts(

@@ -32,6 +32,8 @@ function isIgnored(path: string): boolean {
 
 export interface CreateWatcherOptions {
   onFileFound(path: string): void;
+  onFileChanged(path: string): void;
+  onFileRemoved(path: string): void;
   onDocFound(path: string): void;
 }
 
@@ -59,6 +61,20 @@ export function createWatcher(opts: CreateWatcherOptions): Watcher {
       opts.onFileFound(path);
     } else if (DOC_EXTENSIONS_SET.has(ext)) {
       opts.onDocFound(path);
+    }
+  });
+
+  fsWatcher.on("change", (path: string) => {
+    if (isIgnored(path)) return;
+    if (VIDEO_EXTENSIONS.has(extname(path).toLowerCase())) {
+      opts.onFileChanged(path);
+    }
+  });
+
+  fsWatcher.on("unlink", (path: string) => {
+    if (isIgnored(path)) return;
+    if (VIDEO_EXTENSIONS.has(extname(path).toLowerCase())) {
+      opts.onFileRemoved(path);
     }
   });
 

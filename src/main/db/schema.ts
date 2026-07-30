@@ -6,7 +6,9 @@ export const SCHEMA_SQL: string = `
 CREATE TABLE IF NOT EXISTS episodes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  membership_source TEXT NOT NULL DEFAULT 'folder'
+    CHECK (membership_source IN ('folder', 'list'))
 );
 
 CREATE TABLE IF NOT EXISTS folders (
@@ -40,15 +42,42 @@ CREATE TABLE IF NOT EXISTS files (
   has_video INTEGER,
   video_unplayable INTEGER NOT NULL DEFAULT 0,
   discovery_failed INTEGER NOT NULL DEFAULT 0,
-  discovery_error TEXT,
-  episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL
+  discovery_error TEXT
 );
 
--- NOTE: indexes on files(clip_key) and files(episode_id) are created in
--- migrate() (database.ts), NOT here. On a legacy v1 database the files table
--- already exists WITHOUT those columns, so CREATE INDEX on them here would
--- throw "no such column" during db.exec(SCHEMA_SQL) — before migrate() gets a
--- chance to ALTER TABLE and add the columns — making old projects unopenable.
+CREATE TABLE IF NOT EXISTS episode_members (
+  episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  PRIMARY KEY (episode_id, file_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_episode_members_file_id
+  ON episode_members(file_id);
+
+CREATE TABLE IF NOT EXISTS episode_list_entries (
+  episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL,
+  raw_name TEXT NOT NULL,
+  clip_name TEXT NOT NULL,
+  clip_key TEXT,
+  PRIMARY KEY (episode_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS file_locations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  path TEXT NOT NULL UNIQUE,
+  filename TEXT NOT NULL,
+  clip_name TEXT,
+  role TEXT NOT NULL DEFAULT 'raw' CHECK (role IN ('raw', 'final')),
+  folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+  member_paths TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_locations_file_id
+  ON file_locations(file_id);
+CREATE INDEX IF NOT EXISTS idx_file_locations_folder_id
+  ON file_locations(folder_id);
 
 CREATE TABLE IF NOT EXISTS scenes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

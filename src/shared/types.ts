@@ -11,6 +11,93 @@ export type FileStatus = "pending" | "processing" | "ready" | "error";
 /** raw = camera media / dailies; final = exported cuts (timecode is timeline TC). */
 export type MediaRole = "raw" | "final";
 export type MediaKind = "standard" | "opatom";
+export type MembershipSource = "folder" | "list";
+
+export type ClipIdentity =
+  | { kind: "path"; path: string }
+  | { kind: "clip-key"; clipKey: string }
+  | { kind: "file-hash"; fileHash: string }
+  | { kind: "clip-name"; clipName: string };
+
+export type ClipIdentitySet = ReadonlyMap<string, ClipIdentity>;
+
+export function normalizeClipName(value: string): string {
+  return value.normalize("NFKC").trim().toLowerCase();
+}
+
+export function normalizeClipKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function clipIdentityKey(identity: ClipIdentity): string {
+  switch (identity.kind) {
+    case "path":
+      return `path:${identity.path}`;
+    case "clip-key":
+      return `clip-key:${normalizeClipKey(identity.clipKey)}`;
+    case "file-hash":
+      return `file-hash:${identity.fileHash}`;
+    case "clip-name":
+      return `clip-name:${normalizeClipName(identity.clipName)}`;
+  }
+}
+
+export interface FileLocation {
+  id: number;
+  fileId: number;
+  path: string;
+  filename: string;
+  clipName: string | null;
+  role: MediaRole;
+  folderId: number | null;
+  memberPaths: string[] | null;
+}
+
+export interface EpisodeListEntry {
+  ordinal: number;
+  rawName: string;
+  clipName: string;
+  clipKey: string | null;
+}
+
+export interface EpisodeMembershipCandidate {
+  fileId: number;
+  displayName: string;
+}
+
+interface EpisodeMembershipResolutionBase {
+  ordinal: number;
+  rawName: string;
+}
+
+export type EpisodeMembershipResolution =
+  | (EpisodeMembershipResolutionBase & {
+      kind: "matched";
+      fileId: number;
+      displayName: string;
+    })
+  | (EpisodeMembershipResolutionBase & {
+      kind: "ambiguous";
+      candidates: EpisodeMembershipCandidate[];
+    })
+  | (EpisodeMembershipResolutionBase & {
+      kind: "unmatched";
+    });
+
+export interface EpisodeMembershipReport {
+  episodeId: number;
+  source: MembershipSource;
+  memberCount: number;
+  matchedCount: number;
+  ambiguousCount: number;
+  unmatchedCount: number;
+  unresolvedCount: number;
+  resolutions: EpisodeMembershipResolution[];
+}
+
+export type ClipListInput =
+  | { kind: "file"; sourceName: string; text: string }
+  | { kind: "paste"; text: string };
 
 // ---------- projects & episodes ----------
 
@@ -27,6 +114,7 @@ export interface Episode {
   id: number;
   code: string;
   createdAt: string;
+  membershipSource: MembershipSource;
 }
 
 /** A watched folder within a project, optionally assigned to one episode. */
@@ -69,7 +157,6 @@ export interface MediaFile {
   /** Persisted probe result. Null means a legacy row has not been backfilled. */
   hasVideo: boolean | null;
   proxyPath: string | null;
-  episodeId: number | null;
   role: MediaRole;
   /** Avid OP-Atom: clip name from the MXF material package; shown instead of the atom filename. */
   clipName: string | null;
@@ -82,6 +169,7 @@ export interface MediaFile {
   videoUnplayable: boolean;
   /** Discovery could not read this file before a probe job could be created. */
   discoveryFailed: boolean;
+  locations: FileLocation[];
 }
 
 export interface Scene {
@@ -125,7 +213,6 @@ export interface FileInput {
   /** Present for newly probed media; omitted only by legacy or test callers. */
   hasVideo?: boolean;
   role?: MediaRole;
-  episodeId?: number | null;
   clipName?: string | null;
   mediaKind?: MediaKind;
   memberPaths?: string[] | null;
@@ -233,7 +320,6 @@ export interface TranscriptHit {
   fileId: number;
   filename: string;
   role: MediaRole;
-  episodeId: number | null;
   segmentId: number;
   startS: number;
   endS: number;

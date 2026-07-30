@@ -7,6 +7,7 @@
  */
 import type {
   AppSettings,
+  ChatEffort,
   ChatScope,
   ChatEvent,
   ChatMessageRecord,
@@ -90,8 +91,13 @@ export interface DailiesAPI {
   // settings (global)
   getSettings(): Promise<AppSettings>;
   setTelemetryEnabled(enabled: boolean): Promise<AppSettings>;
-  /** Selects the chat model; id must be one of CHAT_MODEL_OPTIONS. */
-  setChatModel(modelId: string): Promise<AppSettings>;
+  /**
+   * Selects the chat model (id must be one of CHAT_MODEL_OPTIONS) and,
+   * optionally, its reasoning effort (must be supported by that model).
+   * When effort is omitted the stored effort is kept and resolved against
+   * the new model (unsupported values fall back to the model's default).
+   */
+  setChatModel(modelId: string, effort?: ChatEffort): Promise<AppSettings>;
   /** Zips dailies.log, the failure list, versions, and the pipeline snapshot into Dailies Exports. */
   exportDiagnostics(): Promise<DiagnosticsExportOutcome>;
   /** Starts (or joins) the speech-model download; progress arrives via onModelProgress. */

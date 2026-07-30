@@ -21,7 +21,7 @@ import type {
   ProjectActivity,
   StructuredAgentAnswer,
 } from "../shared/types";
-import { CHAT_MODEL_OPTIONS, chatModelOption } from "../shared/types";
+import { CHAT_MODEL_OPTIONS, chatModelSelection } from "../shared/types";
 import type { DailiesDB } from "./db/types";
 import type { ProjectManager } from "./project-manager";
 import type { AppSettingsStore } from "./app-settings";
@@ -387,12 +387,14 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     const avail = checkAvailability();
     const model = settings.getWhisperModel();
     const apiKeyStatus = await getApiKeyStatus();
+    const chatSelection = chatModelSelection(settings.getChatModelId(), settings.getChatEffort());
     return {
       apiKeySet: apiKeyStatus !== "missing",
       apiKeyStatus,
       telemetryEnabled: settings.getTelemetryEnabled(),
       whisperModel: model,
-      chatModelId: chatModelOption(settings.getChatModelId()).id,
+      chatModelId: chatSelection.option.id,
+      chatEffort: chatSelection.effort,
       whisperAvailable: avail.whisper,
       whisperModelReady: findWhisperModel(model, dataDir) !== null,
       ffmpegAvailable: avail.ffmpeg,
@@ -401,11 +403,16 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
   ipcMain.handle(IPC.getSettings, () => assembleSettings());
 
-  ipcMain.handle(IPC.setChatModel, (_e, modelId: string): Promise<AppSettings> => {
-    if (!CHAT_MODEL_OPTIONS.some((option) => option.id === modelId)) {
+  ipcMain.handle(IPC.setChatModel, (_e, modelId: string, effort?: string): Promise<AppSettings> => {
+    const option = CHAT_MODEL_OPTIONS.find((o) => o.id === modelId);
+    if (!option) {
       throw new Error(`Unknown chat model: ${modelId}`);
     }
+    if (effort !== undefined && !option.efforts.some((level) => level === effort)) {
+      throw new Error(`Unsupported effort for ${modelId}: ${effort}`);
+    }
     settings.setChatModelId(modelId);
+    if (effort !== undefined) settings.setChatEffort(effort);
     return assembleSettings();
   });
 
@@ -499,7 +506,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
             embedder: createOpenRouterEmbedder(client),
             episodeId: boundEpisodeId,
             emit: (ev) => emitChatEvent({ ...ev, chatId: id, turnId }),
-            model: chatModelOption(settings.getChatModelId()),
+            model: chatModelSelection(settings.getChatModelId(), settings.getChatEffort()),
             client,
           });
           c.db.addChatMessage(id, "assistant", structuredAnswerContent(answer), answer);

@@ -1,4 +1,4 @@
-import { EMBEDDING_MODEL } from "../../shared/types";
+import { EMBEDDING_MODEL, type ChatEffort } from "../../shared/types";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -33,7 +33,7 @@ export interface ChatRequest {
   tool_choice?: "auto" | "required" | "none";
   response_format?: { type: "json_object" };
   /** OpenRouter reasoning control; ignored by models without reasoning. */
-  reasoning?: { effort: "low" | "medium" | "high" };
+  reasoning?: { effort: ChatEffort };
 }
 
 export interface ChatResponse {

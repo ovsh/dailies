@@ -29,7 +29,7 @@ import type {
   UpdaterState,
   WordTiming,
 } from "../../shared/types";
-import { chatModelOption, normalizeClipName } from "../../shared/types";
+import { chatModelSelection, normalizeClipName } from "../../shared/types";
 import {
   AGENT_STAGES,
   buildMockAnswer,
@@ -558,8 +558,9 @@ export function createMockApi(): DailiesAPI {
       return settings;
     },
 
-    async setChatModel(modelId: string) {
-      settings = { ...settings, chatModelId: chatModelOption(modelId).id };
+    async setChatModel(modelId: string, effort?: string) {
+      const selection = chatModelSelection(modelId, effort ?? settings.chatEffort);
+      settings = { ...settings, chatModelId: selection.option.id, chatEffort: selection.effort };
       return settings;
     },
 

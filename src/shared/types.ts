@@ -448,24 +448,51 @@ export type LocatorExportOutcome =
 export type ApiKeyStatus = "missing" | "connected" | "invalid" | "unavailable";
 export type ApiKeyValidationStatus = Exclude<ApiKeyStatus, "missing">;
 
-/** One user-selectable chat model (OpenRouter slug + optional reasoning effort). */
+/** OpenRouter `reasoning.effort` levels, lowest to highest. */
+export const CHAT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ChatEffort = (typeof CHAT_EFFORT_LEVELS)[number];
+
+/** Display labels for effort levels. */
+export const CHAT_EFFORT_LABELS: Record<ChatEffort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "X-High",
+  max: "Max",
+};
+
+/** One user-selectable chat model (OpenRouter slug + supported reasoning efforts). */
 export interface ChatModelOption {
   id: string;
   label: string;
-  /** OpenRouter `reasoning.effort`; omitted = no reasoning parameter sent. */
-  effort?: "low" | "medium" | "high";
+  /**
+   * Effort levels the model accepts via OpenRouter `reasoning.effort`,
+   * lowest to highest. Empty = no reasoning parameter is ever sent.
+   */
+  efforts: readonly ChatEffort[];
+  /**
+   * Effort used when none is stored. Matches the old single-preset behavior
+   * so upgrades keep sending what they sent before. Null for models with no
+   * effort levels.
+   */
+  defaultEffort: ChatEffort | null;
 }
+
+const STANDARD_EFFORTS = ["low", "medium", "high"] as const;
+/** GPT-5.6 family accepts the full range (low…max) per the OpenRouter catalog. */
+const GPT56_EFFORTS = CHAT_EFFORT_LEVELS;
 
 /** Selectable chat models, in display order. */
 export const CHAT_MODEL_OPTIONS: readonly ChatModelOption[] = [
-  { id: "x-ai/grok-4.5", label: "Grok 4.5 · High", effort: "high" },
-  { id: "google/gemini-3.6-flash", label: "Gemini 3.6 Flash" },
-  { id: "z-ai/glm-5.2", label: "GLM 5.2 · Max", effort: "high" },
-  { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol · Medium", effort: "medium" },
-  { id: "moonshotai/kimi-k3", label: "Kimi K3 · High", effort: "high" },
+  { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: GPT56_EFFORTS, defaultEffort: "max" },
+  { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: GPT56_EFFORTS, defaultEffort: "medium" },
+  { id: "x-ai/grok-4.5", label: "Grok 4.5", efforts: STANDARD_EFFORTS, defaultEffort: "high" },
+  { id: "google/gemini-3.6-flash", label: "Gemini 3.6 Flash", efforts: [], defaultEffort: null },
+  { id: "z-ai/glm-5.2", label: "GLM 5.2", efforts: STANDARD_EFFORTS, defaultEffort: "high" },
+  { id: "moonshotai/kimi-k3", label: "Kimi K3", efforts: STANDARD_EFFORTS, defaultEffort: "high" },
 ];
 
-export const DEFAULT_CHAT_MODEL_ID = "x-ai/grok-4.5";
+export const DEFAULT_CHAT_MODEL_ID = "openai/gpt-5.6-luna";
 
 /** Resolves a stored id to an option, falling back to the default. */
 export function chatModelOption(id: string | null | undefined): ChatModelOption {
@@ -474,6 +501,28 @@ export function chatModelOption(id: string | null | undefined): ChatModelOption 
     CHAT_MODEL_OPTIONS.find((option) => option.id === DEFAULT_CHAT_MODEL_ID) ??
     CHAT_MODEL_OPTIONS[0]
   );
+}
+
+/** A resolved model + effort pair, ready to be turned into request params. */
+export interface ChatModelSelection {
+  option: ChatModelOption;
+  /** Effort actually sent; null = no reasoning parameter. */
+  effort: ChatEffort | null;
+}
+
+/**
+ * Resolves stored (possibly stale/legacy) model id + effort into a valid
+ * selection. An unknown id falls back to the default model; an effort the
+ * model doesn't support (or a missing one — legacy installs stored only the
+ * combined preset id) falls back to the model's default effort.
+ */
+export function chatModelSelection(
+  id: string | null | undefined,
+  effort: string | null | undefined,
+): ChatModelSelection {
+  const option = chatModelOption(id);
+  const stored = option.efforts.find((level) => level === effort);
+  return { option, effort: stored ?? option.defaultEffort };
 }
 
 export const EMBEDDING_MODEL = "google/gemini-embedding-001";
@@ -491,6 +540,8 @@ export interface AppSettings {
   whisperModel: string;
   /** Selected chat model id; always one of CHAT_MODEL_OPTIONS. */
   chatModelId: string;
+  /** Resolved reasoning effort for the selected model; null = model takes none. */
+  chatEffort: ChatEffort | null;
   whisperAvailable: boolean;
   /** True once the speech model file is on disk (global, shared by projects). */
   whisperModelReady: boolean;

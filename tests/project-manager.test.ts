@@ -16,6 +16,8 @@ function fakeSettings(): AppSettingsStore {
     getWhisperModel: () => "large-v3-turbo",
     getChatModelId: () => null,
     setChatModelId: () => {},
+    getChatEffort: () => null,
+    setChatEffort: () => {},
     getTelemetryEnabled: () => telemetryEnabled,
     setTelemetryEnabled: (enabled: boolean) => {
       telemetryEnabled = enabled;

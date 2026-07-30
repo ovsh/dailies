@@ -1119,6 +1119,9 @@ describe("flat agent loop", () => {
     })).rejects.toThrow("404: model not found");
 
     expect(vi.mocked(client.chat).mock.calls[0]?.[0].model).toBe(chatModelOption(null).id);
+    // Default selection is GPT-5.6 Luna at max effort.
+    expect(vi.mocked(client.chat).mock.calls[0]?.[0].model).toBe("openai/gpt-5.6-luna");
+    expect(vi.mocked(client.chat).mock.calls[0]?.[0].reasoning).toEqual({ effort: "max" });
     db.close();
   });
 

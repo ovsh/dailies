@@ -9,7 +9,7 @@ import type {
   TranscriptHit,
 } from "../../shared/types";
 import { deriveSourceTimecode } from "../../shared/timecode";
-import { chatModelOption, type ChatModelOption } from "../../shared/types";
+import { chatModelSelection, type ChatModelSelection } from "../../shared/types";
 import type { DailiesDB } from "../db/types";
 import { computePipelineSnapshot } from "../pipeline/status";
 import { createOpenRouterClient } from "./openrouter-client";
@@ -36,7 +36,7 @@ export interface ChatTurnOptions {
   episodeId: number | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;
   /** Chat model to run this turn on; defaults to the app-wide default. */
-  model?: ChatModelOption;
+  model?: ChatModelSelection;
   /** Test seam; production creates a client from apiKey. */
   client?: OpenRouterClient;
 }
@@ -578,9 +578,9 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgen
     emit,
   } = opts;
   const client = opts.client ?? createOpenRouterClient(() => apiKey);
-  const model = opts.model ?? chatModelOption(null);
+  const model = opts.model ?? chatModelSelection(null, null);
   const modelParams = {
-    model: model.id,
+    model: model.option.id,
     ...(model.effort ? { reasoning: { effort: model.effort } } : {}),
   };
 

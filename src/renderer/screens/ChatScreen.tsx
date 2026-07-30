@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, mediaUrl } from "../api";
-import { CHAT_MODEL_OPTIONS, DEFAULT_CHAT_MODEL_ID } from "../../shared/types";
+import {
+  CHAT_EFFORT_LABELS,
+  CHAT_MODEL_OPTIONS,
+  chatModelOption,
+  chatModelSelection,
+  DEFAULT_CHAT_MODEL_ID,
+  type ChatEffort,
+} from "../../shared/types";
 import type {
   AgentAnswer,
   AnswerHit,
@@ -198,20 +205,45 @@ export function ChatScreen({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [chatModelId, setChatModelId] = useState(DEFAULT_CHAT_MODEL_ID);
+  const [chatEffort, setChatEffort] = useState<ChatEffort | null>(
+    chatModelOption(DEFAULT_CHAT_MODEL_ID).defaultEffort,
+  );
 
   useEffect(() => {
     api
       .getSettings()
-      .then((settings) => setChatModelId(settings.chatModelId))
+      .then((settings) => {
+        setChatModelId(settings.chatModelId);
+        setChatEffort(settings.chatEffort);
+      })
       .catch(() => {
         /* keep the default; the selector still works */
       });
   }, []);
 
   const handleModelChange = (modelId: string) => {
-    const previous = chatModelId;
-    setChatModelId(modelId);
-    api.setChatModel(modelId).catch(() => setChatModelId(previous));
+    const previousModel = chatModelId;
+    const previousEffort = chatEffort;
+    // Keep the stored effort when the new model supports it; otherwise its default.
+    const next = chatModelSelection(modelId, chatEffort);
+    setChatModelId(next.option.id);
+    setChatEffort(next.effort);
+    api.setChatModel(modelId).then(
+      (settings) => {
+        setChatModelId(settings.chatModelId);
+        setChatEffort(settings.chatEffort);
+      },
+      () => {
+        setChatModelId(previousModel);
+        setChatEffort(previousEffort);
+      },
+    );
+  };
+
+  const handleEffortChange = (effort: ChatEffort) => {
+    const previous = chatEffort;
+    setChatEffort(effort);
+    api.setChatModel(chatModelId, effort).catch(() => setChatEffort(previous));
   };
   const [toast, setToast] = useState<ToastState | null>(null);
   const [chatsLoading, setChatsLoading] = useState(true);
@@ -740,6 +772,25 @@ export function ChatScreen({
                   </option>
                 ))}
               </select>
+              {chatModelOption(chatModelId).efforts.length > 0 && (
+                <>
+                  <label className="chat-model-label" htmlFor="chat-effort-select">
+                    Effort
+                  </label>
+                  <select
+                    id="chat-effort-select"
+                    className="chat-model-select mono"
+                    value={chatEffort ?? ""}
+                    onChange={(e) => handleEffortChange(e.target.value as ChatEffort)}
+                  >
+                    {chatModelOption(chatModelId).efforts.map((level) => (
+                      <option key={level} value={level}>
+                        {CHAT_EFFORT_LABELS[level]}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
               <span>· ⌘⏎ to send</span>
             </div>
           </div>

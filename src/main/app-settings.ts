@@ -13,6 +13,7 @@ interface AppSettingsFile {
   openrouterKeyIsPlain?: boolean;
   whisperModel?: string;
   chatModelId?: string;
+  chatEffort?: string;
   telemetryEnabled?: boolean;
   telemetryInstallId?: string;
 }
@@ -33,6 +34,9 @@ function parseAppSettings(value: unknown): AppSettingsFile {
   if ("chatModelId" in value && typeof value.chatModelId === "string") {
     settings.chatModelId = value.chatModelId;
   }
+  if ("chatEffort" in value && typeof value.chatEffort === "string") {
+    settings.chatEffort = value.chatEffort;
+  }
   if ("telemetryEnabled" in value && typeof value.telemetryEnabled === "boolean") {
     settings.telemetryEnabled = value.telemetryEnabled;
   }
@@ -50,6 +54,13 @@ export interface AppSettingsStore {
   /** Raw stored id; callers resolve/validate against CHAT_MODEL_OPTIONS. */
   getChatModelId(): string | null;
   setChatModelId(id: string): void;
+  /**
+   * Raw stored reasoning effort; callers resolve/validate against the selected
+   * model's supported efforts. Null on legacy installs that stored only the
+   * combined model preset — resolution falls back to the model's default effort.
+   */
+  getChatEffort(): string | null;
+  setChatEffort(effort: string): void;
   getTelemetryEnabled(): boolean;
   setTelemetryEnabled(enabled: boolean): void;
   /** Stable anonymous install id, created on first read. */
@@ -110,6 +121,12 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
     },
     setChatModelId(id: string) {
       write({ chatModelId: id });
+    },
+    getChatEffort() {
+      return read().chatEffort ?? null;
+    },
+    setChatEffort(effort: string) {
+      write({ chatEffort: effort });
     },
     getTelemetryEnabled() {
       return read().telemetryEnabled ?? true;

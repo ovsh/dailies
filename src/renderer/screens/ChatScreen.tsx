@@ -132,6 +132,35 @@ function chatChipLabel(chat: ChatSummary, episodes: Episode[]): string {
   return episodes.find((e) => e.id === boundEpisodeId)?.code ?? "ALL";
 }
 
+// ---------- chat-history rail width ----------
+
+const CHAT_HISTORY_WIDTH_KEY = "dailies.chatHistoryWidth";
+const CHAT_HISTORY_WIDTH_DEFAULT = 216;
+const CHAT_HISTORY_WIDTH_MIN = 160;
+const CHAT_HISTORY_WIDTH_MAX = 420;
+
+function clampHistoryWidth(width: number): number {
+  return Math.min(CHAT_HISTORY_WIDTH_MAX, Math.max(CHAT_HISTORY_WIDTH_MIN, Math.round(width)));
+}
+
+function loadHistoryWidth(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(CHAT_HISTORY_WIDTH_KEY));
+    if (Number.isFinite(stored) && stored > 0) return clampHistoryWidth(stored);
+  } catch {
+    // storage unavailable; fall through to the default
+  }
+  return CHAT_HISTORY_WIDTH_DEFAULT;
+}
+
+function saveHistoryWidth(width: number): void {
+  try {
+    window.localStorage.setItem(CHAT_HISTORY_WIDTH_KEY, String(width));
+  } catch {
+    // storage unavailable; the width just won't persist
+  }
+}
+
 function messagesToTurns(messages: ChatMessageRecord[]): Turn[] {
   const historicalTurns: Turn[] = [];
   let current: Turn | null = null;
@@ -196,6 +225,9 @@ export function ChatScreen({
   const [previewTcCopied, setPreviewTcCopied] = useState(false);
   /** Files a real load attempt found has no playable path — disables their row's play button from then on. */
   const [unplayableFiles, setUnplayableFiles] = useState<Map<number, string>>(new Map());
+  const [historyWidth, setHistoryWidth] = useState(loadHistoryWidth);
+  const [historyResizing, setHistoryResizing] = useState(false);
+  const historyResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const turnCounterRef = useRef(0);
   const runningTurnIdRef = useRef<string | null>(null);
@@ -439,6 +471,38 @@ export function ChatScreen({
     setConversationLoading(false);
   }
 
+  function handleHistoryResizeStart(e: React.PointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    historyResizeRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: historyWidth };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setHistoryResizing(true);
+  }
+
+  function handleHistoryResizeMove(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = historyResizeRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    setHistoryWidth(clampHistoryWidth(drag.startWidth + (e.clientX - drag.startX)));
+  }
+
+  function handleHistoryResizeEnd(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = historyResizeRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    historyResizeRef.current = null;
+    setHistoryResizing(false);
+    setHistoryWidth((w) => {
+      saveHistoryWidth(w);
+      return w;
+    });
+  }
+
+  function handleHistoryResizeKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const next = clampHistoryWidth(historyWidth + (e.key === "ArrowRight" ? 16 : -16));
+    setHistoryWidth(next);
+    saveHistoryWidth(next);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && (e.metaKey || !e.shiftKey)) {
       e.preventDefault();
@@ -517,7 +581,7 @@ export function ChatScreen({
 
   return (
     <div className="chat-screen">
-      <aside className="chat-history" aria-label="Conversations in this scope">
+      <aside className="chat-history" aria-label="Conversations in this scope" style={{ flexBasis: historyWidth }}>
         <div className="chat-history-head">
           <span className="label">{scopeLabel} · {chatCountLabel}</span>
           <button className="chat-new label" onClick={handleNewChat} disabled={isAnswering}>
@@ -546,6 +610,21 @@ export function ChatScreen({
           )}
           {historyError && <span className="chat-history-note error mono">{historyError}</span>}
         </div>
+        <div
+          className={`chat-history-resize${historyResizing ? " dragging" : ""}`}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize conversation list"
+          aria-valuenow={historyWidth}
+          aria-valuemin={CHAT_HISTORY_WIDTH_MIN}
+          aria-valuemax={CHAT_HISTORY_WIDTH_MAX}
+          tabIndex={0}
+          onPointerDown={handleHistoryResizeStart}
+          onPointerMove={handleHistoryResizeMove}
+          onPointerUp={handleHistoryResizeEnd}
+          onPointerCancel={handleHistoryResizeEnd}
+          onKeyDown={handleHistoryResizeKeyDown}
+        />
       </aside>
 
       <div className="chat-main">
@@ -766,7 +845,8 @@ export function ChatScreen({
           min-width: 0;
         }
         .chat-history {
-          flex: 0 0 216px;
+          flex: 0 0 auto;
+          position: relative;
           min-width: 0;
           padding: 50px 10px 14px;
           border-right: 1px solid var(--panel-border);
@@ -775,6 +855,35 @@ export function ChatScreen({
           overflow: hidden;
           display: flex;
           flex-direction: column;
+        }
+        .chat-history-resize {
+          position: absolute;
+          top: 0;
+          right: -4px;
+          width: 8px;
+          height: 100%;
+          cursor: col-resize;
+          z-index: 5;
+          background: transparent;
+          touch-action: none;
+        }
+        .chat-history-resize::after {
+          content: "";
+          position: absolute;
+          top: 0;
+          left: 3px;
+          width: 2px;
+          height: 100%;
+          background: transparent;
+          transition: background var(--dur-fast, 120ms) ease;
+        }
+        .chat-history-resize:hover::after,
+        .chat-history-resize.dragging::after,
+        .chat-history-resize:focus-visible::after {
+          background: var(--accent);
+        }
+        .chat-history-resize:focus {
+          outline: none;
         }
         .chat-history-head {
           display: flex;

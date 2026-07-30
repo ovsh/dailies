@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, protocol } from "electron";
+import { app, BrowserWindow, dialog, Menu, protocol } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { IPC } from "../shared/ipc";
@@ -89,6 +89,47 @@ function buildAppMenu(checkForUpdates: () => void): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/**
+ * macOS App Translocation: launching a quarantined app straight from the DMG
+ * runs it from a randomized read-only mount under /private/var/folders/…/
+ * AppTranslocation/…, which breaks auto-update (there is no real install to
+ * replace). Detect it once at startup, log it, and offer to move the app to
+ * /Applications. Fire-and-forget — never blocks startup.
+ */
+function warnIfTranslocated(): void {
+  if (process.platform !== "darwin") return;
+  let translocated = false;
+  try {
+    translocated =
+      process.execPath.includes("/AppTranslocation/") || app.getAppPath().includes("/AppTranslocation/");
+  } catch {
+    return;
+  }
+  if (!translocated) return;
+
+  console.warn("[startup] app is running translocated (likely from the DMG); auto-update will not work", {
+    execPath: process.execPath,
+  });
+
+  void dialog
+    .showMessageBox({
+      type: "warning",
+      message: "Dailies is running from the disk image",
+      detail: "Updates can't install from here. Move Dailies to the Applications folder and run it from there.",
+      buttons: ["Move to Applications", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    .then(({ response }) => {
+      if (response !== 0) return;
+      try {
+        app.moveToApplicationsFolder();
+      } catch (err) {
+        console.error("[startup] moveToApplicationsFolder failed:", err);
+      }
+    });
+}
+
 function createWindow(): BrowserWindow {
   const w = new BrowserWindow({
     width: 1480,
@@ -145,11 +186,24 @@ void app.whenReady().then(async () => {
   } catch {
     // no log yet
   }
+  // Plain objects/arrays are JSON-serialized so structured log calls like
+  // console.warn("[db] semantic search", { … }) don't collapse to
+  // "[object Object]" in the file log.
+  const serializeLogArg = (a: unknown): string => {
+    if (a instanceof Error) return `${a.message}\n${a.stack ?? ""}`;
+    if (typeof a === "object" && a !== null) {
+      try {
+        return JSON.stringify(a) ?? String(a);
+      } catch {
+        // circular or otherwise unserializable — fall back to String()
+        return String(a);
+      }
+    }
+    return String(a);
+  };
   const logLine = (level: string, args: unknown[]) => {
     try {
-      const text = args
-        .map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ""}` : String(a)))
-        .join(" ");
+      const text = args.map(serializeLogArg).join(" ");
       const line = `${new Date().toISOString()} [${level}] ${text}\n`;
       fs.appendFileSync(logFile, line);
       logBytes += Buffer.byteLength(line);
@@ -189,6 +243,7 @@ void app.whenReady().then(async () => {
 
   createWindow();
   updater.start();
+  warnIfTranslocated();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

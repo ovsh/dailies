@@ -56,6 +56,27 @@ Dailies' specifics:
 The `digital-lane` notarytool profile is per-team and already set up — no
 first-run credential step. Never handle Apple ID passwords.
 
+## Telemetry (from 0.5.3)
+
+Always-on log shipping for installs with the toggle on. The app streams
+its log lines to `https://dailies-telemetry.vercel.app/api/ingest`
+(Vercel project `dailies-telemetry`, team digitalpro; source in
+`infra/telemetry/`). Read a day's logs:
+`/api/dump?token=<DAILIES_INGEST_TOKEN>&day=YYYY-MM-DD`.
+
+- The endpoint URL and token bake into the main bundle at build time
+  from `DAILIES_TELEMETRY_URL` / `DAILIES_TELEMETRY_TOKEN`. A dist run
+  WITHOUT both env vars ships a silent build — export them before
+  `npm run dist`. The token is `DAILIES_INGEST_TOKEN` in
+  `infra/telemetry/.env.local` (gitignored; refresh with
+  `npx vercel env pull --environment production` in that directory).
+- Never commit the token — this repo is public.
+- Dev builds (no env vars) send nothing. Verify a release build with
+  `grep -c dailies-telemetry dist-electron/main/index.cjs` (want 1).
+- Blob store `dailies-logs-3` holds the batches (public-by-URL blobs,
+  token-gated endpoints). No retention policy yet — add cleanup before
+  any wide rollout.
+
 ## Marketing screenshots
 
 Real app, real data only. `scripts/recapture-two.mjs` recaptures the two

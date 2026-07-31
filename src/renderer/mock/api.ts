@@ -3,6 +3,7 @@
  */
 import type { ClipListImportBlocked, DailiesAPI } from "../../shared/ipc";
 import type {
+  AppSettings,
   ClipListInput,
   EpisodeMembershipReport,
   MembershipSource,
@@ -158,13 +159,44 @@ if (typeof window !== "undefined") {
   };
 }
 
+/**
+ * The mock's stand-in for app-settings.json: keeps the chat model selection
+ * across browser reloads. Stored raw; resolution happens on load.
+ */
+const MOCK_CHAT_MODEL_KEY = "dailies-mock-chat-model";
+
+function loadStoredChatModel(): Pick<AppSettings, "chatModelId" | "chatEffort"> | null {
+  try {
+    const raw = window.localStorage.getItem(MOCK_CHAT_MODEL_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const id =
+      "chatModelId" in parsed && typeof parsed.chatModelId === "string" ? parsed.chatModelId : null;
+    const effort =
+      "chatEffort" in parsed && typeof parsed.chatEffort === "string" ? parsed.chatEffort : null;
+    const selection = chatModelSelection(id, effort);
+    return { chatModelId: selection.option.id, chatEffort: selection.effort };
+  } catch {
+    return null;
+  }
+}
+
+function storeChatModel(chatModelId: string, chatEffort: AppSettings["chatEffort"]): void {
+  try {
+    window.localStorage.setItem(MOCK_CHAT_MODEL_KEY, JSON.stringify({ chatModelId, chatEffort }));
+  } catch {
+    /* storage unavailable — selection lasts for the session only */
+  }
+}
+
 export function createMockApi(): DailiesAPI {
   const listeners = new Set<Listener>();
   const projectUpdateListeners = new Set<() => void>();
   const indexUpdateListeners = new Set<(update: IndexUpdate) => void>();
   let indexRevision = 0;
   let nextChatId = MOCK_CHATS.length + 1;
-  let settings = { ...MOCK_SETTINGS };
+  let settings = { ...MOCK_SETTINGS, ...loadStoredChatModel() };
 
   // Mutable in-memory copies so add/remove/rescan/create operations persist for the session.
   const projects: Project[] = MOCK_PROJECTS.map((p) => ({ ...p }));
@@ -561,6 +593,7 @@ export function createMockApi(): DailiesAPI {
     async setChatModel(modelId: string, effort?: string) {
       const selection = chatModelSelection(modelId, effort ?? settings.chatEffort);
       settings = { ...settings, chatModelId: selection.option.id, chatEffort: selection.effort };
+      storeChatModel(settings.chatModelId, settings.chatEffort);
       return settings;
     },
 

@@ -72,13 +72,13 @@ describe("app settings", () => {
     expect(selection.effort).toBe("medium"); // the old "GPT-5.6 Sol · Medium" preset
   });
 
-  it("defaults new installs to GPT-5.6 Luna at max effort", () => {
+  it("defaults new installs to DeepSeek V4 Flash at high effort", () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "dailies-app-settings-"));
     const settings = createAppSettings(dataDir);
     const selection = chatModelSelection(settings.getChatModelId(), settings.getChatEffort());
-    expect(selection.option.id).toBe("openai/gpt-5.6-luna");
+    expect(selection.option.id).toBe("deepseek/deepseek-v4-flash-0731");
     expect(selection.option.id).toBe(DEFAULT_CHAT_MODEL_ID);
-    expect(selection.effort).toBe("max");
+    expect(selection.effort).toBe("high");
   });
 
   it("clamps an effort the selected model does not support", () => {

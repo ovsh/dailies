@@ -482,8 +482,17 @@ const STANDARD_EFFORTS = ["low", "medium", "high"] as const;
 /** GPT-5.6 family accepts the full range (low…max) per the OpenRouter catalog. */
 const GPT56_EFFORTS = CHAT_EFFORT_LEVELS;
 
+/** DeepSeek V4 Flash accepts only high/xhigh; xhigh maps to max reasoning. */
+const DEEPSEEK_V4_FLASH_EFFORTS = ["high", "xhigh"] as const;
+
 /** Selectable chat models, in display order. */
 export const CHAT_MODEL_OPTIONS: readonly ChatModelOption[] = [
+  {
+    id: "deepseek/deepseek-v4-flash-0731",
+    label: "DeepSeek V4 Flash",
+    efforts: DEEPSEEK_V4_FLASH_EFFORTS,
+    defaultEffort: "high",
+  },
   { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: GPT56_EFFORTS, defaultEffort: "max" },
   { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: GPT56_EFFORTS, defaultEffort: "medium" },
   { id: "x-ai/grok-4.5", label: "Grok 4.5", efforts: STANDARD_EFFORTS, defaultEffort: "high" },
@@ -492,7 +501,7 @@ export const CHAT_MODEL_OPTIONS: readonly ChatModelOption[] = [
   { id: "moonshotai/kimi-k3", label: "Kimi K3", efforts: STANDARD_EFFORTS, defaultEffort: "high" },
 ];
 
-export const DEFAULT_CHAT_MODEL_ID = "openai/gpt-5.6-luna";
+export const DEFAULT_CHAT_MODEL_ID = "deepseek/deepseek-v4-flash-0731";
 
 /** Resolves a stored id to an option, falling back to the default. */
 export function chatModelOption(id: string | null | undefined): ChatModelOption {

@@ -1,40 +1,40 @@
 import { put } from "@vercel/blob";
-
-export const config = { runtime: "edge" };
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 const MAX_BODY_BYTES = 512 * 1024;
 
-export default async function handler(req: Request): Promise<Response> {
+export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   if (req.method !== "POST") {
-    return new Response("method not allowed", { status: 405 });
+    res.status(405).send("method not allowed");
+    return;
   }
-  const token = req.headers.get("x-dailies-token");
-  if (!token || token !== process.env["DAILIES_INGEST_TOKEN"]) {
-    return new Response("unauthorized", { status: 401 });
-  }
-
-  const raw = await req.text();
-  if (raw.length > MAX_BODY_BYTES) {
-    return new Response("payload too large", { status: 413 });
+  const token = req.headers["x-dailies-token"];
+  if (typeof token !== "string" || token !== process.env["DAILIES_INGEST_TOKEN"]) {
+    res.status(401).send("unauthorized");
+    return;
   }
 
-  let batch: { installId?: string };
-  try {
-    batch = JSON.parse(raw) as { installId?: string };
-  } catch {
-    return new Response("invalid json", { status: 400 });
+  const length = Number(req.headers["content-length"] ?? 0);
+  if (!Number.isFinite(length) || length > MAX_BODY_BYTES) {
+    res.status(413).send("payload too large");
+    return;
   }
-  const installId = typeof batch.installId === "string"
-    ? batch.installId.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 64)
+
+  // The runtime has already parsed the JSON body (content-type json).
+  const batch: unknown = req.body;
+  if (batch === null || typeof batch !== "object") {
+    res.status(400).send("invalid json");
+    return;
+  }
+  const rawInstallId = (batch as { installId?: unknown }).installId;
+  const installId = typeof rawInstallId === "string"
+    ? rawInstallId.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 64)
     : "unknown";
 
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
   const key = `events/${day}/${now.getTime()}-${installId}.json`;
-  await put(key, raw, { access: "public", contentType: "application/json" });
+  await put(key, JSON.stringify(batch), { access: "public", contentType: "application/json" });
 
-  return new Response(JSON.stringify({ ok: true }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
+  res.status(200).json({ ok: true });
 }

@@ -704,7 +704,9 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgen
         try {
           content = await executeTool(name, args);
         } catch (err) {
-          content = `error: ${err instanceof Error ? err.message : String(err)}`;
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[agents] tool ${name} failed: ${message}`);
+          content = `error: ${message}`;
         }
         messages.push({ role: "tool", tool_call_id: call.id, content });
       }
@@ -735,6 +737,8 @@ export async function runChatTurn(opts: ChatTurnOptions): Promise<StructuredAgen
     }
     return { kind: "empty", coverage: scopedCoverage(db, episodeId) };
   } catch (err) {
-    throw new Error(describeError(err));
+    const described = describeError(err);
+    console.warn(`[agents] chat failed: ${described}`);
+    throw new Error(described);
   }
 }

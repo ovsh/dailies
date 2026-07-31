@@ -1042,7 +1042,7 @@ export function JobsSettingsScreen({
             <div className="panel-body">
               <h2 className="display panel-title">Usage data</h2>
               <p className="jobs-hint mono" style={{ marginTop: 0, marginBottom: 14 }}>
-                When usage-data sharing is on, Dailies may send questions, answers, clip names, file names, and error reports to the developer to help fix problems. This version sends nothing automatically — use Export diagnostics to share a report by hand.
+                When usage-data sharing is on, Dailies sends activity logs to the developer to help fix problems: error reports, job events, clip names, and file names, with an anonymous install and session id. It never sends your media, audio, or transcripts. Turn it off to stop sending immediately.
               </p>
               <div className="trans-row">
                 <span className="trans-name">Usage data</span>

@@ -10,6 +10,7 @@ import { registerIpcHandlers } from "./ipc-handlers";
 import { buildMediaResponse, parseMediaRequestPath } from "./media-protocol";
 import { createWindowRef } from "./window-ref";
 import { createUpdater } from "./updater";
+import { createTelemetryShipper, type TelemetryShipper } from "./telemetry";
 
 /**
  * When the app is launched from Finder/Dock (rather than a terminal), the
@@ -201,6 +202,7 @@ void app.whenReady().then(async () => {
     }
     return String(a);
   };
+  let telemetry: TelemetryShipper | null = null;
   const logLine = (level: string, args: unknown[]) => {
     try {
       const text = args.map(serializeLogArg).join(" ");
@@ -208,6 +210,7 @@ void app.whenReady().then(async () => {
       fs.appendFileSync(logFile, line);
       logBytes += Buffer.byteLength(line);
       rotateLogIfNeeded();
+      telemetry?.enqueue(level, text);
     } catch {
       // never let logging break the app
     }
@@ -222,6 +225,11 @@ void app.whenReady().then(async () => {
   process.on("unhandledRejection", (reason) => logLine("unhandledRejection", [reason]));
 
   const settings = createAppSettings(dataDir);
+  telemetry = createTelemetryShipper({
+    isEnabled: () => settings.getTelemetryEnabled(),
+    installId: settings.getTelemetryInstallId(),
+  });
+  console.info(`[telemetry] session ${telemetry.sessionId}`);
   let indexRevision = 0;
   const manager = createProjectManager({
     dataDir,
@@ -253,6 +261,7 @@ void app.whenReady().then(async () => {
 
   app.on("before-quit", () => {
     void manager.closeCurrent();
+    void telemetry?.flushNow();
   });
 });
 

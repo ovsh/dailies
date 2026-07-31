@@ -20,8 +20,9 @@
     "test": "vitest run --root .",
     "e2e:onboarding": "node scripts/e2e-onboarding.mjs",
     "rebuild": "node scripts/manage-better-sqlite3.mjs electron --force",
+    "finalize:mac": "node scripts/finalize-mac-release.mjs",
     "predist": "npm run icon:mac && npm run native:electron",
-    "dist": "npm run build:renderer && npm run build:main && electron-builder --mac"
+    "dist": "npm run build:renderer && npm run build:main && electron-builder --mac --publish never"
   },
   "build": {
     "appId": "com.dailies.app",

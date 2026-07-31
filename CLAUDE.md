@@ -49,7 +49,9 @@ Dailies' specifics:
   needs the shared profile: `APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist`
   (hardened runtime is on in `package.json → build.mac`, `notarize: true`).
 - It does NOT notarize the DMG. Submit and staple that yourself afterward,
-  then verify the mounted app with `spctl` before shipping.
+  then run `npm run finalize:mac` to rebuild both blockmaps and
+  `latest-mac.yml` from the final bytes. Verify the mounted app with `spctl`
+  before shipping.
 - Nested Mach-O under `asarUnpack` (ffmpeg/ffprobe/whisper) is the usual cause
   of an `Invalid` notarization — check each with `codesign -dv`.
 

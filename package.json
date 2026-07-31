@@ -1,7 +1,7 @@
 {
   "name": "dailies",
   "productName": "Dailies",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "description": "Chat with your footage. Local indexing, agent search, Avid-native export.",
   "main": "dist-electron/main/index.cjs",
@@ -10,6 +10,7 @@
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "build:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:ffmpeg-static --external:ffprobe-static --external:electron-updater --define:__DAILIES_TELEMETRY_URL__=\"\\\"$DAILIES_TELEMETRY_URL\\\"\" --define:__DAILIES_TELEMETRY_TOKEN__=\"\\\"$DAILIES_TELEMETRY_TOKEN\\\"\" --outfile=dist-electron/main/index.cjs && esbuild src/preload/index.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload/index.cjs",
+    "icon:mac": "node scripts/generate-app-icon.mjs",
     "native:node": "node scripts/manage-better-sqlite3.mjs node",
     "native:electron": "node scripts/manage-better-sqlite3.mjs electron",
     "predev": "npm run native:electron",
@@ -19,7 +20,7 @@
     "test": "vitest run --root .",
     "e2e:onboarding": "node scripts/e2e-onboarding.mjs",
     "rebuild": "node scripts/manage-better-sqlite3.mjs electron --force",
-    "predist": "npm run native:electron",
+    "predist": "npm run icon:mac && npm run native:electron",
     "dist": "npm run build:renderer && npm run build:main && electron-builder --mac"
   },
   "build": {
@@ -40,6 +41,7 @@
     ],
     "mac": {
       "category": "public.app-category.video",
+      "icon": "build/icon.icns",
       "target": [
         {
           "target": "dmg",
@@ -97,6 +99,7 @@
     "electron": "^43.0.0",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.1",
+    "png2icons": "^2.0.1",
     "typescript": "^6.0.3",
     "vite": "^8.1.3",
     "vitest": "^4.1.9",

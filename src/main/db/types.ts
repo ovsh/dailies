@@ -4,6 +4,7 @@
  */
 import type {
   AnswerHit,
+  ChatModelStamp,
   ChatScope,
   Episode,
   EpisodeListEntry,
@@ -151,7 +152,12 @@ export interface DailiesDB {
   // job queue
   enqueueJob(fileId: number, stage: JobStage): void;
   hasActiveJob(fileId: number, stage: JobStage): boolean;
-  claimNextJob(): Job | null;
+  /**
+   * Claims the highest-priority queued job (search-first stage order, FIFO
+   * within a stage). Pass excludeStage to skip a stage whose concurrency cap
+   * is currently full.
+   */
+  claimNextJob(excludeStage?: JobStage): Job | null;
   completeJob(jobId: number): void;
   /** Non-terminal pause while an external prerequisite is unavailable. */
   waitJob(jobId: number, reason: string): void;
@@ -188,6 +194,7 @@ export interface DailiesDB {
     role: "user" | "assistant",
     content: string,
     answer?: AnswerHit[] | StructuredAgentAnswer | null,
+    model?: ChatModelStamp | null,
   ): ChatMessageRecord;
   getChatMessages(chatId: number): ChatMessageRecord[];
 

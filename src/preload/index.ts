@@ -77,6 +77,7 @@ const api: DailiesAPI = {
   exportHits: (kind: ExportKind, items: ExportItem[]) =>
     ipcRenderer.invoke(IPC.exportHits, kind, items),
   getPipelineSnapshot: (scope: ChatScope) => ipcRenderer.invoke(IPC.getPipelineSnapshot, scope),
+  getPipelineProgress: (scope: ChatScope) => ipcRenderer.invoke(IPC.getPipelineProgress, scope),
   getProjectActivities: () => ipcRenderer.invoke(IPC.getProjectActivities),
   retryPipelineFailures: (fileIds: number[]) => ipcRenderer.invoke(IPC.retryPipelineFailures, fileIds),
   exportPipelineFailures: (scope: ChatScope) => ipcRenderer.invoke(IPC.exportPipelineFailures, scope),

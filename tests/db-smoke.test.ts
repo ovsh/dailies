@@ -575,6 +575,18 @@ describe("db end-to-end smoke", () => {
       answer: emptyAnswer,
     });
 
+    // model stamp round-trips for tracing which model produced an answer
+    db.addChatMessage(chat.id, "assistant", "stamped", null, { id: "x-ai/grok-4.5", effort: "high" });
+    expect(db.getChatMessages(chat.id).at(-1)?.model).toEqual({ id: "x-ai/grok-4.5", effort: "high" });
+    // a model with no reasoning effort stores a null effort, not a dropped stamp
+    db.addChatMessage(chat.id, "assistant", "no effort", null, { id: "google/gemini-3.6-flash", effort: null });
+    expect(db.getChatMessages(chat.id).at(-1)?.model).toEqual({ id: "google/gemini-3.6-flash", effort: null });
+    // user messages carry no model
+    expect(msgs[0].model).toBeUndefined();
+    // the chat summary tracks its most recent stamped model for the rail
+    expect(db.getChat(chat.id)?.model).toEqual({ id: "google/gemini-3.6-flash", effort: null });
+    expect(db.listChats().find((c) => c.id === chat.id)?.model).toEqual({ id: "google/gemini-3.6-flash", effort: null });
+
     // roles + hit hydration
     expect(spoken[0].role).toBe("raw");
     const hydrated = db.getTranscriptHit(spoken[0].segmentId);

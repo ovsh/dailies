@@ -6,6 +6,7 @@ import {
   CHAT_MODEL_OPTIONS,
   chatModelOption,
   chatModelSelection,
+  chatModelStampLabel,
   DEFAULT_CHAT_MODEL_ID,
   type ChatEffort,
 } from "../../shared/types";
@@ -13,6 +14,7 @@ import type {
   AgentAnswer,
   AnswerHit,
   ChatMessageRecord,
+  ChatModelStamp,
   ChatSummary,
   Episode,
   EpisodeMembershipReport,
@@ -30,6 +32,7 @@ import { HitCard } from "../components/HitCard";
 import { Toast } from "../components/Toast";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { runIpc } from "../lib/async";
+import { chatIdForQuestion, filterChats, type ChatQuestionMode } from "../lib/chat-history";
 import { isAudioOnly } from "../lib/media";
 
 interface ChatScreenProps {
@@ -66,6 +69,8 @@ interface Turn {
   question: string;
   activity: ActivityEvent[];
   answer: AgentAnswer | StructuredAgentAnswer | null;
+  /** The model that produced the answer; null until it arrives or for legacy history. */
+  model: ChatModelStamp | null;
   error: string | null;
   pending: boolean;
 }
@@ -139,12 +144,26 @@ function chatChipLabel(chat: ChatSummary, episodes: Episode[]): string {
   return episodes.find((e) => e.id === boundEpisodeId)?.code ?? "ALL";
 }
 
+function chatTitleWithMatch(title: string, query: string): ReactNode {
+  if (!query) return title;
+  const start = title.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+  if (start < 0) return title;
+  return (
+    <>
+      {title.slice(0, start)}
+      <mark className="chat-history-match">{title.slice(start, start + query.length)}</mark>
+      {title.slice(start + query.length)}
+    </>
+  );
+}
+
 // ---------- chat-history rail width ----------
 
 const CHAT_HISTORY_WIDTH_KEY = "dailies.chatHistoryWidth";
 const CHAT_HISTORY_WIDTH_DEFAULT = 216;
 const CHAT_HISTORY_WIDTH_MIN = 160;
 const CHAT_HISTORY_WIDTH_MAX = 420;
+const CHAT_QUESTION_MODE_KEY = "dailies.chatQuestionMode";
 
 function clampHistoryWidth(width: number): number {
   return Math.min(CHAT_HISTORY_WIDTH_MAX, Math.max(CHAT_HISTORY_WIDTH_MIN, Math.round(width)));
@@ -168,6 +187,22 @@ function saveHistoryWidth(width: number): void {
   }
 }
 
+function loadChatQuestionMode(): ChatQuestionMode {
+  try {
+    return window.localStorage.getItem(CHAT_QUESTION_MODE_KEY) === "new-chat" ? "new-chat" : "continue";
+  } catch {
+    return "continue";
+  }
+}
+
+function saveChatQuestionMode(mode: ChatQuestionMode): void {
+  try {
+    window.localStorage.setItem(CHAT_QUESTION_MODE_KEY, mode);
+  } catch {
+    // storage unavailable; the preference just won't persist
+  }
+}
+
 function messagesToTurns(messages: ChatMessageRecord[]): Turn[] {
   const historicalTurns: Turn[] = [];
   let current: Turn | null = null;
@@ -179,12 +214,14 @@ function messagesToTurns(messages: ChatMessageRecord[]): Turn[] {
         question: message.content,
         activity: [],
         answer: null,
+        model: null,
         error: null,
         pending: false,
       };
       historicalTurns.push(current);
     } else if (current && current.answer === null) {
       current.answer = message.answer ?? { prose: message.content, hits: message.hits ?? [] };
+      current.model = message.model ?? null;
     }
   }
 
@@ -202,6 +239,8 @@ export function ChatScreen({
 }: ChatScreenProps) {
   const [chatId, setChatId] = useState<number | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [chatSearch, setChatSearch] = useState("");
+  const [chatQuestionMode, setChatQuestionMode] = useState<ChatQuestionMode>(loadChatQuestionMode);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [chatModelId, setChatModelId] = useState(DEFAULT_CHAT_MODEL_ID);
@@ -260,6 +299,7 @@ export function ChatScreen({
   const [historyWidth, setHistoryWidth] = useState(loadHistoryWidth);
   const [historyResizing, setHistoryResizing] = useState(false);
   const historyResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const chatSearchRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const turnCounterRef = useRef(0);
   const runningTurnIdRef = useRef<string | null>(null);
@@ -349,6 +389,17 @@ export function ChatScreen({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [previewOpen, closePreview]);
 
+  useEffect(() => {
+    function focusChatSearch(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLocaleLowerCase() !== "f") return;
+      e.preventDefault();
+      chatSearchRef.current?.focus();
+      chatSearchRef.current?.select();
+    }
+    window.addEventListener("keydown", focusChatSearch);
+    return () => window.removeEventListener("keydown", focusChatSearch);
+  }, []);
+
   const refreshChats = useCallback(async () => {
     setChatsLoading(true);
     try {
@@ -423,6 +474,7 @@ export function ChatScreen({
     setChatId(null);
     setTurns([]);
     setInput("");
+    setChatSearch("");
     setHistoryError(null);
     setConversationLoading(false);
     closePreview();
@@ -436,7 +488,9 @@ export function ChatScreen({
           prev.map((t) => (t.id === turnId ? { ...t, activity: [...t.activity, { agent: ev.agent, status: ev.status }] } : t)),
         );
       } else if (ev.type === "answer") {
-        setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, answer: ev.answer } : t)));
+        setTurns((prev) =>
+          prev.map((t) => (t.id === turnId ? { ...t, answer: ev.answer, model: ev.model ?? t.model } : t)),
+        );
       } else if (ev.type === "error") {
         setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, error: ev.message, pending: false } : t)));
         if (runningTurnIdRef.current === turnId) runningTurnIdRef.current = null;
@@ -459,11 +513,31 @@ export function ChatScreen({
     setInput("");
 
     const turnId = `${Date.now()}-${++turnCounterRef.current}`;
+    const pendingTurn: Turn = {
+      id: turnId,
+      question: text,
+      activity: [],
+      answer: null,
+      model: null,
+      error: null,
+      pending: true,
+    };
+    const targetChatId = chatIdForQuestion(chatQuestionMode, chatId);
     runningTurnIdRef.current = turnId;
-    setTurns((prev) => [...prev, { id: turnId, question: text, activity: [], answer: null, error: null, pending: true }]);
+    if (chatQuestionMode === "new-chat") {
+      historyGenerationRef.current += 1;
+      closePreview();
+      setChatId(null);
+      setChatSearch("");
+      setHistoryError(null);
+      setConversationLoading(false);
+      setTurns([pendingTurn]);
+    } else {
+      setTurns((prev) => [...prev, pendingTurn]);
+    }
 
     try {
-      const res = await api.sendChatMessage(chatId, text, episodeId, turnId);
+      const res = await api.sendChatMessage(targetChatId, text, episodeId, turnId);
       setChatId(res.chatId);
       void refreshChats();
     } catch (err) {
@@ -499,8 +573,17 @@ export function ChatScreen({
     setChatId(null);
     setTurns([]);
     setInput("");
+    setChatSearch("");
     setHistoryError(null);
     setConversationLoading(false);
+  }
+
+  function handleChatQuestionModeToggle() {
+    setChatQuestionMode((current) => {
+      const next = current === "continue" ? "new-chat" : "continue";
+      saveChatQuestionMode(next);
+      return next;
+    });
   }
 
   function handleHistoryResizeStart(e: React.PointerEvent<HTMLDivElement>) {
@@ -595,6 +678,11 @@ export function ChatScreen({
   const activeEpisode = episodeId === null ? null : episodes.find((e) => e.id === episodeId) ?? null;
   const scopeLabel = activeEpisode ? `Episode ${activeEpisode.code}` : "All Episodes";
   const chatCountLabel = `${chats.length} ${chats.length === 1 ? "chat" : "chats"}`;
+  const visibleChats = filterChats(chats, chatSearch);
+  const normalizedChatSearch = chatSearch.trim();
+  const chatSearchResultLabel = normalizedChatSearch
+    ? `${visibleChats.length} ${visibleChats.length === 1 ? "matching chat" : "matching chats"}`
+    : `${chats.length} ${chats.length === 1 ? "chat" : "chats"} in this scope`;
   const partialCoverage =
     coverage !== null && coverage.totalFiles > 0 && coverage.pendingFiles + coverage.failedFiles > 0;
   const coverageBannerText = coverage
@@ -620,8 +708,37 @@ export function ChatScreen({
             New chat
           </button>
         </div>
+        <div className="chat-history-search">
+          <svg className="chat-history-search-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="8.5" cy="8.5" r="5.5" />
+            <path d="m12.5 12.5 4 4" />
+          </svg>
+          <input
+            ref={chatSearchRef}
+            className="chat-history-search-input"
+            type="search"
+            aria-label="Search chats"
+            placeholder="Search chats"
+            value={chatSearch}
+            onChange={(e) => setChatSearch(e.target.value)}
+          />
+          {chatSearch && (
+            <button
+              type="button"
+              className="chat-history-search-clear mono"
+              aria-label="Clear chat search"
+              onClick={() => {
+                setChatSearch("");
+                chatSearchRef.current?.focus();
+              }}
+            >
+              ×
+            </button>
+          )}
+        </div>
+        <span className="chat-history-search-result mono">{chatSearchResultLabel}</span>
         <div className="chat-history-list">
-          {chats.map((chat) => (
+          {visibleChats.map((chat) => (
             <button
               key={chat.id}
               className={`chat-history-item${chat.id === chatId ? " active" : ""}`}
@@ -629,9 +746,14 @@ export function ChatScreen({
               disabled={isAnswering}
               aria-current={chat.id === chatId ? "page" : undefined}
             >
-              <span className="chat-history-title">{chat.title}</span>
+              <span className="chat-history-title">{chatTitleWithMatch(chat.title, normalizedChatSearch)}</span>
               <span className="chat-history-meta">
                 <span className="chat-history-chip mono">{chatChipLabel(chat, episodes)}</span>
+                {chat.model && (
+                  <span className="chat-history-model mono" title={chatModelStampLabel(chat.model)}>
+                    {chatModelOption(chat.model.id).label}
+                  </span>
+                )}
                 <span className="chat-history-date mono">{formatChatDate(chat.createdAt)}</span>
               </span>
             </button>
@@ -639,6 +761,9 @@ export function ChatScreen({
           {chatsLoading && chats.length === 0 && <span className="chat-history-note mono">Loading…</span>}
           {!chatsLoading && chats.length === 0 && !historyError && (
             <span className="chat-history-note mono">No chats in this scope yet.</span>
+          )}
+          {!chatsLoading && chats.length > 0 && visibleChats.length === 0 && !historyError && (
+            <span className="chat-history-note mono">No chats match "{normalizedChatSearch}".</span>
           )}
           {historyError && <span className="chat-history-note error mono">{historyError}</span>}
         </div>
@@ -726,15 +851,22 @@ export function ChatScreen({
                 {turn.error && <p className="turn-error mono">{turn.error}</p>}
 
                 {turn.answer && (
-                  <TurnAnswer
-                    answer={toDisplayAnswer(turn.answer)}
-                    onPlay={(hit, returnFocusId) => void openPreview(hit, returnFocusId)}
-                    activePreviewKey={activePreviewKey}
-                    unplayableFiles={unplayableFiles}
-                    onExportLocators={handleExportLocators}
-                    onExportSuccess={showLocatorExportToast}
-                    onLegacyExport={(hits) => void handleLegacyExport(hits)}
-                  />
+                  <>
+                    {turn.model && (
+                      <span className="label turn-answer-model" title="Model that produced this answer">
+                        {chatModelStampLabel(turn.model)}
+                      </span>
+                    )}
+                    <TurnAnswer
+                      answer={toDisplayAnswer(turn.answer)}
+                      onPlay={(hit, returnFocusId) => void openPreview(hit, returnFocusId)}
+                      activePreviewKey={activePreviewKey}
+                      unplayableFiles={unplayableFiles}
+                      onExportLocators={handleExportLocators}
+                      onExportSuccess={showLocatorExportToast}
+                      onLegacyExport={(hits) => void handleLegacyExport(hits)}
+                    />
+                  </>
                 )}
               </div>
             ))}
@@ -792,6 +924,19 @@ export function ChatScreen({
                 </>
               )}
               <span>· ⌘⏎ to send</span>
+              <div className="chat-question-mode">
+                <span id="chat-question-mode-label">One question per chat</span>
+                <button
+                  type="button"
+                  className="chat-question-mode-switch"
+                  role="switch"
+                  aria-checked={chatQuestionMode === "new-chat"}
+                  aria-labelledby="chat-question-mode-label"
+                  onClick={handleChatQuestionModeToggle}
+                >
+                  <span className="chat-question-mode-knob" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -972,12 +1117,66 @@ export function ChatScreen({
           color: var(--ink-faint);
           cursor: default;
         }
+        .chat-history-search {
+          position: relative;
+          flex: 0 0 auto;
+          margin-top: 8px;
+        }
+        .chat-history-search-icon {
+          position: absolute;
+          top: 50%;
+          left: 9px;
+          width: 14px;
+          height: 14px;
+          transform: translateY(-50%);
+          fill: none;
+          stroke: var(--ink-dimmer);
+          stroke-width: 1.6;
+          stroke-linecap: round;
+          pointer-events: none;
+        }
+        .chat-history-search-input {
+          width: 100%;
+          height: 34px;
+          padding: 7px 30px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          border-radius: 1px;
+          box-shadow: var(--bevel-in);
+          color: var(--ink);
+          font-size: 12px;
+        }
+        .chat-history-search-input::placeholder {
+          color: var(--ink-faint);
+        }
+        .chat-history-search-input::-webkit-search-cancel-button {
+          display: none;
+        }
+        .chat-history-search-clear {
+          position: absolute;
+          top: 4px;
+          right: 4px;
+          width: 26px;
+          height: 26px;
+          padding: 0;
+          background: transparent;
+          border: 0;
+          color: var(--ink-dimmer);
+          font-size: 14px;
+        }
+        .chat-history-search-result {
+          min-height: 20px;
+          padding: 3px 2px 2px;
+          color: var(--ink-dimmer);
+          font-size: 9px;
+          line-height: 1.5;
+        }
         .chat-history-list {
           flex: 1;
           display: flex;
           flex-direction: column;
           gap: 1px;
-          margin-top: 8px;
+          margin-top: 0;
           padding: 4px;
           background: var(--ground-card);
           border: 1px solid var(--chrome-lo);
@@ -1014,23 +1213,40 @@ export function ChatScreen({
           color: inherit;
           font-size: 11.5px;
         }
+        .chat-history-match {
+          background: var(--select-hit);
+          color: var(--ink);
+        }
         .chat-history-meta {
           display: flex;
           align-items: center;
           gap: 6px;
         }
         .chat-history-chip {
+          flex: 0 0 auto;
           border: 1px solid currentColor;
           border-radius: 2px;
           padding: 0 4px;
           font-size: 9px;
           color: var(--ink-dimmer);
         }
+        .chat-history-model {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          color: var(--accent);
+          font-size: 9px;
+        }
         .chat-history-date {
+          flex: 0 0 auto;
+          margin-left: auto;
+          padding-left: 6px;
           color: var(--ink-dimmer);
           font-size: 9px;
         }
         .chat-history-item.active .chat-history-chip,
+        .chat-history-item.active .chat-history-model,
         .chat-history-item.active .chat-history-date {
           color: var(--select-ink);
           opacity: 0.7;
@@ -1137,6 +1353,12 @@ export function ChatScreen({
           display: block;
           margin-bottom: 6px;
         }
+        .turn-answer-model {
+          display: block;
+          margin-bottom: 6px;
+          color: var(--accent);
+          font-variant-numeric: tabular-nums;
+        }
         .turn-question p {
           font-size: 16px;
           color: var(--ink);
@@ -1228,11 +1450,53 @@ export function ChatScreen({
         .chat-input-hint {
           display: flex;
           align-items: center;
+          flex-wrap: wrap;
           gap: 6px;
           font-size: 10px;
           color: var(--ink-dimmer);
           margin: 10px 0 0;
           user-select: none;
+        }
+        .chat-question-mode {
+          margin-left: auto;
+          padding-left: 10px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          border-left: 1px solid var(--chrome-lo);
+          color: var(--ink);
+          font-size: 10px;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+        .chat-question-mode-switch {
+          position: relative;
+          width: 32px;
+          height: 18px;
+          flex: 0 0 32px;
+          padding: 0;
+          background: var(--ground);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 9px;
+          box-shadow: var(--bevel-in);
+        }
+        .chat-question-mode-switch[aria-checked="true"] {
+          background: var(--accent);
+          border-color: var(--accent-dim);
+        }
+        .chat-question-mode-knob {
+          position: absolute;
+          top: 2px;
+          left: 2px;
+          width: 12px;
+          height: 12px;
+          background: var(--ground-card);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 50%;
+          box-shadow: var(--bevel-out);
+        }
+        .chat-question-mode-switch[aria-checked="true"] .chat-question-mode-knob {
+          left: 16px;
         }
         .chat-model-label {
           text-transform: uppercase;

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">Dailies app icon</title>
+  <desc id="description">A steel media bin with a selected clip row and a red locator.</desc>
+
+  <rect x="76" y="90" width="872" height="872" rx="190" fill="#17191b" opacity="0.28"/>
+  <rect x="64" y="64" width="896" height="896" rx="198" fill="#c7cbce" stroke="#5c6165" stroke-width="16"/>
+  <path d="M252 88H772C864 88 936 160 936 252V772" fill="none" stroke="#eceeef" stroke-width="14" stroke-linecap="round" opacity="0.9"/>
+  <path d="M772 936H252C160 936 88 864 88 772V252" fill="none" stroke="#74797d" stroke-width="14" stroke-linecap="round" opacity="0.92"/>
+
+  <rect x="184" y="230" width="664" height="584" rx="24" fill="#17191b" opacity="0.28"/>
+  <rect x="168" y="206" width="664" height="584" rx="24" fill="#f4f5f6" stroke="#17191b" stroke-width="18"/>
+
+  <path d="M192 215H808A15 15 0 0 1 823 230V344H177V230A15 15 0 0 1 192 215Z" fill="#c7cbce"/>
+  <path d="M177 344H823" stroke="#17191b" stroke-width="18"/>
+  <rect x="218" y="250" width="366" height="24" fill="#74797d"/>
+  <rect x="218" y="292" width="286" height="18" fill="#8a9096"/>
+  <rect x="690" y="248" width="98" height="62" rx="31" fill="#c94038" stroke="#a83329" stroke-width="10"/>
+
+  <rect x="177" y="353" width="646" height="140" fill="#17191b"/>
+  <rect x="218" y="390" width="378" height="28" fill="#f4f5f6"/>
+  <rect x="218" y="443" width="286" height="20" fill="#c7cbce"/>
+  <rect x="680" y="394" width="108" height="24" fill="#f4f5f6"/>
+  <rect x="680" y="445" width="80" height="18" fill="#c7cbce"/>
+
+  <rect x="177" y="493" width="646" height="140" fill="#e9ebec"/>
+  <rect x="218" y="530" width="334" height="28" fill="#17191b"/>
+  <rect x="218" y="583" width="244" height="20" fill="#74797d"/>
+  <rect x="680" y="534" width="108" height="24" fill="#17191b"/>
+  <rect x="680" y="585" width="80" height="18" fill="#74797d"/>
+
+  <rect x="177" y="633" width="646" height="148" fill="#f4f5f6"/>
+  <rect x="218" y="670" width="398" height="28" fill="#17191b"/>
+  <rect x="218" y="723" width="300" height="20" fill="#74797d"/>
+  <rect x="680" y="674" width="108" height="24" fill="#17191b"/>
+  <rect x="680" y="725" width="80" height="18" fill="#74797d"/>
+</svg>

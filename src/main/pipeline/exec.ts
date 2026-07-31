@@ -4,6 +4,7 @@
  * a nonzero exit code is resolved so callers can decide how to handle it.
  */
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 export interface RunOptions {
   cwd?: string;
@@ -49,12 +50,20 @@ export function run(bin: string, args: string[], opts?: RunOptions): Promise<Run
       }, opts.timeoutMs);
     }
 
+    // Decoding each chunk on its own mangles every multi-byte character that
+    // straddles a chunk boundary into U+FFFD — which is how accented filenames
+    // and ffmpeg's own "·"/"°" turn into mojibake in the messages built from
+    // this output. StringDecoder holds a partial sequence back until the rest
+    // of it arrives; end() flushes whatever is still pending.
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
+      stdout += stdoutDecoder.write(chunk);
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
+      stderr += stderrDecoder.write(chunk);
     });
 
     child.on("error", (err) => {
@@ -68,6 +77,8 @@ export function run(bin: string, args: string[], opts?: RunOptions): Promise<Run
       if (settled) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
       resolve({ stdout, stderr, code, signal, timedOut });
     });
   });

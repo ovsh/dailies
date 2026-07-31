@@ -33,6 +33,10 @@ const RETRY_BASE_MS = 250;
 const MAX_SYSTEMIC_RETRIES = 8;
 const SYSTEMIC_RETRY_BASE_MS = 2_000;
 const MAX_RETRY_DELAY_MS = 60_000;
+// Embed jobs parked because the box was offline: nothing else wakes them, so
+// re-open them on a slow timer. If the link is still down the handler parks
+// them again, which costs one failed request a minute.
+const OFFLINE_RECHECK_MS = 60_000;
 const SHUTDOWN_TIMEOUT_MS = 15_000;
 const EVENT_LOOP_PROBE_MS = 100;
 
@@ -68,6 +72,11 @@ export class PipelineBudget {
 
   get limit(): number {
     return this.concurrency;
+  }
+
+  /** True while the dedicated transcribe cap is fully occupied. */
+  get transcribeAtCapacity(): boolean {
+    return this.transcribeInFlight >= this.maxTranscribeConcurrency;
   }
 
   acquire(stage: Job["stage"]): boolean {
@@ -185,7 +194,7 @@ interface QueueActivity {
 
 export type StopMode = "drain" | "abort";
 
-type StageOutcome = "fulfilled" | "retry-scheduled" | "failed" | "aborted";
+type StageOutcome = "fulfilled" | "retry-scheduled" | "parked" | "failed" | "aborted";
 
 type QueueDiagnostic =
   | {
@@ -264,6 +273,7 @@ export function createQueue(opts: QueueOptions): JobQueue {
     transcribeInFlight: 0,
   };
   let waitingForPermit: { jobId: number; startedAt: number } | null = null;
+  let lastOfflineRecheck = 0;
   const inFlightJobs = new Map<Promise<void>, AbortController>();
 
   function logActivity(diagnostic: QueueDiagnostic): void {
@@ -326,6 +336,23 @@ export function createQueue(opts: QueueOptions): JobQueue {
     return isTransientError(err);
   }
 
+  /**
+   * The machine could not reach the network at all — DNS, connect, or a dropped
+   * socket — as opposed to OpenRouter answering with an error. Node reports the
+   * whole class as a bare "fetch failed" with the real cause nested inside it.
+   */
+  function isOfflineError(err: unknown): boolean {
+    if (err instanceof OpenRouterApiError) return false;
+    let text = "";
+    let cause: unknown = err;
+    for (let depth = 0; depth < 4 && cause; depth += 1) {
+      text += cause instanceof Error ? ` ${cause.name} ${cause.message}` : ` ${String(cause)}`;
+      cause = (cause as { cause?: unknown }).cause;
+    }
+    return /fetch failed|enotfound|eai_again|econnrefused|econnreset|enetdown|enetunreach|ehostunreach|socket hang up/i
+      .test(text);
+  }
+
   async function runJob(job: Job, signal: AbortSignal): Promise<void> {
     const startedAt = Date.now();
     const stopEventLoopDelayProbe = startEventLoopDelayProbe();
@@ -354,6 +381,12 @@ export function createQueue(opts: QueueOptions): JobQueue {
         }
         db.retryJob(job.id, message);
         outcome = "retry-scheduled";
+      } else if (job.stage === "embed" && isOfflineError(err)) {
+        // Neither the file's fault nor OpenRouter's — the box is offline. Park
+        // it like a missing API key, so a dropped link overnight does not need
+        // the user to hunt down 3700 files and press Retry.
+        db.waitJob(job.id, "Waiting for a network connection to reach OpenRouter");
+        outcome = "parked";
       } else {
         db.failJob(job.id, message);
         if (STAGE_POLICY[job.stage].failureImpact === "degrade-video") {
@@ -416,9 +449,17 @@ export function createQueue(opts: QueueOptions): JobQueue {
 
   function kick(): void {
     if (!running) return;
+    if (Date.now() - lastOfflineRecheck >= OFFLINE_RECHECK_MS) {
+      lastOfflineRecheck = Date.now();
+      if (db.requeueWaitingJobs(["embed"]) > 0) scheduleUpdate();
+    }
 
     while (activity.inFlightCount < budget.limit) {
-      const job = db.claimNextJob();
+      // While both whisper slots are busy, claim past the transcribe backlog
+      // so the remaining slots keep doing proxy/scenes work.
+      const job = db.claimNextJob(
+        budget.transcribeAtCapacity ? "transcribe" : undefined,
+      );
       if (!job) break;
       activity.queuedClaims += 1;
       const alreadyWaiting = waitingForPermit?.jobId === job.id;

@@ -10,6 +10,7 @@ import { cachedBetterSqlite3Binding, repairBetterSqlite3Binding } from "./native
 import { usesFullContentHash } from "../file-hash";
 import type {
   AnswerHit,
+  ChatModelStamp,
   ChatScope,
   ChatMessageRecord,
   ChatSummary,
@@ -38,7 +39,7 @@ import type {
   WordTiming,
   MembershipSource,
 } from "../../shared/types";
-import { normalizeClipKey, normalizeClipName } from "../../shared/types";
+import { CHAT_EFFORT_LEVELS, normalizeClipKey, normalizeClipName } from "../../shared/types";
 import { sourceTcAtOffset } from "../../shared/timecode";
 import type {
   DailiesDB,
@@ -170,6 +171,9 @@ interface ChatRow {
   title: string;
   created_at: string;
   episode_id: number | null;
+  /** Model of the chat's most recent stamped answer; present only on list/get queries. */
+  model_id?: string | null;
+  model_effort?: string | null;
 }
 
 interface ChatMessageRow {
@@ -178,6 +182,8 @@ interface ChatMessageRow {
   role: string;
   content: string;
   hits: string | null;
+  model_id: string | null;
+  model_effort: string | null;
   created_at: string;
 }
 
@@ -376,12 +382,21 @@ function mapJob(row: JobRow): Job {
   };
 }
 
+/** Rebuilds a model stamp from stored columns, dropping any effort the catalog no longer knows. */
+function modelStampFrom(modelId: string | null | undefined, modelEffort: string | null | undefined): ChatModelStamp | undefined {
+  if (!modelId) return undefined;
+  const effort = CHAT_EFFORT_LEVELS.find((level) => level === modelEffort) ?? null;
+  return { id: modelId, effort };
+}
+
 function mapChat(row: ChatRow): ChatSummary {
+  const model = modelStampFrom(row.model_id, row.model_effort);
   return {
     id: row.id,
     title: row.title,
     createdAt: row.created_at,
     episodeId: row.episode_id,
+    ...(model ? { model } : {}),
   };
 }
 
@@ -402,6 +417,7 @@ function mapChatMessage(row: ChatMessageRow): ChatMessageRecord {
       answer = parsed.answer as StructuredAgentAnswer;
     }
   }
+  const model = modelStampFrom(row.model_id, row.model_effort);
   return {
     id: row.id,
     chatId: row.chat_id,
@@ -409,6 +425,7 @@ function mapChatMessage(row: ChatMessageRow): ChatMessageRecord {
     content: row.content,
     hits,
     ...(answer ? { answer } : {}),
+    ...(model ? { model } : {}),
     createdAt: row.created_at,
   };
 }
@@ -690,6 +707,10 @@ function migrate(db: BetterSqlite3Database): void {
   ]);
   addMissingColumns(db, "documents", [
     ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
+  ]);
+  addMissingColumns(db, "chat_messages", [
+    ["model_id", "TEXT"],
+    ["model_effort", "TEXT"],
   ]);
   db.exec(`
     CREATE TABLE IF NOT EXISTS episode_members (
@@ -1295,8 +1316,24 @@ export function openDatabase(dbPath: string): DailiesDB {
        WHERE file_id = @fileId AND stage = @stage AND status IN ('queued', 'running', 'waiting')
      )`,
   );
+  // Search-first claim order: the cheap stages that end in a searchable
+  // transcript (probe → audio → transcribe → embed) always outrank the heavy
+  // playback stages (proxy → scenes); FIFO by id within a stage. The
+  // excluding-stage variant lets the queue skip past transcribe jobs while
+  // the transcribe concurrency cap is full instead of idling every slot.
+  const claimOrderSql = `ORDER BY CASE stage
+       WHEN 'probe' THEN 0
+       WHEN 'audio' THEN 1
+       WHEN 'transcribe' THEN 2
+       WHEN 'embed' THEN 3
+       WHEN 'proxy' THEN 4
+       ELSE 5
+     END, id ASC LIMIT 1`;
   const stmtClaimNextJobId = db.prepare<[], { id: number }>(
-    "SELECT id FROM jobs WHERE status = 'queued' ORDER BY id ASC LIMIT 1",
+    `SELECT id FROM jobs WHERE status = 'queued' ${claimOrderSql}`,
+  );
+  const stmtClaimNextJobIdExcludingStage = db.prepare<[string], { id: number }>(
+    `SELECT id FROM jobs WHERE status = 'queued' AND stage <> ? ${claimOrderSql}`,
   );
   const stmtHasActiveJob = db.prepare<[number, string], { count: number }>(
     `SELECT COUNT(*) AS count FROM jobs
@@ -1388,23 +1425,32 @@ export function openDatabase(dbPath: string): DailiesDB {
      ORDER BY files.id ASC, jobs.stage ASC`,
   );
 
+  // Each chat row carries its most recent stamped model, so the rail can label a
+  // whole conversation by the model that last answered in it.
+  const chatWithModel = `
+    SELECT
+      chats.*,
+      (SELECT model_id FROM chat_messages WHERE chat_id = chats.id AND model_id IS NOT NULL ORDER BY id DESC LIMIT 1) AS model_id,
+      (SELECT model_effort FROM chat_messages WHERE chat_id = chats.id AND model_id IS NOT NULL ORDER BY id DESC LIMIT 1) AS model_effort
+    FROM chats`;
+
   const stmtInsertChat = db.prepare<[string, string, number | null], ChatRow>(
     "INSERT INTO chats (title, created_at, episode_id) VALUES (?, ?, ?) RETURNING *",
   );
-  const stmtGetChat = db.prepare<[number], ChatRow>("SELECT * FROM chats WHERE id = ?");
-  const stmtListChats = db.prepare<[], ChatRow>("SELECT * FROM chats ORDER BY created_at DESC");
+  const stmtGetChat = db.prepare<[number], ChatRow>(`${chatWithModel} WHERE chats.id = ?`);
+  const stmtListChats = db.prepare<[], ChatRow>(`${chatWithModel} ORDER BY chats.created_at DESC`);
   const stmtListChatsByEpisode = db.prepare<[number], ChatRow>(
-    "SELECT * FROM chats WHERE episode_id = ? ORDER BY created_at DESC",
+    `${chatWithModel} WHERE chats.episode_id = ? ORDER BY chats.created_at DESC`,
   );
   const stmtListChatsWithoutEpisode = db.prepare<[], ChatRow>(
-    "SELECT * FROM chats WHERE episode_id IS NULL ORDER BY created_at DESC",
+    `${chatWithModel} WHERE chats.episode_id IS NULL ORDER BY chats.created_at DESC`,
   );
   const stmtInsertChatMessage = db.prepare<
-    [number, string, string, string | null, string],
+    [number, string, string, string | null, string | null, string | null, string],
     ChatMessageRow
   >(
-    `INSERT INTO chat_messages (chat_id, role, content, hits, created_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO chat_messages (chat_id, role, content, hits, model_id, model_effort, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      RETURNING *`,
   );
   const stmtGetChatMessages = db.prepare<[number], ChatMessageRow>(
@@ -1614,8 +1660,10 @@ export function openDatabase(dbPath: string): DailiesDB {
     );
   }
 
-  const claimNextJobTx = db.transaction((): Job | null => {
-    const next = stmtClaimNextJobId.get();
+  const claimNextJobTx = db.transaction((excludeStage?: JobStage): Job | null => {
+    const next = excludeStage
+      ? stmtClaimNextJobIdExcludingStage.get(excludeStage)
+      : stmtClaimNextJobId.get();
     if (!next) return null;
     const claimed = stmtClaimJob.get(new Date().toISOString(), next.id);
     if (!claimed) return null;
@@ -2527,8 +2575,8 @@ export function openDatabase(dbPath: string): DailiesDB {
       return (stmtHasActiveJob.get(fileId, stage)?.count ?? 0) > 0;
     },
 
-    claimNextJob(): Job | null {
-      return claimNextJobTx();
+    claimNextJob(excludeStage?: JobStage): Job | null {
+      return claimNextJobTx(excludeStage);
     },
 
     completeJob(jobId: number): void {
@@ -2618,6 +2666,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       role: "user" | "assistant",
       content: string,
       answer?: AnswerHit[] | StructuredAgentAnswer | null,
+      model?: ChatModelStamp | null,
     ): ChatMessageRecord {
       const storedPayload: AnswerHit[] | StoredStructuredAnswerEnvelope | null =
         answer === null || answer === undefined
@@ -2630,6 +2679,8 @@ export function openDatabase(dbPath: string): DailiesDB {
         role,
         content,
         storedPayload ? JSON.stringify(storedPayload) : null,
+        model?.id ?? null,
+        model?.effort ?? null,
         new Date().toISOString(),
       );
       if (!row) throw new Error("addChatMessage: insert failed");

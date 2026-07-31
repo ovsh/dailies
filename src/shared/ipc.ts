@@ -27,6 +27,7 @@ import type {
   MediaRole,
   MembershipSource,
   LocatorExportOutcome,
+  PipelineProgress,
   PipelineSnapshot,
   ProjectActivity,
   Project,
@@ -122,6 +123,8 @@ export interface DailiesAPI {
   // export (current project)
   exportHits(kind: ExportKind, items: ExportItem[]): Promise<ExportWriteOutcome>;
   getPipelineSnapshot(scope: ChatScope): Promise<PipelineSnapshot>;
+  /** Cheap per-tick status for the indexing panel; no failure reasons or id lists. */
+  getPipelineProgress(scope: ChatScope): Promise<PipelineProgress>;
   getProjectActivities(): Promise<ProjectActivity[]>;
   retryPipelineFailures(fileIds: number[]): Promise<PipelineSnapshot>;
   exportPipelineFailures(scope: ChatScope): Promise<
@@ -184,6 +187,7 @@ export const IPC = {
   chatEvent: "dailies:chatEvent",
   exportHits: "dailies:exportHits",
   getPipelineSnapshot: "dailies:getPipelineSnapshot",
+  getPipelineProgress: "dailies:getPipelineProgress",
   getProjectActivities: "dailies:getProjectActivities",
   retryPipelineFailures: "dailies:retryPipelineFailures",
   exportPipelineFailures: "dailies:exportPipelineFailures",

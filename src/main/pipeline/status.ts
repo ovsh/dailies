@@ -6,6 +6,8 @@ import type {
   PipelineCounts,
   PipelineFailure,
   PipelineFileState,
+  PipelinePhase,
+  PipelineProgress,
   PipelineSnapshot,
   SearchCoverage,
 } from "../../shared/types";
@@ -139,7 +141,13 @@ export function computePipelineFileState(facts: PipelineFileFacts): PipelineFile
   for (const stage of JOB_STAGES) {
     if (!isPipelineStageExpected(stage, facts)) continue;
     const latestJob = facts.latestJobsByStage.get(stage);
-    if (latestJob?.status === "error" && !isPipelineStageComplete(stage, facts)) {
+    if (
+      latestJob?.status === "error" &&
+      (
+        STAGE_POLICY[stage].failureImpact === "degrade-video" ||
+        !isPipelineStageComplete(stage, facts)
+      )
+    ) {
       return "failed";
     }
   }
@@ -240,6 +248,103 @@ function makeCoverage(
     pendingFiles,
     failedFiles,
     producerNoteCount,
+  };
+}
+
+function recentDoneTimestamp(
+  job: Job | undefined,
+  now: Date,
+): number | null {
+  if (job?.status !== "done") return null;
+  const timestamp = Date.parse(job.updatedAt);
+  if (Number.isNaN(timestamp)) return null;
+  return now.getTime() - timestamp <= RATE_WINDOW_MS ? timestamp : null;
+}
+
+/** Same rate math as the snapshot ETA, but scoped to one milestone's completions. */
+function etaFromTimestamps(timestamps: number[], remaining: number): number | null {
+  if (timestamps.length < 2 || remaining === 0) return null;
+  timestamps.sort((a, b) => a - b);
+  const elapsedMs = timestamps[timestamps.length - 1]! - timestamps[0]!;
+  if (elapsedMs <= 0) return null;
+  const perMinute = (timestamps.length - 1) / (elapsedMs / 60_000);
+  return Math.ceil((remaining / perMinute) * 60);
+}
+
+export function computePipelineProgress(
+  facts: PipelineFileFacts[],
+  now = new Date(),
+): PipelineProgress {
+  let searchableFiles = 0;
+  let searchRemaining = 0;
+  let playbackDone = 0;
+  let playbackRemaining = 0;
+  let cantFindCount = 0;
+  let cantPlayCount = 0;
+  let failedCount = 0;
+  let searchWorkStarted = false;
+  const searchDone: number[] = [];
+  const playbackDoneAt: number[] = [];
+
+  for (const item of facts) {
+    const failed = computePipelineFileState(item) === "failed";
+    const failureStage = failed ? makeFailure(item).stage : null;
+    const blocksFinding = failureStage === "discovery" ||
+      failureStage === "probe" ||
+      failureStage === "audio" ||
+      failureStage === "transcribe";
+    const blocksPlayback = failureStage === "proxy";
+    if (blocksFinding) {
+      failedCount += 1;
+      cantFindCount += 1;
+    } else if (blocksPlayback) {
+      failedCount += 1;
+      cantPlayCount += 1;
+    }
+
+    if (item.file.hasTranscript) {
+      searchableFiles += 1;
+      searchWorkStarted = true;
+      const t = recentDoneTimestamp(item.latestJobsByStage.get("transcribe"), now);
+      if (t !== null) searchDone.push(t);
+    } else if (!blocksFinding) {
+      searchRemaining += 1;
+      if (isPipelineStageExpected("transcribe", item)) searchWorkStarted = true;
+    }
+
+    if (isPipelineStageComplete("proxy", item) && !item.file.videoUnplayable) {
+      playbackDone += 1;
+      const t = recentDoneTimestamp(item.latestJobsByStage.get("proxy"), now);
+      if (t !== null) playbackDoneAt.push(t);
+    } else if (!blocksPlayback && isPipelineStageExpected("proxy", item)) {
+      playbackRemaining += 1;
+    }
+  }
+
+  const searchableEtaSeconds = etaFromTimestamps(searchDone, searchRemaining);
+  const playbackEtaSeconds = etaFromTimestamps(playbackDoneAt, playbackRemaining);
+
+  const phase: PipelinePhase = facts.length === 0 || (searchRemaining > 0 && !searchWorkStarted)
+    ? "starting"
+    : searchRemaining > 0
+      ? "working"
+      : playbackRemaining > 0
+        ? "ready"
+        : "done";
+
+  return {
+    phase,
+    totalFiles: facts.length,
+    searchableFiles,
+    searchRemaining,
+    searchableEtaSeconds,
+    playbackDone,
+    playbackRemaining,
+    playbackEtaSeconds,
+    cantFindCount,
+    cantPlayCount,
+    failedCount,
+    updatedAt: now.toISOString(),
   };
 }
 

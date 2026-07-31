@@ -31,7 +31,13 @@ describe("watcher", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function setup() {
+  interface Sinks {
+    found: string[];
+    removed: string[];
+    docs: string[];
+  }
+
+  function setup(): Sinks {
     dir = mkdtempSync(join(tmpdir(), "dailies-watcher-"));
     const found: string[] = [];
     const removed: string[] = [];
@@ -45,61 +51,93 @@ describe("watcher", () => {
     return { found, removed, docs };
   }
 
-  it("reports a new video file once it is stable", async () => {
-    const { found } = setup();
+  /**
+   * fs.watch() returns before the underlying FSEvents stream is live, and
+   * events raised in that startup window are silently lost (the stream only
+   * reports from the moment it starts). Under full-suite load the window
+   * stretches to tens of milliseconds — long enough to swallow a test's only
+   * write. Production is immune because every watchFolder is paired with a
+   * scanFolder sweep; the tests instead prove the stream is live by touching
+   * a probe file until the watcher reports it, then reset the sinks.
+   */
+  async function watchUntilLive(sinks: Sinks): Promise<void> {
     watcher!.watchFolder(dir);
+    const probe = join(dir, "probe-live.mxf");
+    writeFileSync(probe, "probe");
+    const startedAt = Date.now();
+    let lastTouch = Date.now();
+    while (!sinks.found.includes(probe)) {
+      if (Date.now() - startedAt > 10_000) {
+        throw new Error("watcher never became live");
+      }
+      await new Promise((r) => setTimeout(r, 20));
+      // Re-touch only after a full settle cycle has had room to run, so the
+      // stability window is never starved by the probe writes themselves.
+      if (!sinks.found.includes(probe) && Date.now() - lastTouch >= STABILITY_MS * 3) {
+        writeFileSync(probe, "probe", { flag: "a" });
+        lastTouch = Date.now();
+      }
+    }
+    sinks.found.length = 0;
+    sinks.removed.length = 0;
+    sinks.docs.length = 0;
+  }
+
+  it("reports a new video file once it is stable", async () => {
+    const sinks = setup();
+    await watchUntilLive(sinks);
     const file = join(dir, "clip.mxf");
     writeFileSync(file, "atom");
-    await waitFor(() => found.includes(file));
-    expect(found).toContain(file);
+    await waitFor(() => sinks.found.includes(file));
+    expect(sinks.found).toContain(file);
   });
 
   it("reports files created in nested directories", async () => {
-    const { found } = setup();
-    watcher!.watchFolder(dir);
+    const sinks = setup();
+    await watchUntilLive(sinks);
     const nested = join(dir, "Avid MediaFiles", "MXF", "1");
     mkdirSync(nested, { recursive: true });
     const file = join(nested, "a01.mxf");
     writeFileSync(file, "atom");
-    await waitFor(() => found.includes(file));
-    expect(found).toContain(file);
+    await waitFor(() => sinks.found.includes(file));
+    expect(sinks.found).toContain(file);
   });
 
   it("reports documents through onDocFound", async () => {
-    const { docs } = setup();
-    watcher!.watchFolder(dir);
+    const sinks = setup();
+    await watchUntilLive(sinks);
     const file = join(dir, "notes.pdf");
     writeFileSync(file, "pdf");
-    await waitFor(() => docs.includes(file));
-    expect(docs).toContain(file);
+    await waitFor(() => sinks.docs.includes(file));
+    expect(sinks.docs).toContain(file);
   });
 
   it("ignores dotfiles and Avid sidecar databases", async () => {
-    const { found, docs } = setup();
-    watcher!.watchFolder(dir);
+    const sinks = setup();
+    await watchUntilLive(sinks);
     writeFileSync(join(dir, ".hidden.mxf"), "x");
     writeFileSync(join(dir, "msmMMOB.mdb"), "x");
     const marker = join(dir, "real.mxf");
     writeFileSync(marker, "x");
-    await waitFor(() => found.includes(marker));
-    expect(found).toEqual([marker]);
-    expect(docs).toEqual([]);
+    await waitFor(() => sinks.found.includes(marker));
+    expect(sinks.found).toEqual([marker]);
+    expect(sinks.docs).toEqual([]);
   });
 
   it("reports a deleted video file as removed", async () => {
-    const { found, removed } = setup();
-    watcher!.watchFolder(dir);
+    const sinks = setup();
+    await watchUntilLive(sinks);
     const file = join(dir, "clip.mov");
     writeFileSync(file, "x");
-    await waitFor(() => found.includes(file));
+    await waitFor(() => sinks.found.includes(file));
     unlinkSync(file);
-    await waitFor(() => removed.includes(file));
-    expect(removed).toContain(file);
+    await waitFor(() => sinks.removed.includes(file));
+    expect(sinks.removed).toContain(file);
   });
 
   it("waits for a growing file to stop changing", async () => {
-    const { found } = setup();
-    watcher!.watchFolder(dir);
+    const sinks = setup();
+    await watchUntilLive(sinks);
     const file = join(dir, "copying.mxf");
     writeFileSync(file, "start");
     // Keep appending within the stability window; the watcher must not
@@ -107,22 +145,22 @@ describe("watcher", () => {
     for (let i = 0; i < 3; i++) {
       await new Promise((r) => setTimeout(r, STABILITY_MS / 3));
       writeFileSync(file, `more-${i}`, { flag: "a" });
-      expect(found).not.toContain(file);
+      expect(sinks.found).not.toContain(file);
     }
-    await waitFor(() => found.includes(file));
-    expect(found).toContain(file);
+    await waitFor(() => sinks.found.includes(file));
+    expect(sinks.found).toContain(file);
   });
 
   it("stops reporting after unwatchFolder and close", async () => {
-    const { found } = setup();
-    watcher!.watchFolder(dir);
+    const sinks = setup();
+    await watchUntilLive(sinks);
     const first = join(dir, "a.mxf");
     writeFileSync(first, "x");
-    await waitFor(() => found.includes(first));
+    await waitFor(() => sinks.found.includes(first));
     watcher!.unwatchFolder(dir);
     writeFileSync(join(dir, "b.mxf"), "x");
     await new Promise((r) => setTimeout(r, STABILITY_MS * 3));
-    expect(found).toEqual([first]);
+    expect(sinks.found).toEqual([first]);
   });
 
   it("survives watching a missing folder", () => {

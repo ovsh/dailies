@@ -307,6 +307,34 @@ export interface PipelineSnapshot {
   updatedAt: string;
 }
 
+export type PipelinePhase = "starting" | "working" | "ready" | "done";
+
+/**
+ * Small per-tick payload for the indexing status panel: the two user
+ * milestones (find moments / play in app) plus plain failure counts.
+ * No failure reasons and no id lists — those stay on PipelineSnapshot,
+ * fetched only when the user opens the detail view.
+ */
+export interface PipelineProgress {
+  phase: PipelinePhase;
+  totalFiles: number;
+  /** Files with a transcript (including intentionally empty ones). */
+  searchableFiles: number;
+  /** Files still expected to produce a transcript. */
+  searchRemaining: number;
+  searchableEtaSeconds: number | null;
+  playbackDone: number;
+  playbackRemaining: number;
+  playbackEtaSeconds: number | null;
+  /** Failed before Dailies could make the clip findable by dialogue. */
+  cantFindCount: number;
+  /** Failed to produce playable media, but the clip is still findable. */
+  cantPlayCount: number;
+  /** Files with a failure that blocks one of the two user milestones. */
+  failedCount: number;
+  updatedAt: string;
+}
+
 export interface ProjectActivity {
   projectId: string;
   projectName: string;
@@ -371,10 +399,23 @@ export type StructuredAgentAnswer =
       hits: [GroundedAnswerHit, ...GroundedAnswerHit[]];
     };
 
+/** The model + effort an assistant answer was produced with, stamped for tracing. */
+export interface ChatModelStamp {
+  id: string;
+  effort: ChatEffort | null;
+}
+
 /** Events emitted while a chat turn runs (main -> renderer). */
 export type ChatEvent =
   | { type: "activity"; chatId: number; turnId: string; agent: string; status: string }
-  | { type: "answer"; chatId: number; turnId: string; answer: AgentAnswer | StructuredAgentAnswer }
+  | {
+      type: "answer";
+      chatId: number;
+      turnId: string;
+      answer: AgentAnswer | StructuredAgentAnswer;
+      /** Model that produced this answer; absent for legacy events. */
+      model?: ChatModelStamp;
+    }
   | { type: "error"; chatId: number; turnId: string; message: string }
   | { type: "done"; chatId: number; turnId: string };
 
@@ -390,6 +431,8 @@ export interface ChatSummary {
   createdAt: string;
   /** Undefined only in pre-scope browser preview data. */
   episodeId?: number | null;
+  /** Model of this chat's most recent stamped answer; absent for empty or legacy chats. */
+  model?: ChatModelStamp;
 }
 
 export interface ChatMessageRecord {
@@ -399,6 +442,8 @@ export interface ChatMessageRecord {
   content: string;
   hits: AnswerHit[] | null;
   answer?: StructuredAgentAnswer;
+  /** Model that produced this assistant message; absent on user messages and legacy rows. */
+  model?: ChatModelStamp;
   createdAt: string;
 }
 
@@ -510,6 +555,12 @@ export function chatModelOption(id: string | null | undefined): ChatModelOption 
     CHAT_MODEL_OPTIONS.find((option) => option.id === DEFAULT_CHAT_MODEL_ID) ??
     CHAT_MODEL_OPTIONS[0]
   );
+}
+
+/** Short, human-readable name for a stamped model, e.g. "GPT-5.6 Luna · Max". */
+export function chatModelStampLabel(stamp: ChatModelStamp): string {
+  const label = chatModelOption(stamp.id).label;
+  return stamp.effort ? `${label} · ${CHAT_EFFORT_LABELS[stamp.effort]}` : label;
 }
 
 /** A resolved model + effort pair, ready to be turned into request params. */

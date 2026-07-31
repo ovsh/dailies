@@ -47,6 +47,11 @@ export interface CreateWatcherOptions {
 }
 
 export interface Watcher {
+  /**
+   * Events that occur before the underlying OS stream goes live (an async
+   * startup after fs.watch returns) are silently lost — callers must pair
+   * this with a scan of the folder, as the pipeline's scanFolder does.
+   */
   watchFolder(path: string): void;
   unwatchFolder(path: string): void;
   close(): Promise<void>;

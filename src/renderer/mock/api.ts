@@ -22,6 +22,7 @@ import type {
   PipelineActiveFile,
   PipelineCounts,
   PipelineFailure,
+  PipelineProgress,
   PipelineSnapshot,
   Project,
   ProjectActivity,
@@ -649,6 +650,7 @@ export function createMockApi(): DailiesAPI {
       });
 
       const answerDelay = delay + 500;
+      const model = { id: settings.chatModelId, effort: settings.chatEffort };
       setTimeout(() => {
         const answer = buildMockAnswer(text);
         const assistantMsg = {
@@ -657,10 +659,13 @@ export function createMockApi(): DailiesAPI {
           role: "assistant" as const,
           content: answer.prose,
           hits: answer.hits,
+          model,
           createdAt: new Date().toISOString(),
         };
         MOCK_CHAT_MESSAGES[id] = [...(MOCK_CHAT_MESSAGES[id] ?? []), assistantMsg];
-        emit({ type: "answer", chatId: id, turnId, answer });
+        const summary = MOCK_CHATS.find((chat) => chat.id === id);
+        if (summary) summary.model = model;
+        emit({ type: "answer", chatId: id, turnId, answer, model });
         setTimeout(() => emit({ type: "done", chatId: id, turnId }), 120);
       }, answerDelay);
 
@@ -694,6 +699,32 @@ export function createMockApi(): DailiesAPI {
 
     async getPipelineSnapshot(scope: ChatScope) {
       return buildPipelineSnapshot(scope);
+    },
+
+    async getPipelineProgress(scope: ChatScope): Promise<PipelineProgress> {
+      const snapshot = buildPipelineSnapshot(scope);
+      const coverage = snapshot.coverage;
+      const searchRemaining = coverage.pendingFiles;
+      const playbackRemaining = snapshot.counts.queued + snapshot.counts.processing;
+      const cantPlayCount = snapshot.failures
+        .filter((f) => f.stage === "proxy" || f.stage === "scenes").length;
+      return {
+        phase: coverage.totalFiles === 0 ? "starting"
+          : searchRemaining > 0 ? "working"
+          : playbackRemaining > 0 ? "ready"
+          : "done",
+        totalFiles: coverage.totalFiles,
+        searchableFiles: coverage.searchableFiles,
+        searchRemaining,
+        searchableEtaSeconds: searchRemaining > 0 ? searchRemaining * 8 : null,
+        playbackDone: Math.max(0, coverage.totalFiles - playbackRemaining - coverage.failedFiles),
+        playbackRemaining,
+        playbackEtaSeconds: playbackRemaining > 0 ? playbackRemaining * 45 : null,
+        cantFindCount: snapshot.failures.length - cantPlayCount,
+        cantPlayCount,
+        failedCount: snapshot.failures.length,
+        updatedAt: new Date().toISOString(),
+      };
     },
 
     async getProjectActivities(): Promise<ProjectActivity[]> {

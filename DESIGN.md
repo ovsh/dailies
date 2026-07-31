@@ -56,3 +56,13 @@ Lineage: pre-dark-era Avid Media Composer chrome. The app earlier wore a dark
 - No brass `#d0ad5f` anywhere.
 - Red never decorates; if everything is red, nothing is recording.
 - Footage thumbnails/keyframes and the player stay on dark bezels.
+
+## App Icon
+
+- The macOS icon is a single Media Composer-style bin window on steel chrome.
+- One black selected row carries the product's search-and-find action. One red
+  locator in the title bar carries the Avid export connection.
+- Keep it text-free and legible at 16px. Do not replace it with a generic play,
+  camera, waveform, or chat glyph.
+- `build/icon-source.svg` is the editable source. `build/icon.png` is the 1024px
+  raster source. `npm run icon:mac` writes the packaged `build/icon.icns`.

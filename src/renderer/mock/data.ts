@@ -558,7 +558,12 @@ export const MOCK_UPDATE_TOTAL_BYTES = 263 * 1024 * 1024;
 // ---------- chat ----------
 
 export const MOCK_CHATS: ChatSummary[] = [
-  { id: 1, title: "Bears fishing at the river bend", createdAt: new Date(Date.UTC(2026, 6, 20, 10, 0)).toISOString() },
+  {
+    id: 1,
+    title: "Bears fishing at the river bend",
+    createdAt: new Date(Date.UTC(2026, 6, 20, 10, 0)).toISOString(),
+    model: { id: "openai/gpt-5.6-luna", effort: "max" },
+  },
 ];
 
 export const MOCK_CHAT_MESSAGES: Record<number, ChatMessageRecord[]> = {

@@ -6,7 +6,15 @@ import type {
   EpisodeMembershipReport,
   EpisodeMembershipResolution,
   MembershipSource,
-  ModelDownloadProgress, AppSettings, Episode, Job, PipelineSnapshot, ProjectFolder, UpdaterState } from "../../shared/types";
+  ModelDownloadProgress,
+  AppSettings,
+  Episode,
+  Job,
+  PipelineProgress,
+  PipelineSnapshot,
+  ProjectFolder,
+  UpdaterState,
+} from "../../shared/types";
 import type { ClipListImportBlocked, ClipListImportDiagnostic } from "../../shared/ipc";
 import { InlineError } from "../components/InlineError";
 import { Toast } from "../components/Toast";
@@ -71,18 +79,53 @@ function waitingMessage(job: Job): string {
   return job.error ?? "Waiting for a required setup step.";
 }
 
-function formatEta(seconds: number | null): string {
-  if (seconds === null) return "—";
-  if (seconds < 60) return `~${Math.max(1, Math.round(seconds))}s`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `~${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remMinutes = minutes % 60;
-  return remMinutes > 0 ? `~${hours}h ${remMinutes}m` : `~${hours}h`;
+const FIVE_MIN_MS = 5 * 60 * 1000;
+const ONE_DAY_S = 24 * 60 * 60;
+
+// Five-minute marks keep an estimate from implying second-level precision.
+function etaTarget(seconds: number, from: Date): Date {
+  return new Date(Math.round((from.getTime() + seconds * 1000) / FIVE_MIN_MS) * FIVE_MIN_MS);
 }
 
-function formatRate(filesPerMinute: number | null): string {
-  return filesPerMinute === null ? "—" : filesPerMinute.toFixed(1);
+function clockTime(d: Date): string {
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+function clipCount(count: number): string {
+  return `${count} ${count === 1 ? "clip" : "clips"}`;
+}
+
+function formatEtaClock(seconds: number | null, from: Date): string | null {
+  if (seconds === null) return null;
+  const target = etaTarget(seconds, from);
+  if (seconds < ONE_DAY_S) return clockTime(target);
+  return target.toLocaleDateString("en-US", { weekday: "long" });
+}
+
+function formatEtaDayTime(seconds: number | null, from: Date): string | null {
+  if (seconds === null) return null;
+  const target = etaTarget(seconds, from);
+  if (seconds < ONE_DAY_S) return clockTime(target);
+  const weekday = target.toLocaleDateString("en-US", { weekday: "long" });
+  return `${weekday} ${target.toLocaleTimeString("en-US", { hour: "numeric" })}`;
+}
+
+function progressEqual(a: PipelineProgress, b: PipelineProgress): boolean {
+  return a.phase === b.phase &&
+    a.totalFiles === b.totalFiles &&
+    a.searchableFiles === b.searchableFiles &&
+    a.searchRemaining === b.searchRemaining &&
+    a.searchableEtaSeconds === b.searchableEtaSeconds &&
+    a.playbackDone === b.playbackDone &&
+    a.playbackRemaining === b.playbackRemaining &&
+    a.playbackEtaSeconds === b.playbackEtaSeconds &&
+    a.cantFindCount === b.cantFindCount &&
+    a.cantPlayCount === b.cantPlayCount &&
+    a.failedCount === b.failedCount &&
+    formatEtaClock(a.searchableEtaSeconds, new Date(a.updatedAt)) ===
+      formatEtaClock(b.searchableEtaSeconds, new Date(b.updatedAt)) &&
+    formatEtaDayTime(a.playbackEtaSeconds, new Date(a.updatedAt)) ===
+      formatEtaDayTime(b.playbackEtaSeconds, new Date(b.updatedAt));
 }
 
 const MEMBERSHIP_SOURCE_LABEL: Record<MembershipSource, string> = {
@@ -148,6 +191,10 @@ export function JobsSettingsScreen({
   const [snapshot, setSnapshot] = useState<PipelineSnapshot | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(true);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<PipelineProgress | null>(null);
+  const [progressLoading, setProgressLoading] = useState(true);
+  const [progressError, setProgressError] = useState<string | null>(null);
+  const [failuresExpanded, setFailuresExpanded] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [selectedFailureIds, setSelectedFailureIds] = useState<Set<number>>(() => new Set());
   const [bulkRetryPending, setBulkRetryPending] = useState(false);
@@ -159,6 +206,8 @@ export function JobsSettingsScreen({
   const [toast, setToast] = useState<{ message: string; actionLabel?: string; onAction?: () => void } | null>(null);
   const [episodeReports, setEpisodeReports] = useState<Record<number, EpisodeMembershipReport>>({});
   const [expandedEpisodeId, setExpandedEpisodeId] = useState<number | null>(null);
+
+  const syncedFailedCount = useRef<number | null>(null);
 
   const refreshJobs = useCallback(async () => {
     const result = await runIpc(api.listJobs, {
@@ -173,15 +222,29 @@ export function JobsSettingsScreen({
     const result = await runIpc(() => api.getPipelineSnapshot({ episodeId: null }), {
       setPending: setSnapshotLoading,
       setError: setSnapshotError,
-      fallback: "Could not refresh the indexing snapshot.",
+      fallback: "Could not load the list of clips with problems.",
     });
     if (result.ok) {
       setSnapshot(result.value);
+      syncedFailedCount.current = result.value.failures.length;
       setSelectedFailureIds((current) => {
         const validIds = new Set(result.value.failures.map((f) => f.fileId));
         const next = new Set([...current].filter((id) => validIds.has(id)));
         return next.size === current.size ? current : next;
       });
+      return result.value;
+    }
+    return null;
+  }, []);
+
+  const refreshProgress = useCallback(async () => {
+    const result = await runIpc(() => api.getPipelineProgress({ episodeId: null }), {
+      setPending: setProgressLoading,
+      setError: setProgressError,
+      fallback: "Could not check on your footage.",
+    });
+    if (result.ok) {
+      setProgress((prev) => (prev !== null && progressEqual(prev, result.value) ? prev : result.value));
     }
   }, []);
 
@@ -198,10 +261,23 @@ export function JobsSettingsScreen({
     void refreshJobs();
     void refreshSettings();
     void refreshSnapshot();
-  }, [refreshJobs, refreshSettings, refreshSnapshot]);
+    void refreshProgress();
+  }, [refreshJobs, refreshProgress, refreshSettings, refreshSnapshot]);
 
   useLiveRefresh(refreshJobs);
-  useLiveRefresh(refreshSnapshot);
+  useLiveRefresh(refreshProgress);
+
+  useEffect(() => {
+    const failedCount = progress?.failedCount;
+    if (
+      failedCount === undefined ||
+      syncedFailedCount.current === null ||
+      failedCount === syncedFailedCount.current
+    ) {
+      return;
+    }
+    void refreshSnapshot();
+  }, [progress?.failedCount, refreshSnapshot]);
 
   useEffect(() => {
     const unsub = api.onModelProgress((p) => {
@@ -347,7 +423,7 @@ export function JobsSettingsScreen({
     const result = await runIpc(
       async () => {
         await api.retryFile(fileId);
-        await Promise.all([refreshJobs(), refreshSnapshot(), onRefresh()]);
+        await Promise.all([refreshJobs(), refreshProgress(), refreshSnapshot(), onRefresh()]);
       },
       {
         setPending: (pending) => setRetryingFileIds((current) => {
@@ -379,15 +455,15 @@ export function JobsSettingsScreen({
     );
   }
 
-  async function handleBulkRetry() {
-    const fileIds = [...selectedFailureIds];
+  async function handleBulkRetry(fileIds = [...selectedFailureIds]) {
     if (fileIds.length === 0) return;
-    setRetryAction(() => () => void handleBulkRetry());
+    setRetryAction(() => () => void handleBulkRetry(fileIds));
     const result = await runIpc(
       async () => {
         const nextSnapshot = await api.retryPipelineFailures(fileIds);
         setSnapshot(nextSnapshot);
-        await Promise.all([refreshJobs(), onRefresh()]);
+        syncedFailedCount.current = nextSnapshot.failures.length;
+        await Promise.all([refreshJobs(), refreshProgress(), onRefresh()]);
       },
       { setPending: setBulkRetryPending, setError: setActionError, fallback: "Could not retry the selected files." },
     );
@@ -397,6 +473,12 @@ export function JobsSettingsScreen({
     }
   }
 
+  async function handleRetryAllFailures() {
+    const latestSnapshot = await refreshSnapshot();
+    if (latestSnapshot === null) return;
+    await handleBulkRetry(latestSnapshot.failures.map((failure) => failure.fileId));
+  }
+
   async function handleExportFailuresCsv() {
     const result = await runIpc(() => api.exportPipelineFailures({ episodeId: null }), {
       setPending: setCsvExportPending,
@@ -404,11 +486,17 @@ export function JobsSettingsScreen({
       fallback: "Could not export failures.",
     });
     if (!result.ok) return;
+    await refreshSnapshot();
     if (result.value.kind === "blocked") {
       setActionError("There are no failures to export.");
       return;
     }
     await api.revealInFinder(result.value.path);
+  }
+
+  function toggleFailuresExpanded() {
+    if (!failuresExpanded) void refreshSnapshot();
+    setFailuresExpanded((current) => !current);
   }
 
   function toggleFailureExpanded(fileId: number) {
@@ -458,6 +546,166 @@ export function JobsSettingsScreen({
   }
 
   const waitingCount = jobs?.filter((job) => job.status === "waiting").length ?? 0;
+
+  function renderProblemsRow(failedCount: number) {
+    if (failedCount === 0) return null;
+    return (
+      <div className="footage-problems-row">
+        <span className="footage-problems-count mono">
+          {clipCount(failedCount)} {failedCount === 1 ? "has" : "have"} problems
+        </span>
+        <button type="button" className="ghost-btn label" onClick={toggleFailuresExpanded}>
+          {failuresExpanded ? "Hide them" : "See them"}
+        </button>
+      </div>
+    );
+  }
+
+  function renderPipelineProgress(current: PipelineProgress) {
+    const phase = current.phase;
+    const now = new Date(current.updatedAt);
+    const playbackEta = formatEtaDayTime(current.playbackEtaSeconds, now) ??
+      "Working out how long this will take";
+    const searchTotal = current.searchableFiles + current.searchRemaining;
+    const searchPercent = searchTotal === 0
+      ? 0
+      : Math.round((current.searchableFiles / searchTotal) * 100);
+
+    switch (phase) {
+      case "starting":
+        return (
+          <div className="footage-state footage-state-starting" role="status">
+            <h3 className="footage-lede">Reading your files</h3>
+            <p className="footage-sub">You get a time estimate in a few minutes. You can leave this running.</p>
+            <div className="footage-progress" role="progressbar" aria-label="Reading files">
+              <span className="footage-progress-fill footage-progress-fill-starting" />
+            </div>
+            <p className="footage-count mono">{clipCount(current.totalFiles)} found</p>
+          </div>
+        );
+      case "working": {
+        const readyAt = formatEtaClock(current.searchableEtaSeconds, now);
+        return (
+          <div className="footage-state footage-state-working" role="status">
+            <h3 className="footage-lede">
+              {readyAt === null ? (
+                "Working out how long this will take"
+              ) : (
+                <>Ready at <span className="mono">{readyAt}</span></>
+              )}
+            </h3>
+            <p className="footage-sub">Then you can ask for any moment in your footage.</p>
+            <div
+              className="footage-progress"
+              role="progressbar"
+              aria-label="Clips ready to search"
+              aria-valuemin={0}
+              aria-valuemax={searchTotal}
+              aria-valuenow={current.searchableFiles}
+            >
+              <span className="footage-progress-fill" style={{ width: `${searchPercent}%` }} />
+            </div>
+            <p className="footage-count mono">
+              {current.searchableFiles} of {searchTotal} clips done
+            </p>
+            <div className="footage-secondary">
+              <span>Video playback comes later</span>
+              <span className="footage-secondary-eta mono">{playbackEta}</span>
+            </div>
+            {renderProblemsRow(current.failedCount)}
+          </div>
+        );
+      }
+      case "ready":
+        return (
+          <div className="footage-state footage-state-ready" role="status">
+            <h3 className="footage-lede footage-lede-ready">
+              <span className="footage-ready-mark" aria-hidden="true">✓</span>
+              Your footage is ready
+            </h3>
+            <p className="footage-sub">Ask for any moment — like "where do they talk about the beach house?"</p>
+            <div
+              className="footage-progress"
+              role="progressbar"
+              aria-label="Clips ready to search"
+              aria-valuetext={`${current.searchableFiles} clips ready`}
+            >
+              <span className="footage-progress-fill footage-progress-fill-ready" />
+            </div>
+            <p className="footage-count mono">{clipCount(current.searchableFiles)} ready</p>
+            <div className="footage-secondary">
+              <span>Video playback comes later. You can work now.</span>
+              <span className="footage-secondary-eta mono">{playbackEta}</span>
+            </div>
+            {renderProblemsRow(current.failedCount)}
+          </div>
+        );
+      case "done":
+        return (
+          <div className="footage-state footage-state-done" role="status">
+            <h3 className="footage-lede">All done</h3>
+            {current.failedCount > 0 && (
+              <p className="footage-sub">
+                {clipCount(current.failedCount)} {current.failedCount === 1 ? "needs" : "need"} a look.
+              </p>
+            )}
+            <div className="footage-metrics">
+              <div className="footage-metric">
+                <span className="footage-metric-label">READY TO USE</span>
+                <span className="footage-metric-value mono">{current.searchableFiles}</span>
+              </div>
+              <div className="footage-metric">
+                <span className="footage-metric-label">PLAY IN APP</span>
+                <span className="footage-metric-value mono">{current.playbackDone}</span>
+              </div>
+            </div>
+            {current.failedCount > 0 && (
+              <div className="footage-needs-look">
+                <h4 className="footage-needs-title">Needs a look</h4>
+                <div className="footage-issue">
+                  <p className="footage-issue-title footage-issue-warn">
+                    <span className="mono">{clipCount(current.cantPlayCount)}</span> will not play in the app
+                  </p>
+                  <p className="footage-issue-note">You can still find them. Open them in your editor.</p>
+                </div>
+                <div className="footage-issue">
+                  <p className="footage-issue-title footage-issue-error">
+                    <span className="mono">{clipCount(current.cantFindCount)}</span>{" "}
+                    {current.cantFindCount === 1 ? "has" : "have"} no usable sound
+                  </p>
+                  <p className="footage-issue-note">They will not come up when you ask for moments.</p>
+                </div>
+                <div className="footage-needs-actions">
+                  <button
+                    type="button"
+                    className="ghost-btn label"
+                    onClick={() => void handleRetryAllFailures()}
+                    disabled={bulkRetryPending || snapshotLoading}
+                  >
+                    {bulkRetryPending ? "Retrying…" : "Try again"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-btn label"
+                    onClick={() => void handleExportFailuresCsv()}
+                    disabled={csvExportPending}
+                  >
+                    {csvExportPending ? "Saving…" : "Save list"}
+                  </button>
+                  <button type="button" className="text-link footage-see-link" onClick={toggleFailuresExpanded}>
+                    {failuresExpanded ? "Hide them" : "See them"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      default: {
+        const exhaustive: never = phase;
+        return exhaustive;
+      }
+    }
+  }
 
   function renderUpdateRow() {
     switch (updateState.phase) {
@@ -589,165 +837,132 @@ export function JobsSettingsScreen({
               <span className="panel-bar-stripes" aria-hidden="true" />
             </div>
             <div className="panel-body">
-              <h2 className="display panel-title">Indexing queue</h2>
+              <h2 className="display panel-title">Your footage</h2>
 
-              {snapshotError && (
-                <InlineError message={snapshotError} onRetry={() => void refreshSnapshot()} retrying={snapshotLoading} />
+              {progressError && (
+                <InlineError message={progressError} onRetry={() => void refreshProgress()} retrying={progressLoading} />
               )}
 
-              {snapshot && (
-                <>
-                  <div className="rollup-bar mono">
-                    <div className="rollup-stat">
-                      <span className="rollup-value">{snapshot.counts.done}</span>
-                      <span className="rollup-label">done</span>
-                    </div>
-                    <div className="rollup-stat">
-                      <span className="rollup-value">{snapshot.counts.processing}</span>
-                      <span className="rollup-label">processing</span>
-                    </div>
-                    <div className="rollup-stat">
-                      <span className="rollup-value">{snapshot.counts.queued}</span>
-                      <span className="rollup-label">queued</span>
-                    </div>
-                    <div className="rollup-stat">
-                      <span className="rollup-value rollup-value-fail">{snapshot.counts.failed}</span>
-                      <span className="rollup-label">failed</span>
-                    </div>
-                    <div className="rollup-stat">
-                      <span className="rollup-value">{Math.round(snapshot.percentProcessed * 100)}%</span>
-                      <span className="rollup-label">processed</span>
-                    </div>
-                    <div className="rollup-stat">
-                      <span className="rollup-value">{formatRate(snapshot.filesPerMinute)}</span>
-                      <span className="rollup-label">files / min</span>
-                    </div>
-                    <div className="rollup-stat">
-                      <span className="rollup-value">{formatEta(snapshot.etaSeconds)}</span>
-                      <span className="rollup-label">ETA</span>
-                    </div>
-                  </div>
+              {progress && renderPipelineProgress(progress)}
+              {!progress && progressLoading && <p className="jobs-hint mono">Checking your footage…</p>}
 
-                  {snapshot.activeFiles.length > 0 && (
-                    <div className="active-block">
-                      <h3 className="jobs-subhead label">Active now</h3>
-                      <ul className="active-file-list mono">
-                        {snapshot.activeFiles.map((file) => (
-                          <li key={file.fileId}>
-                            <span className="job-status-dot" style={{ background: "var(--accent)" }} />
-                            <span className="active-file-name" title={file.filename}>
-                              {file.filename}
-                            </span>
-                            <span className="active-file-stage">{file.stage}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+              {waitingCount > 0 && (
+                <p className="jobs-waiting-summary mono" role="status">
+                  {waitingCount} {waitingCount === 1 ? "job is" : "jobs are"} paused until setup is complete. No retry is needed.
+                </p>
+              )}
+
+              {failuresExpanded && (
+                <div className="failures-block">
+                  {snapshotError && (
+                    <InlineError
+                      message={snapshotError}
+                      onRetry={() => void refreshSnapshot()}
+                      retrying={snapshotLoading}
+                    />
                   )}
 
-                  {waitingCount > 0 && (
-                    <p className="jobs-waiting-summary mono" role="status">
-                      {waitingCount} {waitingCount === 1 ? "job is" : "jobs are"} paused until setup is complete. No retry is needed.
-                    </p>
-                  )}
+                  {snapshot && (
+                    <>
+                      <div className="failures-head">
+                        <h3 className="jobs-subhead label">Failed ({snapshot.failures.length})</h3>
+                        {snapshot.failures.length > 0 && (
+                          <div className="failures-actions">
+                            <button
+                              type="button"
+                              className="ghost-btn label"
+                              onClick={() => void handleBulkRetry()}
+                              disabled={selectedFailureIds.size === 0 || bulkRetryPending}
+                            >
+                              {bulkRetryPending ? "Retrying…" : `Retry selected (${selectedFailureIds.size})`}
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-btn label"
+                              onClick={() => void handleExportFailuresCsv()}
+                              disabled={csvExportPending}
+                            >
+                              {csvExportPending ? "Exporting…" : "Export CSV"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
 
-                  <div className="failures-block">
-                    <div className="failures-head">
-                      <h3 className="jobs-subhead label">Failed ({snapshot.failures.length})</h3>
-                      {snapshot.failures.length > 0 && (
-                        <div className="failures-actions">
-                          <button
-                            type="button"
-                            className="ghost-btn label"
-                            onClick={() => void handleBulkRetry()}
-                            disabled={selectedFailureIds.size === 0 || bulkRetryPending}
-                          >
-                            {bulkRetryPending ? "Retrying…" : `Retry selected (${selectedFailureIds.size})`}
-                          </button>
-                          <button
-                            type="button"
-                            className="ghost-btn label"
-                            onClick={() => void handleExportFailuresCsv()}
-                            disabled={csvExportPending}
-                          >
-                            {csvExportPending ? "Exporting…" : "Export CSV"}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    {snapshot.failures.length === 0 ? (
-                      <p className="jobs-empty mono">No failures.</p>
-                    ) : (
-                      <table className="jobs-table mono">
-                        <thead>
-                          <tr>
-                            <th className="jobs-select-col">
-                              <input
-                                type="checkbox"
-                                checked={selectedFailureIds.size === snapshot.failures.length}
-                                onChange={toggleAllFailuresSelected}
-                                aria-label="Select all failed files"
-                              />
-                            </th>
-                            <th>File</th>
-                            <th>Stage</th>
-                            <th>Reason</th>
-                            <th>Attempts</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {snapshot.failures.map((failure) => (
-                            <tr key={failure.fileId}>
-                              <td className="jobs-select-col">
+                      {snapshot.failures.length === 0 ? (
+                        <p className="jobs-empty mono">No failures.</p>
+                      ) : (
+                        <table className="jobs-table mono">
+                          <thead>
+                            <tr>
+                              <th className="jobs-select-col">
                                 <input
                                   type="checkbox"
-                                  checked={selectedFailureIds.has(failure.fileId)}
-                                  onChange={() => toggleFailureSelected(failure.fileId)}
-                                  aria-label={`Select ${failure.filename}`}
+                                  checked={selectedFailureIds.size === snapshot.failures.length}
+                                  onChange={toggleAllFailuresSelected}
+                                  aria-label="Select all failed files"
                                 />
-                              </td>
-                              <td className="jobs-filename" title={failure.filename}>
-                                {failure.filename}
-                              </td>
-                              <td>{failure.stage}</td>
-                              <td className="job-detail error">
-                                <span className="reason-line mono">{firstLine(failure.reason)}</span>
-                                {hasMoreLines(failure.reason) && (
+                              </th>
+                              <th>File</th>
+                              <th>Stage</th>
+                              <th>Reason</th>
+                              <th>Attempts</th>
+                              <th></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {snapshot.failures.map((failure) => (
+                              <tr key={failure.fileId}>
+                                <td className="jobs-select-col">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedFailureIds.has(failure.fileId)}
+                                    onChange={() => toggleFailureSelected(failure.fileId)}
+                                    aria-label={`Select ${failure.filename}`}
+                                  />
+                                </td>
+                                <td className="jobs-filename" title={failure.filename}>
+                                  {failure.filename}
+                                </td>
+                                <td>{failure.stage}</td>
+                                <td className="job-detail error">
+                                  <span className="reason-line mono">{firstLine(failure.reason)}</span>
+                                  {hasMoreLines(failure.reason) && (
+                                    <button
+                                      type="button"
+                                      className="reason-toggle label"
+                                      onClick={() => toggleFailureExpanded(failure.fileId)}
+                                    >
+                                      {expandedFailureIds.has(failure.fileId) ? "Hide full reason" : "Show full reason"}
+                                    </button>
+                                  )}
+                                  {expandedFailureIds.has(failure.fileId) && (
+                                    <pre className="reason-full mono">{failure.reason}</pre>
+                                  )}
+                                </td>
+                                <td>{failure.attempts}</td>
+                                <td>
                                   <button
                                     type="button"
-                                    className="reason-toggle label"
-                                    onClick={() => toggleFailureExpanded(failure.fileId)}
+                                    className="job-retry label"
+                                    onClick={() => void handleRetryFile(failure.fileId)}
+                                    disabled={retryingFileIds.has(failure.fileId)}
                                   >
-                                    {expandedFailureIds.has(failure.fileId) ? "Hide full reason" : "Show full reason"}
+                                    {retryingFileIds.has(failure.fileId) ? "Retrying…" : "Retry"}
                                   </button>
-                                )}
-                                {expandedFailureIds.has(failure.fileId) && (
-                                  <pre className="reason-full mono">{failure.reason}</pre>
-                                )}
-                              </td>
-                              <td>{failure.attempts}</td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="job-retry label"
-                                  onClick={() => void handleRetryFile(failure.fileId)}
-                                  disabled={retryingFileIds.has(failure.fileId)}
-                                >
-                                  {retryingFileIds.has(failure.fileId) ? "Retrying…" : "Retry"}
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                </>
-              )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </>
+                  )}
 
-              {!snapshot && snapshotLoading && <p className="jobs-hint mono">Loading indexing snapshot…</p>}
+                  {!snapshot && snapshotLoading && (
+                    <p className="jobs-hint mono">Loading clips with problems…</p>
+                  )}
+                </div>
+              )}
 
               <button
                 type="button"
@@ -1346,7 +1561,7 @@ export function JobsSettingsScreen({
           border-radius: 2px;
           font-size: 11px;
           padding: 9px 11px;
-          margin: 0 0 16px;
+          margin: 16px 0 0;
         }
         .job-detail {
           max-width: 290px;
@@ -1428,37 +1643,172 @@ export function JobsSettingsScreen({
         .jobs-select-col input {
           accent-color: var(--accent);
         }
-        .rollup-bar {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 1px;
-          background: var(--chrome-lo);
-          border: 1px solid var(--chrome-lo);
-          box-shadow: var(--bevel-in);
-          margin-bottom: 18px;
-        }
-        .rollup-stat {
-          flex: 1;
-          min-width: 84px;
-          display: flex;
-          flex-direction: column;
-          gap: 3px;
-          background: #fff;
-          padding: 10px 12px;
-        }
-        .rollup-value {
-          font-size: 18px;
-          font-weight: 700;
+        .footage-state {
           color: var(--ink);
         }
-        .rollup-value-fail {
+        .footage-lede {
+          margin: 0;
+          font-family: var(--font-display);
+          font-size: 24px;
+          font-weight: 700;
+          line-height: 1.15;
+          letter-spacing: -0.02em;
+        }
+        .footage-lede-ready {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+        }
+        .footage-ready-mark {
+          color: var(--status-ok);
+          font-size: 21px;
+          line-height: 1;
+        }
+        .footage-sub {
+          max-width: 68ch;
+          margin: 7px 0 17px;
+          color: var(--ink-dim);
+          font-size: 13px;
+          line-height: 1.5;
+        }
+        .footage-progress {
+          position: relative;
+          width: 100%;
+          height: 8px;
+          overflow: hidden;
+          background: var(--paper-alt);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 1px;
+          box-shadow: var(--bevel-in);
+        }
+        .footage-progress-fill {
+          display: block;
+          height: 100%;
+          width: 0;
+          background: var(--accent);
+        }
+        .footage-progress-fill-starting {
+          width: 10%;
+          opacity: 0.58;
+        }
+        .footage-progress-fill-ready {
+          width: 100%;
+          background: var(--status-ok);
+        }
+        .footage-count {
+          margin: 7px 0 19px;
+          color: var(--ink-dim);
+          font-size: 11px;
+        }
+        .footage-secondary {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 24px;
+          min-height: 46px;
+          padding: 11px 13px;
+          background: var(--paper-alt);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-in);
+          color: var(--ink-dim);
+          font-size: 12px;
+        }
+        .footage-secondary-eta {
+          max-width: 290px;
+          color: var(--ink);
+          font-size: 11px;
+          text-align: right;
+        }
+        .footage-problems-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          margin-top: 15px;
+          padding-top: 13px;
+          border-top: 1px solid var(--hairline-strong);
+        }
+        .footage-problems-count {
+          color: var(--ink-dim);
+          font-size: 11px;
+        }
+        .footage-metrics {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+          margin-top: 18px;
+        }
+        .footage-metric {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          padding: 12px 14px;
+          background: var(--paper-alt);
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-in);
+        }
+        .footage-metric-label {
+          color: var(--ink-dim);
+          font-size: 9.5px;
+          font-weight: 600;
+          letter-spacing: 0.08em;
+        }
+        .footage-metric-value {
+          color: var(--ink);
+          font-size: 22px;
+          font-weight: 700;
+          line-height: 1;
+        }
+        .footage-needs-look {
+          margin-top: 16px;
+          padding: 14px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-in);
+        }
+        .footage-needs-title {
+          margin: 0 0 11px;
+          color: var(--ink);
+          font-size: 14px;
+          font-weight: 700;
+        }
+        .footage-issue {
+          padding: 10px 0;
+          border-top: 1px solid var(--hairline);
+        }
+        .footage-issue-title,
+        .footage-issue-note {
+          margin: 0;
+        }
+        .footage-issue-title {
+          font-size: 12px;
+          font-weight: 600;
+        }
+        .footage-issue-warn {
+          color: var(--status-warn);
+        }
+        .footage-issue-error {
           color: var(--status-error);
         }
-        .rollup-label {
-          font-size: 9.5px;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--ink-faint);
+        .footage-issue-note {
+          margin-top: 4px;
+          color: var(--ink-dim);
+          font-size: 10.5px;
+          line-height: 1.45;
+        }
+        .footage-needs-actions {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 8px;
+          padding-top: 5px;
+        }
+        .footage-see-link {
+          margin-left: 3px;
+          font-size: 11px;
         }
         .jobs-subhead {
           font-size: 10.5px;
@@ -1467,38 +1817,11 @@ export function JobsSettingsScreen({
           color: var(--ink-dim);
           margin: 0;
         }
-        .active-block {
-          margin-bottom: 18px;
-        }
-        .active-file-list {
-          list-style: none;
-          margin: 8px 0 0;
-          padding: 0;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .active-file-list li {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 11.5px;
-          color: var(--ink-dim);
-        }
-        .active-file-name {
-          flex: 1;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .active-file-stage {
-          color: var(--ink-faint);
-          font-size: 10px;
-          text-transform: uppercase;
-          letter-spacing: 0.06em;
-        }
         .failures-block {
-          margin-top: 4px;
+          margin-top: 18px;
+          padding-top: 18px;
+          overflow-x: auto;
+          border-top: 1px solid var(--hairline-strong);
         }
         .failures-head {
           display: flex;
@@ -1821,6 +2144,46 @@ export function JobsSettingsScreen({
         }
         .episode-report-dash {
           color: var(--ink-faint);
+        }
+        @media (max-width: 640px) {
+          .jobs-scroll {
+            padding: 18px 12px 48px;
+          }
+          .jobs-column {
+            gap: 16px;
+          }
+          .panel-body {
+            margin: 6px;
+            padding: 18px 14px 20px;
+          }
+          .footage-lede {
+            font-size: 20px;
+          }
+          .footage-secondary {
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 6px;
+          }
+          .footage-secondary-eta {
+            max-width: none;
+            text-align: left;
+          }
+          .footage-problems-row,
+          .failures-head {
+            align-items: flex-start;
+            flex-direction: column;
+          }
+          .failures-actions {
+            flex-wrap: wrap;
+          }
+          .failures-block .jobs-table {
+            min-width: 680px;
+          }
+        }
+        @media (max-width: 380px) {
+          .footage-metrics {
+            grid-template-columns: 1fr;
+          }
         }
       `}</style>
     </div>

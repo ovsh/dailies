@@ -99,6 +99,7 @@ import type { SegmentInput } from "../src/shared/types";
 import { isAudioOnly } from "../src/renderer/lib/media";
 
 const openDbs: DailiesDB[] = [];
+const tempDirs: string[] = [];
 
 function createTestPipeline(db: DailiesDB, dataDir: string, budget?: PipelineBudget) {
   return createPipeline({
@@ -184,6 +185,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   while (openDbs.length > 0) openDbs.pop()!.close();
+  while (tempDirs.length > 0) rmSync(tempDirs.pop()!, { recursive: true, force: true });
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -236,6 +238,163 @@ describe("pipeline prerequisite and applicability handling", () => {
     await expect(mocks.makeProxyForTest("/media/interrupted.mov", "/cache"))
       .rejects.toThrow("signal SIGKILL");
   });
+
+  it("keeps the proxy ffmpeg finished writing when only the decode error rate failed", async () => {
+    // ffmpeg exit 69 (FFMPEG_ERROR_RATE_EXCEEDED) happens after the output is
+    // fully muxed: damaged camera-card media, but a complete proxy.
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-proxy-"));
+    tempDirs.push(dir);
+    writeFileSync(path.join(dir, "proxy.mp4"), "a complete proxy");
+    mocks.run.mockResolvedValue({
+      stdout: "",
+      stderr: "[hevc @ 0x1] Could not find ref with POC 3\nConversion failed!\n",
+      code: 69,
+      signal: null,
+      timedOut: false,
+    });
+
+    await expect(mocks.makeProxyForTest("/media/GH011482.MP4", dir))
+      .resolves.toBe(path.join(dir, "proxy.mp4"));
+    expect(mocks.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails an exit 69 that left no output behind", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-proxy-"));
+    tempDirs.push(dir);
+    mocks.run.mockResolvedValue({
+      stdout: "",
+      stderr: "Conversion failed!\n",
+      code: 69,
+      signal: null,
+      timedOut: false,
+    });
+
+    await expect(mocks.makeProxyForTest("/media/GH011482.MP4", dir)).rejects.toThrow("exit 69");
+  });
+
+  it("re-attempts a failed proxy once with tolerant decode flags", async () => {
+    mocks.run
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "[hevc @ 0x1] Error while decoding\nConversion failed!\n",
+        code: 1,
+        signal: null,
+        timedOut: false,
+      })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", code: 0, signal: null, timedOut: false });
+
+    await expect(mocks.makeProxyForTest("/media/GH011482.MP4", "/cache"))
+      .resolves.toBe("/cache/proxy.mp4");
+
+    const retryArgs = mocks.run.mock.calls[1]?.[1] as string[];
+    expect(retryArgs).toEqual([
+      "-y",
+      "-err_detect",
+      "ignore_err",
+      "-fflags",
+      "+discardcorrupt",
+      "-max_error_rate",
+      "1",
+      "-i",
+      "/media/GH011482.MP4",
+      "-vf",
+      "scale=960:-2",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-crf",
+      "26",
+      "-preset",
+      "veryfast",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-movflags",
+      "+faststart",
+      "/cache/proxy.mp4",
+    ]);
+  });
+
+  it("drops audio on the re-attempt when the audio encoder is what broke", async () => {
+    mocks.run
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr:
+          "[aost#0:1/aac @ 0x1] Error initializing output stream: Error while opening encoder\n",
+        code: 1,
+        signal: null,
+        timedOut: false,
+      })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", code: 0, signal: null, timedOut: false });
+
+    await expect(mocks.makeProxyForTest("/media/12ch.mov", "/cache"))
+      .resolves.toBe("/cache/proxy.mp4");
+
+    const retryArgs = mocks.run.mock.calls[1]?.[1] as string[];
+    expect(retryArgs).toContain("-an");
+    expect(retryArgs).not.toContain("aac");
+    expect(retryArgs).toContain("+faststart");
+  });
+
+  it("does not re-attempt a proxy that already ran out its timeout", async () => {
+    mocks.run.mockResolvedValue({
+      stdout: "",
+      stderr: "frame= 900 fps=30\r",
+      code: null,
+      signal: "SIGKILL",
+      timedOut: true,
+    });
+
+    await expect(mocks.makeProxyForTest("/media/huge.mov", "/cache", 1000))
+      .rejects.toThrow("timed out after 1000ms");
+    expect(mocks.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports both attempts when the tolerant re-attempt fails too", async () => {
+    mocks.run
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "moov atom not found\n",
+        code: 1,
+        signal: null,
+        timedOut: false,
+      })
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Invalid data found when processing input\n",
+        code: 183,
+        signal: null,
+        timedOut: false,
+      });
+
+    await expect(mocks.makeProxyForTest("/media/truncated.mov", "/cache")).rejects.toThrow(
+      /ffmpeg failed \(exit 1\): moov atom not found[\s\S]*tolerant retry also failed \(exit 183\): Invalid data found/,
+    );
+  });
+
+  it("headlines a proxy failure with whole stderr lines, not a mid-line slice", async () => {
+    // ffmpeg separates progress with \r, so slicing a fixed number of trailing
+    // characters used to leave the first line of the message as a fragment.
+    const noise = `frame= 1 fps=0\r`.repeat(400);
+    mocks.run.mockResolvedValue({
+      stdout: "",
+      stderr: `${noise}[libx264 @ 0x1] chroma_qp_offset=0 threads=8\nConversion failed!\n`,
+      code: 1,
+      signal: null,
+      timedOut: false,
+    });
+
+    const message = await mocks.makeProxyForTest("/media/GH011482.MP4", "/cache").then(
+      () => "resolved",
+      (err: Error) => err.message,
+    );
+    const headline = message.split("\n")[0] ?? "";
+    expect(headline).toContain("Conversion failed!");
+    expect(headline.startsWith("ffmpeg failed (exit 1): ")).toBe(true);
+  });
+
   it("requeues and processes a waiting transcription when startup finds the model", async () => {
     const { db, pipeline } = setup();
     const file = db.upsertFile({

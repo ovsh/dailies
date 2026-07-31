@@ -17,6 +17,7 @@ import type {
   FileDetail,
   LocatorExportOutcome,
   MediaRole,
+  PipelineProgress,
   PipelineSnapshot,
   ProjectActivity,
   StructuredAgentAnswer,
@@ -40,7 +41,7 @@ import {
   setEpisodeMembershipSource,
 } from "./membership";
 import { resolvePlaybackPath } from "./playback-path";
-import { computePipelineSnapshot } from "./pipeline/status";
+import { computePipelineProgress, computePipelineSnapshot } from "./pipeline/status";
 
 function projectSnapshot(db: DailiesDB, scope: ChatScope): PipelineSnapshot {
   const facts = db.listPipelineFileFacts(scope);
@@ -498,6 +499,8 @@ export function registerIpcHandlers(ctx: IpcContext): void {
         const endChatTurn = c.beginChatTurn();
         try {
           const client = createOpenRouterClient(() => apiKey);
+          const selection = chatModelSelection(settings.getChatModelId(), settings.getChatEffort());
+          const modelStamp = { id: selection.option.id, effort: selection.effort };
           const answer = await runChatTurn({
             db: c.db,
             history: c.db.getChatMessages(id).slice(0, -1),
@@ -506,11 +509,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
             embedder: createOpenRouterEmbedder(client),
             episodeId: boundEpisodeId,
             emit: (ev) => emitChatEvent({ ...ev, chatId: id, turnId }),
-            model: chatModelSelection(settings.getChatModelId(), settings.getChatEffort()),
+            model: selection,
             client,
           });
-          c.db.addChatMessage(id, "assistant", structuredAnswerContent(answer), answer);
-          emitChatEvent({ type: "answer", chatId: id, turnId, answer });
+          c.db.addChatMessage(id, "assistant", structuredAnswerContent(answer), answer, modelStamp);
+          emitChatEvent({ type: "answer", chatId: id, turnId, answer, model: modelStamp });
         } catch (err) {
           emitChatEvent({
             type: "error",
@@ -573,6 +576,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
         `ipcMs=${tDone - t0} bytes=${JSON.stringify(snapshot).length}`,
     );
     return snapshot;
+  });
+
+  ipcMain.handle(IPC.getPipelineProgress, (_e, scope: ChatScope): PipelineProgress => {
+    const { db } = requireProject();
+    return computePipelineProgress(db.listPipelineFileFacts(scope));
   });
 
   ipcMain.handle(IPC.getProjectActivities, (): ProjectActivity[] => {

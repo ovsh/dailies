@@ -6,12 +6,14 @@
 
 web
 
-(The product itself is a macOS Electron app, Apple Silicon, macOS 14+. The surfaces
-Impeccable designs here — the landing page at `site/` — are web.)
+(The product itself is an Electron app for Apple Silicon on macOS 14+ and x64 on
+Windows 10/11. The surfaces Impeccable designs here — the landing page at `site/`
+— are web.)
 
 ## Users
 
-Documentary and reality-TV editors and assistant editors, on Apple Silicon Macs,
+Documentary and reality-TV editors and assistant editors, on Apple Silicon Macs or
+64-bit Windows workstations,
 working in Avid Media Composer against large volumes of raw camera media ("dailies").
 Their job: find the moment — a line someone said, a beat a producer remembers — inside
 tens of hours of footage, fast, and get it back into Avid as markers or a selects
@@ -22,8 +24,8 @@ allergic to marketing fluff and to anything that uploads their footage.
 
 ## Product Purpose
 
-Dailies is "chat with your footage": a local-first macOS app that transcribes footage
-on-device (whisper.cpp, Metal), indexes it semantically, and answers plain-language
+Dailies is "chat with your footage": a local-first desktop app that transcribes footage
+on-device (whisper.cpp, using Metal on Apple Silicon and CPU on Windows), indexes it semantically, and answers plain-language
 questions with clip cards — thumbnail, real Avid clip name, source timecode, what was
 said — that click through to the exact moment. Answers export as Avid locator lists
 (markers) and CMX3600 EDLs. Success: a shoot day dropped in a watched folder in the
@@ -35,8 +37,9 @@ in minutes.
 Reads Avid MediaFiles in place — OP-Atom MXF atoms are grouped back into clips under
 their real Avid clip names, no exports, nothing moved or copied. Media never leaves the
 machine; transcription is fully local. Only text excerpts and embedding inputs go to
-OpenRouter (one API key, stored in the macOS Keychain). Neighboring tools either demand
-cloud upload of media or don't speak Avid natively.
+OpenRouter. Electron protects the user-supplied API key with Keychain on macOS or DPAPI
+on Windows when secure storage is available. Neighboring tools either demand cloud
+upload of media or don't speak Avid natively.
 
 ## Operating Context
 
@@ -51,14 +54,15 @@ cloud upload of media or don't speak Avid natively.
 
 ## Capabilities and Constraints
 
-- Apple Silicon only, macOS 14+. Electron app, signed with Digital Lane LLC Developer ID
-  (team 7Z82LSPAPP); notarization is being added in this effort.
+- Apple Silicon with macOS 14+, or x64 with Windows 10/11. The Mac app is signed with
+  Digital Lane LLC Developer ID (team 7Z82LSPAPP) and notarized. The Windows app and
+  NSIS installer use Authenticode.
 - Speed claim (confirmed, use this and not the raw benchmark numbers): an hour of
   footage indexes in roughly 10 minutes on an M-series Mac, mostly transcription.
-- Whisper speech model is a one-time ~1.6 GB download inside the app.
+- Whisper speech model is a one-time ~0.9 GB download inside the app.
 - Requires an OpenRouter API key for chat + embeddings (user-supplied).
-- Free public download; distribution is a notarized DMG on GitHub releases
-  (github.com/ovsh/dailies). Version at time of writing: 0.2.1 (first notarized build).
+- Free public download from GitHub Releases (github.com/ovsh/dailies): a notarized DMG
+  for Mac and a signed NSIS installer for Windows. Version at time of writing: 0.5.4.
 - Terminology: dailies, clips, atoms, markers/locators, EDL, selects, stringout,
   source TC, timeline TC. Use the audience's words.
 

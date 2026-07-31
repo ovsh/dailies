@@ -1,8 +1,8 @@
 /**
  * Auto-update: checks at launch, every hour, and whenever any window comes
  * to front (throttled). Downloads silently in the background, waits for the
- * native (Squirrel.Mac) updater to stage and validate it, and installs on
- * restart or next quit. No dialogs — state pushes to the renderer over
+ * platform updater to validate it, and installs on restart or next quit.
+ * No dialogs — state pushes to the renderer over
  * IPC, which renders the banner, the top-right cluster (UpdateCluster —
  * hidden while the banner is up so only one restart affordance shows), the
  * rail chip, and the Settings & Jobs "Software update" panel
@@ -15,6 +15,7 @@ import electronUpdater from "electron-updater";
 const { autoUpdater } = electronUpdater;
 import { IPC } from "../shared/ipc";
 import type { UpdaterState } from "../shared/types";
+import { downloadedUpdatePhase, updaterStrategy } from "./updater-strategy";
 
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // hourly
 const FOCUS_CHECK_THROTTLE_MS = 10 * 60 * 1000; // at most once per 10 minutes
@@ -47,9 +48,11 @@ function classifyUpdateError(err: unknown): {
 }
 
 export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterService {
+  const strategy = updaterStrategy(process.platform);
   // Dev runs and e2e harnesses (DAILIES_USER_DATA set) must never touch the
-  // updater: no packaged app, no feed, no accidental restarts mid-test.
-  const enabled = app.isPackaged && !process.env["DAILIES_USER_DATA"];
+  // updater: no packaged app, no feed, no accidental restarts mid-test. Linux
+  // packaging is not supported, so it has no updater strategy.
+  const enabled = strategy !== null && app.isPackaged && !process.env["DAILIES_USER_DATA"];
 
   let state: UpdaterState = { phase: "idle", currentVersion: app.getVersion() };
   let busy = false; // a check (and its follow-on download) is in flight
@@ -123,29 +126,29 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
       });
     });
 
-    // electron-updater's "update-downloaded" only means the ZIP arrived from
-    // GitHub. On macOS the native Squirrel.Mac agent then copies and
-    // signature-validates it in the background — and quitAndInstall() before
-    // THAT finishes is a silent no-op (the click does nothing, no error).
-    // So this is "staging", not "ready".
     autoUpdater.on("update-downloaded", (info) => {
-      // Periodic checks can re-announce an already-downloaded update. Once the
-      // native updater has declared it ready, never regress to "staging" — the
-      // renderer's restart affordances key off "ready".
+      if (!strategy) return;
+      // macOS still needs the native Squirrel.Mac staging event. NSIS has
+      // already validated the downloaded package at this point on Windows.
       if (state.phase === "ready" && state.availableVersion === info.version) return;
-      pushState({
-        phase: "staging",
+      const phase = downloadedUpdatePhase(strategy);
+      const patch: Partial<UpdaterState> = {
+        phase,
         availableVersion: info.version,
         transferred: undefined,
         total: undefined,
-      });
+      };
+      if (phase === "ready") settle(patch);
+      else pushState(patch);
     });
 
-    // Squirrel.Mac has validated and staged the update — installing on
-    // restart is now guaranteed to work. This is the real "ready".
-    nativeAutoUpdater.on("update-downloaded", () => {
-      settle({ phase: "ready", availableVersion: pendingAvailableVersion ?? state.availableVersion });
-    });
+    if (strategy?.kind === "macos") {
+      // Squirrel.Mac has validated and staged the update. Installing on
+      // restart is now guaranteed to work.
+      nativeAutoUpdater.on("update-downloaded", () => {
+        settle({ phase: "ready", availableVersion: pendingAvailableVersion ?? state.availableVersion });
+      });
+    }
 
     // Native staging failures (bad signature, ShipIt errors) surface here via
     // electron-updater's own native error forwarding.
@@ -190,10 +193,11 @@ export function createUpdater(getWindow: () => BrowserWindow | null): UpdaterSer
 
     restartNow(): void {
       if (!enabled) return;
-      // Only meaningful once the native updater confirmed readiness; calling
-      // earlier would silently do nothing (the original "restart lies" bug).
-      if (state.phase !== "ready") return;
-      autoUpdater.quitAndInstall();
+      if (state.phase !== "ready" || !strategy) return;
+      // Preserve the established Squirrel.Mac handoff. electron-updater owns
+      // the NSIS install on Windows.
+      if (strategy.kind === "macos") nativeAutoUpdater.quitAndInstall();
+      else autoUpdater.quitAndInstall();
     },
   };
 }

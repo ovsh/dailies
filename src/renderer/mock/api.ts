@@ -426,6 +426,8 @@ export function createMockApi(): DailiesAPI {
   }
 
   return {
+    platform: new URLSearchParams(window.location?.search ?? "").get("platform") === "win32" ? "win32" : "darwin",
+
     // ---------- projects ----------
 
     async listProjects() {

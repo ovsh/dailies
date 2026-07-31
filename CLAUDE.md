@@ -58,6 +58,24 @@ Dailies' specifics:
 The `digital-lane` notarytool profile is per-team and already set up — no
 first-run credential step. Never handle Apple ID passwords.
 
+## Windows signing and draft upload
+
+Windows x64 releases use `.github/workflows/windows-release.yml`. Run it only from
+the exact `v0.5.4` tag. The workflow requires `WIN_CSC_LINK`,
+`WIN_CSC_KEY_PASSWORD`, `DAILIES_TELEMETRY_URL`, and
+`DAILIES_TELEMETRY_TOKEN` as repository secrets. It downloads the fixed
+whisper.cpp `v1.9.1` x64 archive by SHA-256, signs the NSIS build and bundled
+runtime, verifies Authenticode
+and `latest.yml`, and uploads these files to an existing draft release:
+
+    Dailies-0.5.4-Setup-x64.exe
+    Dailies-0.5.4-Setup-x64.exe.blockmap
+    latest.yml
+
+The workflow never publishes. Add and verify the Mac assets first, then publish
+the complete release by hand. An existing draft asset with different bytes is a
+hard failure. Do not use `--clobber`.
+
 ## Telemetry (from 0.5.3)
 
 Always-on log shipping for installs with the toggle on. The app streams

@@ -22,6 +22,7 @@ import { createTelemetryShipper, type TelemetryShipper } from "./telemetry";
  * next open), so run it first, before we open any other file.
  */
 function ensureStandardStreams(): void {
+  if (process.platform !== "darwin") return;
   for (const fd of [0, 1, 2]) {
     try {
       fs.fstatSync(fd);
@@ -56,37 +57,46 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 /**
- * Electron's own default menu (About / Services / Hide / Quit, standard Edit
- * and Window menus) but with "Check for Updates…" inserted under About, in
- * the standard macOS location. Building it by hand — rather than relying on
- * the implicit default — is the only way to add that one item.
+ * Uses the native menu shape for each platform and adds one update command.
  */
 function buildAppMenu(checkForUpdates: () => void): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: app.name,
-      submenu: [
-        { role: "about" },
-        { label: "Check for Updates…", click: () => checkForUpdates() },
-        { type: "separator" },
-        { role: "services" },
-        { type: "separator" },
-        { role: "hide" },
-        { role: "hideOthers" },
-        { role: "unhide" },
-        { type: "separator" },
-        { role: "quit" },
-      ],
-    },
-    { role: "fileMenu" },
-    { role: "editMenu" },
-    { role: "viewMenu" },
-    { role: "windowMenu" },
-    {
-      role: "help",
-      submenu: [],
-    },
-  ];
+  const template: Electron.MenuItemConstructorOptions[] = process.platform === "darwin"
+    ? [
+        {
+          label: app.name,
+          submenu: [
+            { role: "about" },
+            { label: "Check for Updates…", click: () => checkForUpdates() },
+            { type: "separator" },
+            { role: "services" },
+            { type: "separator" },
+            { role: "hide" },
+            { role: "hideOthers" },
+            { role: "unhide" },
+            { type: "separator" },
+            { role: "quit" },
+          ],
+        },
+        { role: "fileMenu" },
+        { role: "editMenu" },
+        { role: "viewMenu" },
+        { role: "windowMenu" },
+        { role: "help", submenu: [] },
+      ]
+    : [
+        { role: "fileMenu" },
+        { role: "editMenu" },
+        { role: "viewMenu" },
+        { role: "windowMenu" },
+        {
+          role: "help",
+          submenu: [
+            { label: "Check for Updates…", click: () => checkForUpdates() },
+            { type: "separator" },
+            { label: "About Dailies", click: () => app.showAboutPanel() },
+          ],
+        },
+      ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
@@ -132,14 +142,19 @@ function warnIfTranslocated(): void {
 }
 
 function createWindow(): BrowserWindow {
+  const platformWindowOptions: Electron.BrowserWindowConstructorOptions = process.platform === "darwin"
+    ? {
+        titleBarStyle: "hiddenInset",
+        trafficLightPosition: { x: 16, y: 18 },
+      }
+    : {};
   const w = new BrowserWindow({
     width: 1480,
     height: 940,
     minWidth: 1100,
     minHeight: 700,
     backgroundColor: "#9ea4a9",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 18 },
+    ...platformWindowOptions,
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.cjs"),
       contextIsolation: true,

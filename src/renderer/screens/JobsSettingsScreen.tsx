@@ -540,7 +540,7 @@ export function JobsSettingsScreen({
     const path = result.value.path;
     setToast({
       message: `Diagnostics written to ${path}`,
-      actionLabel: "Reveal in Finder",
+      actionLabel: "Show in folder",
       onAction: () => void api.revealInFinder(path),
     });
   }
@@ -1224,7 +1224,7 @@ export function JobsSettingsScreen({
               )}
               {modelProgress?.error && <p className="jobs-error mono">{modelProgress.error}</p>}
               <p className="jobs-hint mono">
-                Everything transcribes on this Mac. Audio never leaves the machine.
+                Everything transcribes on this computer. Audio never leaves the machine.
               </p>
             </div>
           </section>

@@ -620,9 +620,8 @@ export interface ModelDownloadProgress {
 
 // ---------- software update ----------
 
-// "staging": the ZIP is downloaded and macOS (Squirrel.Mac) is copying and
-// signature-validating it. "ready" is only entered once the NATIVE updater
-// confirms it can install — quitAndInstall() before that is a silent no-op.
+// "staging" is macOS-only while Squirrel.Mac copies and validates the ZIP.
+// Windows enters "ready" when electron-updater validates the NSIS download.
 export type UpdatePhase = "idle" | "checking" | "downloading" | "staging" | "ready" | "error";
 
 /** Pushed main -> renderer whenever the updater's state changes. */

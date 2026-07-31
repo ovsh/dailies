@@ -642,7 +642,7 @@ export function ChatScreen({
   function showLocatorExportToast(outcome: Extract<LocatorExportOutcome, { kind: "written" }>) {
     setToast({
       message: `Exported ${outcome.markerCount} ${outcome.markerCount === 1 ? "marker" : "markers"} · ${outcome.clipCount} ${outcome.clipCount === 1 ? "clip" : "clips"}`,
-      action: { label: "Reveal in Finder", onClick: () => api.revealInFinder(outcome.revealPath) },
+      action: { label: "Show in folder", onClick: () => api.revealInFinder(outcome.revealPath) },
     });
   }
 
@@ -668,8 +668,8 @@ export function ChatScreen({
     }
     const result = outcome.result;
     setToast({
-      message: `Exported ${result.count} ${result.count === 1 ? "marker" : "markers"} · ${result.path.split("/").pop()}`,
-      action: { label: "Reveal in Finder", onClick: () => api.revealInFinder(result.path) },
+      message: `Exported ${result.count} ${result.count === 1 ? "marker" : "markers"} · ${result.path.split(/[\\/]/).pop()}`,
+      action: { label: "Show in folder", onClick: () => api.revealInFinder(result.path) },
     });
   }
 

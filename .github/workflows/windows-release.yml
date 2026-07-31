@@ -1,0 +1,167 @@
+name: Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact release tag
+        required: true
+        default: v0.5.4
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-v0.5.4
+  cancel-in-progress: false
+
+jobs:
+  build-sign-and-upload:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      DAILIES_TELEMETRY_URL: ${{ secrets.DAILIES_TELEMETRY_URL }}
+      DAILIES_TELEMETRY_TOKEN: ${{ secrets.DAILIES_TELEMETRY_TOKEN }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@8f152de45cc393bb48ce5d89d36b731f54556e65 # v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+
+      - name: Validate release boundary
+        shell: pwsh
+        run: |
+          if ('${{ inputs.tag }}' -ne 'v0.5.4') {
+            throw 'This workflow only accepts the exact v0.5.4 tag.'
+          }
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($package.version -ne '0.5.4') {
+            throw "package.json version $($package.version) does not match v0.5.4."
+          }
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json
+          if ($lock.version -ne '0.5.4' -or $lock.packages.''.version -ne '0.5.4') {
+            throw 'package-lock.json does not match v0.5.4.'
+          }
+          $checkedOutTag = git describe --tags --exact-match HEAD
+          if ($LASTEXITCODE -ne 0 -or $checkedOutTag -ne 'v0.5.4') {
+            throw 'The checked-out commit is not tagged v0.5.4.'
+          }
+          foreach ($name in 'WIN_CSC_LINK', 'WIN_CSC_KEY_PASSWORD', 'DAILIES_TELEMETRY_URL', 'DAILIES_TELEMETRY_TOKEN') {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "Env:$name").Value)) {
+              throw "$name is required for a release build."
+            }
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Add pinned Windows Whisper runtime
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip'
+          $expectedSha256 = '7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539'
+          $archive = Join-Path $env:RUNNER_TEMP 'whisper-bin-x64-v1.9.1.zip'
+          $expanded = Join-Path $env:RUNNER_TEMP 'whisper-bin-x64-v1.9.1'
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actualSha256 = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "whisper.cpp archive checksum mismatch: $actualSha256"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $expanded
+          $cli = Get-ChildItem $expanded -Recurse -File -Filter whisper-cli.exe | Select-Object -First 1
+          if ($null -eq $cli) { throw 'whisper.cpp v1.9.1 did not contain whisper-cli.exe.' }
+          New-Item vendor/whisper -ItemType Directory -Force | Out-Null
+          Copy-Item $cli.FullName vendor/whisper/whisper-cli.exe
+          Get-ChildItem $cli.DirectoryName -File -Filter *.dll | Copy-Item -Destination vendor/whisper
+          if (-not (Test-Path vendor/whisper/whisper-cli.exe)) {
+            throw 'The Windows Whisper runtime was not staged.'
+          }
+
+      - name: Check and test
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Build signed NSIS release
+        run: npm run dist:win
+
+      - name: Verify signatures and update metadata
+        shell: pwsh
+        run: |
+          $installer = 'release/Dailies-0.5.4-Setup-x64.exe'
+          $app = 'release/win-unpacked/Dailies.exe'
+          $blockmap = "$installer.blockmap"
+          $manifestPath = 'release/latest.yml'
+          foreach ($path in $installer, $app, $blockmap, $manifestPath) {
+            if (-not (Test-Path $path)) { throw "Missing release file: $path" }
+          }
+          foreach ($path in $installer, $app) {
+            $signature = Get-AuthenticodeSignature $path
+            if ($signature.Status -ne 'Valid') {
+              throw "$path has invalid Authenticode status: $($signature.Status)"
+            }
+          }
+          $whisperBinaries = @(Get-ChildItem 'release/win-unpacked/resources/whisper' -Recurse -File -Include *.exe,*.dll)
+          if ($whisperBinaries.Count -eq 0) { throw 'The packaged Whisper runtime is missing.' }
+          foreach ($binary in $whisperBinaries) {
+            $signature = Get-AuthenticodeSignature $binary.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "$($binary.FullName) has invalid Authenticode status: $($signature.Status)"
+            }
+          }
+          $manifest = Get-Content $manifestPath -Raw
+          if ($manifest -notmatch '(?m)^version:\s*0\.5\.4\s*$') {
+            throw 'latest.yml has the wrong version.'
+          }
+          if ($manifest -notmatch '(?m)^path:\s*Dailies-0\.5\.4-Setup-x64\.exe\s*$') {
+            throw 'latest.yml points at the wrong installer.'
+          }
+          $shaLine = [regex]::Match($manifest, '(?m)^sha512:\s*(\S+)\s*$')
+          if (-not $shaLine.Success) { throw 'latest.yml has no SHA-512 digest.' }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path $installer))
+          $actualSha = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData($bytes))
+          if ($shaLine.Groups[1].Value -ne $actualSha) {
+            throw 'latest.yml SHA-512 does not match the installer.'
+          }
+
+      - name: Upload to existing draft without clobbering
+        shell: pwsh
+        run: |
+          $release = gh release view v0.5.4 --json isDraft,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release v0.5.4 does not exist.' }
+          if (-not $release.isDraft) { throw 'Release v0.5.4 is not a draft. Refusing to replace it.' }
+          $paths = @(
+            'release/Dailies-0.5.4-Setup-x64.exe',
+            'release/Dailies-0.5.4-Setup-x64.exe.blockmap',
+            'release/latest.yml'
+          )
+          $existingNames = @($release.assets | ForEach-Object { $_.name })
+          foreach ($path in $paths) {
+            $name = Split-Path $path -Leaf
+            if ($existingNames -contains $name) {
+              $downloadDir = Join-Path $env:RUNNER_TEMP "existing-$name"
+              New-Item $downloadDir -ItemType Directory -Force | Out-Null
+              gh release download v0.5.4 --pattern $name --dir $downloadDir
+              if ($LASTEXITCODE -ne 0) { throw "Could not download existing asset $name." }
+              $localHash = (Get-FileHash $path -Algorithm SHA256).Hash
+              $remoteHash = (Get-FileHash (Join-Path $downloadDir $name) -Algorithm SHA256).Hash
+              if ($localHash -ne $remoteHash) {
+                throw "Draft asset $name exists with different bytes."
+              }
+              Write-Host "Keeping identical draft asset $name."
+            } else {
+              gh release upload v0.5.4 $path
+              if ($LASTEXITCODE -ne 0) { throw "Could not upload $name." }
+            }
+          }
+          Write-Host 'Windows assets are on the draft. Add the Mac assets and publish manually.'

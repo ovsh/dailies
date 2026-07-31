@@ -5,13 +5,13 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
 
 - **Fully local media** — footage is indexed in place; nothing is moved or copied, and media
   files are never uploaded. Text excerpts and embedding inputs are sent to OpenRouter.
-- **One key** — a single OpenRouter API key powers chat and semantic embeddings. Stored in
-  the macOS Keychain.
+- **One key** — a single OpenRouter API key powers chat and semantic embeddings. Electron
+  protects it with Keychain on macOS or DPAPI on Windows when secure storage is available.
 - **Reads Avid media directly** — point it at an `Avid MediaFiles` folder; OP-Atom MXF atoms
   are grouped back into clips under their real Avid clip names. No exports needed.
-- **Whisper on-device, built in** — the transcription engine ships inside the app
-  (whisper.cpp, Metal). One-click speech-model download in Settings. Your audio never
-  leaves the machine.
+- **Whisper on-device, built in** — the transcription engine ships inside the app.
+  Apple Silicon uses Metal; Windows uses the local CPU. One-click speech-model download
+  in Settings. Your audio never leaves the machine.
 
 ---
 
@@ -19,17 +19,16 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
 
 ### 1. Install
 
-1. Download the latest `Dailies-<version>-arm64.dmg` from
-   [Releases](https://github.com/ovsh/dailies/releases), open it, and drag
-   **Dailies** to Applications. The app is signed and notarized; it opens
-   like any other Mac app.
-2. Requirements: Apple Silicon Mac, macOS 14+.
-3. The DMG is only for that first install — from 0.3.0 on, Dailies checks
+1. Download the installer from [Releases](https://github.com/ovsh/dailies/releases):
+   - macOS: open `Dailies-<version>-arm64.dmg` and drag **Dailies** to Applications.
+     The app is signed and notarized.
+   - Windows: run `Dailies-<version>-Setup-x64.exe`. The installer and app are signed.
+2. Requirements: Apple Silicon with macOS 14+, or 64-bit Windows 10/11.
+3. The installer is only for the first install. Dailies checks
    GitHub Releases at launch, hourly, and whenever the window comes to
    front, downloading updates in the background. A banner appears under
    the title bar once one is ready ("Restart now" or "Later"); the same
-   status lives in Settings & Jobs and via **Dailies ▸ Check for Updates…**
-   in the menu bar.
+   status lives in Settings & Jobs and in the application menu.
 
 ### 2. First run — three things
 
@@ -42,13 +41,12 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
    a watched folder are picked up automatically.
 3. **The speech model.** The Whisper engine is built into the app — nothing to install.
    The first time, go to **Settings & Jobs → Transcription → Download** to fetch the
-   speech model (~1.6 GB, one time; a progress bar shows it downloading). Until it's
+   speech model (~0.9 GB, one time; a progress bar shows it downloading). Until it's
    downloaded, document import and chat still work, and any clips waiting on transcription
    pick it up automatically afterwards.
 
-   *Advanced:* if you already use whisper.cpp, Dailies also honors a Homebrew install
-   (`brew install whisper-cpp`) or a `DAILIES_WHISPER_BIN` override — but you never need
-   a terminal.
+   *Advanced:* Dailies honors a `DAILIES_WHISPER_BIN` override on both platforms. On
+   macOS, it also finds a Homebrew install from `brew install whisper-cpp`.
 
 ### 3. Projects
 
@@ -110,21 +108,23 @@ Under every answer:
   import the file → every hit lands as a colored marker with the agent's note.
 - **Export EDL** — a CMX3600 cut list of the selects, ready to import as a selects sequence.
 
-Files land in `~/Documents/Dailies Exports/` (the toast has a **Reveal in Finder** button).
+Files land in the `Dailies Exports` folder under Documents. The toast has a
+**Show in folder** button.
 All timecodes are source TC (or timeline TC for finals), drop-frame handled correctly.
 
 ### 9. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| "Can't verify the app" on first open | Only affects pre-0.2.1 builds. Download the current notarized DMG from Releases, or right-click → Open → Open once. |
+| macOS says it cannot verify the app | Download the current notarized DMG from Releases. |
+| Windows warns about an unknown publisher | Do not continue. Download the current signed installer from Releases. |
 | Update banner never appears | It only shows once a download finishes. Check status any time in Settings & Jobs, or **Dailies ▸ Check for Updates…**. |
 | Chat says a key is needed | Settings & Jobs → paste your OpenRouter key. |
 | Clips stuck without transcripts | Download the speech model: Settings & Jobs → Transcription → Download. |
 | Something looks stuck | Settings & Jobs shows every indexing job and any errors; "Scan again" is always safe. |
 
-Your index lives in `~/Library/Application Support/Dailies/` — deleting it never touches
-your media; everything can be re-indexed.
+The index lives in the Dailies application-data folder: `~/Library/Application Support/Dailies/`
+on macOS or `%APPDATA%\Dailies\` on Windows. Deleting it never touches your media.
 
 ---
 
@@ -136,13 +136,14 @@ npm run dev            # vite + electron
 npm run dev:renderer   # renderer only in a browser, with mock data
 npm run typecheck
 npm test
-npm run dist           # signed macOS DMG + ZIP + latest-mac.yml into release/
+npm run dist:mac       # macOS arm64 DMG + ZIP + latest-mac.yml into release/
+npm run dist:win       # signed Windows x64 NSIS installer + latest.yml into release/
 npm run rebuild        # force a fresh Electron native rebuild (normally unnecessary)
 ```
 
 ### Releasing
 
-`npm run dev`, `npm test`, and `npm run dist` automatically select the correct
+`npm run dev`, `npm test`, `npm run dist:mac`, and `npm run dist:win` select the correct
 better-sqlite3 binary. The first use of each ABI caches its compiled artifact under
 `.native-cache`; switching between tests/Node harnesses and Electron
 then copies or directly loads the matching cached file instead of rebuilding it. Direct
@@ -154,7 +155,7 @@ To **notarize** (required for friction-free installs on modern macOS), build wit
 stored notarytool keychain profile:
 
 ```sh
-APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist
+APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist:mac
 ```
 
 This produces the DMG, the ZIP, and `latest-mac.yml` in `release/`. Notarize
@@ -170,6 +171,22 @@ or existing installs won't see the new version.
 Un-notarized builds are blocked by Gatekeeper on current macOS ("damaged / move to
 Trash"). Workaround for a machine you control: `xattr -d com.apple.quarantine /Applications/Dailies.app`.
 
+The Windows build runs in `.github/workflows/windows-release.yml` from the exact
+`v0.5.4` tag. It requires `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`, and both telemetry
+secrets. The workflow downloads the SHA-256-pinned whisper.cpp `v1.9.1` archive,
+runs the checks, verifies Authenticode and `latest.yml`, then adds these files to
+an existing draft release:
+
+```text
+Dailies-0.5.4-Setup-x64.exe
+Dailies-0.5.4-Setup-x64.exe.blockmap
+latest.yml
+```
+
+It does not publish the release. Add the notarized Mac files, verify the full draft,
+then publish it by hand. The workflow refuses to replace a draft asset with different
+bytes.
+
 ## Architecture
 
 See `docs/` and `src/shared/types.ts` (the cross-boundary contract). Modules:
@@ -181,4 +198,4 @@ See `docs/` and `src/shared/types.ts` (the cross-boundary contract). Modules:
 | `src/main/pipeline/` | watch → probe → audio/proxy/scenes → whisper → transcript embeddings; Avid OP-Atom MXF grouping; document (notes/script/xlsx) ingest |
 | `src/main/agents/` | OpenRouter supervisor + transcript/document search agents, episode-scoped hybrid search |
 | `src/main/export/` | Avid locator lists + CMX3600 EDL (frame-accurate, DF-aware) |
-| `src/renderer/` | React UI ("screening room" design): projects, episodes, chat, library, clip view |
+| `src/renderer/` | React UI ("The Bin" design): projects, episodes, chat, library, clip view |

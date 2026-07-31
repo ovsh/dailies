@@ -1,7 +1,7 @@
 {
   "name": "dailies",
   "productName": "Dailies",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "description": "Chat with your footage. Local indexing, agent search, Avid-native export.",
   "main": "dist-electron/main/index.cjs",
@@ -10,7 +10,8 @@
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "build:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:ffmpeg-static --external:ffprobe-static --external:electron-updater --define:__DAILIES_TELEMETRY_URL__=\"\\\"$DAILIES_TELEMETRY_URL\\\"\" --define:__DAILIES_TELEMETRY_TOKEN__=\"\\\"$DAILIES_TELEMETRY_TOKEN\\\"\" --outfile=dist-electron/main/index.cjs && esbuild src/preload/index.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload/index.cjs",
-    "icon:mac": "node scripts/generate-app-icon.mjs",
+    "icon": "node scripts/generate-app-icon.mjs",
+    "icon:mac": "npm run icon",
     "native:node": "node scripts/manage-better-sqlite3.mjs node",
     "native:electron": "node scripts/manage-better-sqlite3.mjs electron",
     "predev": "npm run native:electron",
@@ -21,8 +22,9 @@
     "e2e:onboarding": "node scripts/e2e-onboarding.mjs",
     "rebuild": "node scripts/manage-better-sqlite3.mjs electron --force",
     "finalize:mac": "node scripts/finalize-mac-release.mjs",
-    "predist": "npm run icon:mac && npm run native:electron",
-    "dist": "npm run build:renderer && npm run build:main && electron-builder --mac --publish never"
+    "dist": "npm run dist:mac",
+    "dist:mac": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main && electron-builder --mac --publish never",
+    "dist:win": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main && electron-builder --win nsis --x64 --publish never -c.forceCodeSigning=true"
   },
   "build": {
     "appId": "com.dailies.app",
@@ -60,7 +62,40 @@
       "darkModeSupport": true,
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "notarize": true
+      "notarize": true,
+      "extraResources": [
+        {
+          "from": "vendor/whisper/whisper-cli",
+          "to": "whisper/whisper-cli"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "Dailies-${version}-Setup-${arch}.${ext}",
+      "verifyUpdateCodeSignature": true,
+      "signExts": [
+        ".exe",
+        ".dll"
+      ],
+      "extraResources": [
+        {
+          "from": "vendor/whisper",
+          "to": "whisper",
+          "filter": [
+            "*.exe",
+            "*.dll"
+          ]
+        }
+      ]
     },
     "dmg": {
       "title": "Dailies"
@@ -69,13 +104,7 @@
       "provider": "github",
       "owner": "ovsh",
       "repo": "dailies"
-    },
-    "extraResources": [
-      {
-        "from": "vendor/whisper",
-        "to": "whisper"
-      }
-    ]
+    }
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",

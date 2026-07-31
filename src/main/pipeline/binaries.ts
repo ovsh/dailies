@@ -1,7 +1,7 @@
 /**
  * Resolves paths to external tool binaries used by the pipeline:
  * ffmpeg, ffprobe (bundled via *-static packages, falling back to PATH),
- * and whisper-cli (a local, user-installed binary, never bundled).
+ * and whisper-cli (bundled for each supported release target).
  */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -40,21 +40,35 @@ export function findFfprobeBinary(): string {
   return "ffprobe";
 }
 
-const WHISPER_CANDIDATES = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
+export type WhisperRuntimeTarget =
+  | { kind: "macos"; executable: "whisper-cli"; pathCommand: "which" }
+  | { kind: "windows"; executable: "whisper-cli.exe"; pathCommand: "where.exe" };
+
+export function whisperRuntimeTarget(platform: NodeJS.Platform): WhisperRuntimeTarget | null {
+  if (platform === "darwin") {
+    return { kind: "macos", executable: "whisper-cli", pathCommand: "which" };
+  }
+  if (platform === "win32") {
+    return { kind: "windows", executable: "whisper-cli.exe", pathCommand: "where.exe" };
+  }
+  return null;
+}
+
+const MAC_WHISPER_CANDIDATES = ["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
 
 /**
  * The whisper-cli we ship inside the app (static arm64 build with embedded
- * Metal shaders — see vendor/whisper/). Packaged: <Resources>/whisper/;
- * dev: <repo>/vendor/whisper/.
+ * Metal shaders on macOS and the pinned whisper.cpp x64 release on Windows.
+ * Packaged: <Resources>/whisper/; dev: <repo>/vendor/whisper/.
  */
-function bundledWhisperBinary(): string | null {
+function bundledWhisperBinary(target: WhisperRuntimeTarget): string | null {
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   const moduleDir = typeof __dirname !== "undefined" ? __dirname : null;
   const candidates = [
-    resourcesPath ? join(resourcesPath, "whisper", "whisper-cli") : null,
+    resourcesPath ? join(resourcesPath, "whisper", target.executable) : null,
     // dev: dist-electron/main/index.cjs -> repo root -> vendor
-    moduleDir ? join(moduleDir, "..", "..", "vendor", "whisper", "whisper-cli") : null,
-    join(process.cwd(), "vendor", "whisper", "whisper-cli"),
+    moduleDir ? join(moduleDir, "..", "..", "vendor", "whisper", target.executable) : null,
+    join(process.cwd(), "vendor", "whisper", target.executable),
   ];
   for (const c of candidates) {
     if (c && existsSync(c)) return c;
@@ -72,8 +86,8 @@ export function setGlobalModelsDir(dir: string): void {
  * Locates the whisper-cli binary, checking in order:
  * 1. DAILIES_WHISPER_BIN env var
  * 2. the binary bundled with the app
- * 3. common Homebrew install locations
- * 4. `which whisper-cli` on PATH
+ * 3. common Homebrew install locations on macOS
+ * 4. `which` on macOS or `where.exe` on Windows
  * Returns null if none are found.
  */
 export function findWhisperBinary(): string | null {
@@ -82,22 +96,29 @@ export function findWhisperBinary(): string | null {
     return fromEnv;
   }
 
-  const bundled = bundledWhisperBinary();
+  const target = whisperRuntimeTarget(process.platform);
+  if (!target) return null;
+
+  const bundled = bundledWhisperBinary(target);
   if (bundled) {
     return bundled;
   }
 
-  for (const candidate of WHISPER_CANDIDATES) {
-    if (existsSync(candidate)) {
-      return candidate;
+  if (target.kind === "macos") {
+    for (const candidate of MAC_WHISPER_CANDIDATES) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
 
-  const which = spawnSync("which", ["whisper-cli"], { encoding: "utf8" });
-  if (which.status === 0) {
-    const found = which.stdout.trim();
-    if (found.length > 0 && existsSync(found)) {
-      return found;
+  const lookup = spawnSync(target.pathCommand, [target.executable], { encoding: "utf8" });
+  if (lookup.status === 0) {
+    for (const found of lookup.stdout.split(/\r?\n/)) {
+      const candidate = found.trim();
+      if (candidate.length > 0 && existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
 

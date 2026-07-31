@@ -11,9 +11,9 @@ import { STAGE_POLICY } from "./status";
 function defaultConcurrency(): number {
   return Math.min(8, Math.max(4, cpus().length - 2));
 }
-// Whisper runs on the GPU (Metal): a third concurrent job queues on the same
-// device instead of going faster, whatever the core count is.
-const MAX_TRANSCRIBE_CONCURRENCY = 2;
+// macOS Whisper uses Metal efficiently at two jobs. The packaged Windows
+// runtime is CPU-only, so run one large model at a time to keep the app responsive.
+const MAX_TRANSCRIBE_CONCURRENCY = process.platform === "win32" ? 1 : 2;
 // Back-off floor — below this the pipeline stops making useful progress.
 const MIN_CONCURRENCY = 2;
 const LOAD_SAMPLE_MS = 15_000;

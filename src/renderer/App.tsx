@@ -151,10 +151,9 @@ export function App() {
       projectState.folders.length === 0 ||
       !settings.whisperModelReady);
 
-  // The window uses a hidden title bar, so an explicit drag region is the only
-  // way to move the window. It must be present on EVERY view — including the
-  // loading state and the Projects picker — not just the main app shell.
-  const titlebar = <div className="titlebar-drag" />;
+  // macOS uses a hidden inset title bar, so it needs an explicit drag region.
+  // Windows keeps its native title bar and must not place this region over app controls.
+  const titlebar = api.platform === "darwin" ? <div className="titlebar-drag" /> : null;
 
   if (!projectLoaded) {
     return (
@@ -175,7 +174,7 @@ export function App() {
   }
 
   return (
-    <div className="app-root">
+    <div className={`app-root platform-${api.platform}`}>
       {titlebar}
       {/* Exactly one restart affordance at a time: while the full-width banner
           is up it owns the "ready" story, so the fixed top-right cluster stays
@@ -280,6 +279,9 @@ export function App() {
           flex-direction: column;
           overflow: hidden;
           position: relative;
+        }
+        .platform-win32 .update-banner {
+          margin-top: 0;
         }
         .app-screen-area {
           flex: 1;

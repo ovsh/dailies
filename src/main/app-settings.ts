@@ -1,7 +1,7 @@
 /**
  * Global (cross-project) settings: OpenRouter key and whisper model.
- * Stored as JSON in userData; the API key is encrypted with safeStorage
- * (macOS Keychain-backed). Replaces the old per-database settings for these.
+ * Stored as JSON in userData. Electron safeStorage uses Keychain on macOS and
+ * DPAPI on Windows. Replaces the old per-database settings for these.
  */
 import { safeStorage } from "electron";
 import { randomUUID } from "node:crypto";

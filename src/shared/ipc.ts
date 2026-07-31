@@ -50,6 +50,9 @@ export interface ClipListImportBlocked {
 }
 
 export interface DailiesAPI {
+  /** Host platform, exposed once so renderer chrome can match the native window. */
+  readonly platform: NodeJS.Platform;
+
   // projects
   listProjects(): Promise<Project[]>;
   createProject(name: string): Promise<Project>;

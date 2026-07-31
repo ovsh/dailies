@@ -14,6 +14,8 @@ import type {
 } from "../shared/types";
 
 const api: DailiesAPI = {
+  platform: process.platform,
+
   // projects
   listProjects: () => ipcRenderer.invoke(IPC.listProjects),
   createProject: (name: string) => ipcRenderer.invoke(IPC.createProject, name),

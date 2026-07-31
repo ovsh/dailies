@@ -65,4 +65,4 @@ Lineage: pre-dark-era Avid Media Composer chrome. The app earlier wore a dark
 - Keep it text-free and legible at 16px. Do not replace it with a generic play,
   camera, waveform, or chat glyph.
 - `build/icon-source.svg` is the editable source. `build/icon.png` is the 1024px
-  raster source. `npm run icon:mac` writes the packaged `build/icon.icns`.
+  raster source. `npm run icon` writes `build/icon.icns` and `build/icon.ico`.

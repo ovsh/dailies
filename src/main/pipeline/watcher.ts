@@ -2,8 +2,8 @@
  * Watches folders for new/changed video files and reports each stable path
  * back to the pipeline for enqueueing.
  *
- * Built on fs.watch(root, { recursive: true }) — FSEvents on macOS, inotify
- * on Linux — which costs O(1) file descriptors per watched root. A per-file
+ * Built on fs.watch(root, { recursive: true }) — FSEvents on macOS and
+ * ReadDirectoryChangesW on Windows — which costs O(1) handles per watched root. A per-file
  * watcher backend (chokidar v4+ uses kqueue, one fd per file) exhausts the
  * process fd table on a real Avid MediaFiles tree (tens of thousands of
  * atoms), after which every child_process spawn in the app fails with EBADF.

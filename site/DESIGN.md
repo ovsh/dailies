@@ -1,10 +1,9 @@
 # Design — Dailies landing page
 
-Scope: `site/` only. The app's own renderer keeps its incumbent "screening room"
-world (slate + brass, `src/renderer/theme/tokens.css`); this file governs the
-marketing page, a deliberately different world. Chosen 2026-07-23 via the
-Impeccable direction roll (seed key ea177cc2, assigned index 4 of the grounded
-list), user-confirmed over the Emulsion (16mm strip) alternate.
+Scope: `site/` only. The app renderer and this marketing page share The Bin world;
+this file governs the marketing expression. Chosen 2026-07-23 via the Impeccable
+direction roll (seed key ea177cc2, assigned index 4 of the grounded list),
+user-confirmed over the Emulsion (16mm strip) alternate.
 
 World: **The Bin** — the page is built as a Media Composer bin. Not the modern
 dark MC: the pre-dark-era steel-gray chrome veteran editors remember (Meridien /

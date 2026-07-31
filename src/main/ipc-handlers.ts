@@ -42,6 +42,7 @@ import {
 } from "./membership";
 import { resolvePlaybackPath } from "./playback-path";
 import { computePipelineProgress, computePipelineSnapshot } from "./pipeline/status";
+import { diagnosticsArchiveCommand } from "./diagnostics-archive";
 
 function projectSnapshot(db: DailiesDB, scope: ChatScope): PipelineSnapshot {
   const facts = db.listPipelineFileFacts(scope);
@@ -660,8 +661,13 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       const outDir = path.join(app.getPath("documents"), "Dailies Exports");
       fs.mkdirSync(outDir, { recursive: true });
       const zipPath = path.join(outDir, `dailies-diagnostics-${exportTimestamp()}.zip`);
+      const archive = diagnosticsArchiveCommand({
+        platform: process.platform,
+        sourceDir: staging,
+        destinationZip: zipPath,
+      });
       await new Promise<void>((resolve, reject) => {
-        execFile("ditto", ["-c", "-k", "--sequesterRsrc", staging, zipPath], (err) =>
+        execFile(archive.command, archive.args, (err) =>
           err ? reject(err) : resolve(),
         );
       });

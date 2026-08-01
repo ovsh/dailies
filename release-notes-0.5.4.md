@@ -2,7 +2,7 @@ Dailies now runs on Windows x64 while keeping the Apple Silicon Mac build.
 
 WHAT IS NEW
 
-- Windows installer. The app and NSIS installer are signed for 64-bit Windows 10 and 11.
+- Windows beta installer for 64-bit Windows 10 and 11. This beta is unsigned, so Windows shows "Unknown publisher" during installation.
 - Local transcription on Windows. Dailies ships whisper.cpp for Windows and keeps audio on the computer. Apple Silicon continues to use Metal.
 - Windows updates. A verified NSIS download becomes ready to install without waiting for the macOS Squirrel staging event.
 - Native window controls and menus on both platforms.

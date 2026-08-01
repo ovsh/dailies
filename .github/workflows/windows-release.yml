@@ -1,4 +1,4 @@
-name: Windows release
+name: Windows unsigned beta
 
 on:
   workflow_dispatch:
@@ -17,12 +17,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-sign-and-upload:
+  build-and-upload-unsigned-beta:
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
       DAILIES_TELEMETRY_URL: ${{ secrets.DAILIES_TELEMETRY_URL }}
       DAILIES_TELEMETRY_TOKEN: ${{ secrets.DAILIES_TELEMETRY_TOKEN }}
     steps:
@@ -56,7 +55,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $checkedOutTag -ne 'v0.5.4') {
             throw 'The checked-out commit is not tagged v0.5.4.'
           }
-          foreach ($name in 'WIN_CSC_LINK', 'WIN_CSC_KEY_PASSWORD', 'DAILIES_TELEMETRY_URL', 'DAILIES_TELEMETRY_TOKEN') {
+          foreach ($name in 'DAILIES_TELEMETRY_URL', 'DAILIES_TELEMETRY_TOKEN') {
             if ([string]::IsNullOrWhiteSpace((Get-Item "Env:$name").Value)) {
               throw "$name is required for a release build."
             }
@@ -92,10 +91,15 @@ jobs:
           npm run typecheck
           npm test
 
-      - name: Build signed NSIS release
-        run: npm run dist:win
+      - name: Build unsigned NSIS beta
+        run: |
+          npm run icon
+          npm run native:electron
+          npm run build:renderer
+          npm run build:main
+          npx electron-builder --win nsis --x64 --publish never -c.forceCodeSigning=false -c.win.signExecutable=false
 
-      - name: Verify signatures and update metadata
+      - name: Verify unsigned beta and update metadata
         shell: pwsh
         run: |
           $installer = 'release/Dailies-0.5.4-Setup-x64.exe'
@@ -107,15 +111,15 @@ jobs:
           }
           foreach ($path in $installer, $app) {
             $signature = Get-AuthenticodeSignature $path
-            if ($signature.Status -ne 'Valid') {
-              throw "$path has invalid Authenticode status: $($signature.Status)"
+            if ($signature.Status -ne 'NotSigned') {
+              throw "$path must be unsigned for this beta, got Authenticode status: $($signature.Status)"
             }
           }
           $whisperBinaries = @(Get-ChildItem 'release/win-unpacked/resources/whisper' -Recurse -File -Include *.exe,*.dll)
           if ($whisperBinaries.Count -eq 0) { throw 'The packaged Whisper runtime is missing.' }
           foreach ($binary in $whisperBinaries) {
             $signature = Get-AuthenticodeSignature $binary.FullName
-            if ($signature.Status -ne 'Valid') {
+            if ($signature.Status -notin 'Valid', 'NotSigned') {
               throw "$($binary.FullName) has invalid Authenticode status: $($signature.Status)"
             }
           }
@@ -164,4 +168,4 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw "Could not upload $name." }
             }
           }
-          Write-Host 'Windows assets are on the draft. Add the Mac assets and publish manually.'
+          Write-Host 'Unsigned Windows beta assets are on the draft. Add the Mac assets and publish manually.'

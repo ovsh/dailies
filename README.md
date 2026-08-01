@@ -22,7 +22,7 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
 1. Download the installer from [Releases](https://github.com/ovsh/dailies/releases):
    - macOS: open `Dailies-<version>-arm64.dmg` and drag **Dailies** to Applications.
      The app is signed and notarized.
-   - Windows: run `Dailies-<version>-Setup-x64.exe`. The installer and app are signed.
+   - Windows beta: run `Dailies-0.5.4-Setup-x64.exe`. This beta is unsigned, so Windows shows "Unknown publisher."
 2. Requirements: Apple Silicon with macOS 14+, or 64-bit Windows 10/11.
 3. The installer is only for the first install. Dailies checks
    GitHub Releases at launch, hourly, and whenever the window comes to
@@ -117,7 +117,7 @@ All timecodes are source TC (or timeline TC for finals), drop-frame handled corr
 | Symptom | Fix |
 |---|---|
 | macOS says it cannot verify the app | Download the current notarized DMG from Releases. |
-| Windows warns about an unknown publisher | Do not continue. Download the current signed installer from Releases. |
+| Windows warns about an unknown publisher | Version 0.5.4 is an unsigned beta. Confirm that the file came from the official Dailies release before you select **More info** and **Run anyway**. |
 | Update banner never appears | It only shows once a download finishes. Check status any time in Settings & Jobs, or **Dailies ▸ Check for Updates…**. |
 | Chat says a key is needed | Settings & Jobs → paste your OpenRouter key. |
 | Clips stuck without transcripts | Download the speech model: Settings & Jobs → Transcription → Download. |

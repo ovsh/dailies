@@ -4,7 +4,7 @@
 import Database from "better-sqlite3";
 import type { Database as BetterSqlite3Database } from "better-sqlite3";
 import { constants as fsConstants, copyFileSync, existsSync, statSync } from "node:fs";
-import { dirname, join, parse as parsePath } from "node:path";
+import { dirname, isAbsolute, join, parse as parsePath, relative, sep } from "node:path";
 import { SCHEMA_SQL } from "./schema";
 import { cachedBetterSqlite3Binding, repairBetterSqlite3Binding } from "./native-binding";
 import { usesFullContentHash } from "../file-hash";
@@ -117,6 +117,27 @@ interface FileLocationRow {
   role: string;
   folder_id: number | null;
   member_paths: string | null;
+}
+
+function pathIsWithin(path: string, root: string): boolean {
+  const relativePath = relative(root, path);
+  return relativePath === "" || (
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
+}
+
+function folderIdForPath(
+  path: string,
+  folders: Array<Pick<FolderRow, "id" | "path">>,
+): number | null {
+  let best: Pick<FolderRow, "id" | "path"> | null = null;
+  for (const folder of folders) {
+    if (!pathIsWithin(path, folder.path)) continue;
+    if (!best || folder.path.length > best.path.length) best = folder;
+  }
+  return best?.id ?? null;
 }
 
 interface EpisodeListEntryRow {
@@ -753,17 +774,27 @@ function migrate(db: BetterSqlite3Database): void {
       files.filename,
       files.clip_name,
       files.role,
-      (
-        SELECT folders.id
-        FROM folders
-        WHERE files.path = folders.path
-           OR files.path LIKE rtrim(folders.path, '/') || '/%'
-        ORDER BY length(folders.path) DESC, folders.id ASC
-        LIMIT 1
-      ),
+      NULL,
       files.member_paths
     FROM files;
   `);
+  const folderRows = db
+    .prepare<[], Pick<FolderRow, "id" | "path">>("SELECT id, path FROM folders")
+    .all();
+  const locationRows = db
+    .prepare<[], Pick<FileLocationRow, "id" | "path" | "folder_id">>(
+      "SELECT id, path, folder_id FROM file_locations",
+    )
+    .all();
+  const updateLocationFolder = db.prepare<[number | null, number]>(
+    "UPDATE file_locations SET folder_id = ? WHERE id = ?",
+  );
+  db.transaction(() => {
+    for (const location of locationRows) {
+      const folderId = folderIdForPath(location.path, folderRows);
+      if (folderId !== location.folder_id) updateLocationFolder.run(folderId, location.id);
+    }
+  })();
   if (!tableHasColumn(db, "files", "episode_id")) createFinalFileIndexes(db);
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_chats_episode_id ON chats(episode_id)");
@@ -1077,23 +1108,12 @@ export function openDatabase(dbPath: string): DailiesDB {
     };
   }
   const stmtUpsertCompatibilityLocation = db.prepare<
-    [number, string, string, string | null, string, string, string, string | null]
+    [number, string, string, string | null, string, number | null, string | null]
   >(
     `INSERT INTO file_locations (
        file_id, path, filename, clip_name, role, folder_id, member_paths
      )
-     VALUES (
-       ?, ?, ?, ?, ?,
-       (
-         SELECT folders.id
-         FROM folders
-         WHERE ? = folders.path
-            OR ? LIKE rtrim(folders.path, '/') || '/%'
-         ORDER BY length(folders.path) DESC, folders.id ASC
-         LIMIT 1
-       ),
-       ?
-     )
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(path) DO UPDATE SET
        file_id = excluded.file_id,
        filename = excluded.filename,
@@ -1155,6 +1175,10 @@ export function openDatabase(dbPath: string): DailiesDB {
     "SELECT * FROM folders WHERE path = ?",
   );
   const stmtListFolders = db.prepare<[], FolderRow>("SELECT * FROM folders ORDER BY path ASC");
+
+  function storedFolderIdForPath(path: string): number | null {
+    return folderIdForPath(path, stmtListFolders.all());
+  }
   const stmtRemoveFolder = db.prepare<[number]>("DELETE FROM folders WHERE id = ?");
   const stmtSetFolderScanned = db.prepare<[string, number]>(
     "UPDATE folders SET last_scanned_at = ? WHERE id = ?",
@@ -1763,8 +1787,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         input.filename,
         clipName,
         role,
-        input.path,
-        input.path,
+        storedFolderIdForPath(input.path),
         memberPaths,
       );
       return updated;
@@ -1795,20 +1818,14 @@ export function openDatabase(dbPath: string): DailiesDB {
       input.filename,
       clipName,
       role,
-      input.path,
-      input.path,
+      storedFolderIdForPath(input.path),
       memberPaths,
     );
     return mapFile(row);
   });
 
   const deleteFilesUnderPathTx = db.transaction((pathPrefix: string): MediaFile[] => {
-    const rows = stmtListFiles.all().filter((row) =>
-      row.path.startsWith(pathPrefix) &&
-      (row.path.length === pathPrefix.length ||
-        pathPrefix.endsWith("/") ||
-        row.path[pathPrefix.length] === "/")
-    );
+    const rows = stmtListFiles.all().filter((row) => pathIsWithin(row.path, pathPrefix));
     const files = rows.map(mapStoredFile);
     for (const row of rows) {
       clearDerivedStateTx(row.id);
@@ -1969,8 +1986,7 @@ export function openDatabase(dbPath: string): DailiesDB {
         input.filename,
         input.clipName ?? null,
         input.role ?? "raw",
-        input.path,
-        input.path,
+        storedFolderIdForPath(input.path),
         input.memberPaths ? JSON.stringify(input.memberPaths) : null,
       );
       return {
@@ -2011,8 +2027,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       input.filename,
       input.clipName ?? null,
       input.role ?? "raw",
-      input.path,
-      input.path,
+      storedFolderIdForPath(input.path),
       input.memberPaths ? JSON.stringify(input.memberPaths) : null,
     );
     return {

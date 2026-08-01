@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { dirname, extname, join, parse as parsePath } from "node:path";
+import { dirname, extname, isAbsolute, join, parse as parsePath, relative, sep } from "node:path";
 
 import type { DailiesDB, FileLocationRemoval } from "../db/types";
 import type {
@@ -145,8 +145,12 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
   }
 
   function pathIsWithin(path: string, root: string): boolean {
-    const normalizedRoot = root.endsWith("/") ? root.slice(0, -1) : root;
-    return path === normalizedRoot || path.startsWith(`${normalizedRoot}/`);
+    const relativePath = relative(root, path);
+    return relativePath === "" || (
+      relativePath !== ".." &&
+      !relativePath.startsWith(`..${sep}`) &&
+      !isAbsolute(relativePath)
+    );
   }
 
   function folderForPath(path: string): ProjectFolder | null {

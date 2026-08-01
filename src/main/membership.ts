@@ -1,4 +1,4 @@
-import { parse as parsePath } from "node:path";
+import { isAbsolute, parse as parsePath, relative, sep } from "node:path";
 import type {
   ClipIdentity,
   ClipIdentitySet,
@@ -44,8 +44,12 @@ function identitySet(identities: Iterable<ClipIdentity>): ClipIdentitySet {
 }
 
 function pathIsWithin(path: string, root: string): boolean {
-  const normalizedRoot = root.endsWith("/") ? root.slice(0, -1) : root;
-  return path === normalizedRoot || path.startsWith(`${normalizedRoot}/`);
+  const relativePath = relative(root, path);
+  return relativePath === "" || (
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
 }
 
 function candidate(file: MediaFile): EpisodeMembershipCandidate {

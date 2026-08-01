@@ -222,7 +222,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       "128k",
       "-movflags",
       "+faststart",
-      "/cache/proxy.mp4",
+      path.join("/cache", "proxy.mp4"),
     ], { timeoutMs: undefined });
   });
 
@@ -284,7 +284,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       .mockResolvedValueOnce({ stdout: "", stderr: "", code: 0, signal: null, timedOut: false });
 
     await expect(mocks.makeProxyForTest("/media/GH011482.MP4", "/cache"))
-      .resolves.toBe("/cache/proxy.mp4");
+      .resolves.toBe(path.join("/cache", "proxy.mp4"));
 
     const retryArgs = mocks.run.mock.calls[1]?.[1] as string[];
     expect(retryArgs).toEqual([
@@ -313,7 +313,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       "128k",
       "-movflags",
       "+faststart",
-      "/cache/proxy.mp4",
+      path.join("/cache", "proxy.mp4"),
     ]);
   });
 
@@ -330,7 +330,7 @@ describe("pipeline prerequisite and applicability handling", () => {
       .mockResolvedValueOnce({ stdout: "", stderr: "", code: 0, signal: null, timedOut: false });
 
     await expect(mocks.makeProxyForTest("/media/12ch.mov", "/cache"))
-      .resolves.toBe("/cache/proxy.mp4");
+      .resolves.toBe(path.join("/cache", "proxy.mp4"));
 
     const retryArgs = mocks.run.mock.calls[1]?.[1] as string[];
     expect(retryArgs).toContain("-an");

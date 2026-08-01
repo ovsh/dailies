@@ -47,8 +47,8 @@ jobs:
           if ($package.version -ne '0.5.4') {
             throw "package.json version $($package.version) does not match v0.5.4."
           }
-          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json
-          if ($lock.version -ne '0.5.4' -or $lock.packages.''.version -ne '0.5.4') {
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json -AsHashtable
+          if ($lock.version -ne '0.5.4' -or $lock.packages[''].version -ne '0.5.4') {
             throw 'package-lock.json does not match v0.5.4.'
           }
           $checkedOutTag = git describe --tags --exact-match HEAD

@@ -97,7 +97,7 @@ jobs:
           npm run native:electron
           npm run build:renderer
           npm run build:main
-          npx electron-builder --win nsis --x64 --publish never -c.forceCodeSigning=false -c.win.signExecutable=false
+          npx electron-builder --win nsis --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false
 
       - name: Verify unsigned beta and update metadata
         shell: pwsh

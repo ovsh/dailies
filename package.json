@@ -1,7 +1,7 @@
 {
   "name": "dailies",
   "productName": "Dailies",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "private": true,
   "description": "Chat with your footage. Local indexing, agent search, Avid-native export.",
   "main": "dist-electron/main/index.cjs",
@@ -9,7 +9,11 @@
   "scripts": {
     "dev:renderer": "vite",
     "build:renderer": "vite build",
-    "build:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --external:electron --external:better-sqlite3 --external:ffmpeg-static --external:ffprobe-static --external:electron-updater --define:__DAILIES_TELEMETRY_URL__=\"\\\"$DAILIES_TELEMETRY_URL\\\"\" --define:__DAILIES_TELEMETRY_TOKEN__=\"\\\"$DAILIES_TELEMETRY_TOKEN\\\"\" --outfile=dist-electron/main/index.cjs && esbuild src/preload/index.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload/index.cjs",
+    "build:main": "node scripts/build-main.mjs",
+    "build:main:stable": "node scripts/build-main.mjs --flavor stable",
+    "build:main:managed": "node scripts/build-main.mjs --flavor managed",
+    "verify:main:stable": "node scripts/verify-main-bundle.mjs stable",
+    "verify:main:managed": "node scripts/verify-main-bundle.mjs managed",
     "icon": "node scripts/generate-app-icon.mjs",
     "icon:mac": "npm run icon",
     "native:node": "node scripts/manage-better-sqlite3.mjs node",
@@ -23,8 +27,9 @@
     "rebuild": "node scripts/manage-better-sqlite3.mjs electron --force",
     "finalize:mac": "node scripts/finalize-mac-release.mjs",
     "dist": "npm run dist:mac",
-    "dist:mac": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main && electron-builder --mac --publish never",
-    "dist:win": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main && electron-builder --win nsis --x64 --publish never -c.forceCodeSigning=true"
+    "dist:mac": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:stable && npm run verify:main:stable && electron-builder --mac --publish never",
+    "dist:mac:managed": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:managed && npm run verify:main:managed && electron-builder --mac --publish never",
+    "dist:win": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:stable && npm run verify:main:stable && electron-builder --win nsis --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false"
   },
   "build": {
     "appId": "com.dailies.app",

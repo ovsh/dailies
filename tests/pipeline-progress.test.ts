@@ -27,6 +27,7 @@ const baseFile: MediaFile = {
   mediaKind: "standard",
   memberPaths: null,
   clipKey: null,
+  sourceProject: null,
   videoUnplayable: false,
   discoveryFailed: false,
   locations: [{

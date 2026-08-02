@@ -195,8 +195,11 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
         episodeIds.add(folder.episodeId);
       }
     }
+    // A list or media-tag episode can gain members anywhere in the library,
+    // not only under one of its folders, so both re-resolve on every change.
     for (const episode of db.listEpisodes()) {
-      if (db.getEpisodeMembershipSource(episode.id) === "list") {
+      const source = db.getEpisodeMembershipSource(episode.id);
+      if (source === "list" || source === "media-tag") {
         episodeIds.add(episode.id);
       }
     }
@@ -325,6 +328,7 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
       clip: {
         clipKey: atom.clipKey,
         clipName: atoms.find((candidate) => candidate.clipName)?.clipName ?? null,
+        projectName: atoms.find((candidate) => candidate.projectName)?.projectName ?? null,
         atoms,
       },
     });
@@ -395,6 +399,7 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
       memberPaths,
       clipKey: clip.clipKey,
       hasVideo: videoAtoms.length > 0,
+      sourceProject: atoms.find((atom) => atom.projectName)?.projectName ?? clip.projectName,
     };
 
     const locationHash = existingLocation
@@ -650,6 +655,8 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     queueOpAtomClip(bundle, {
       clipKey: located.file.clipKey ?? atoms[0].clipKey,
       clipName: atoms.find((atom) => atom.clipName)?.clipName ?? located.file.clipName,
+      projectName: atoms.find((atom) => atom.projectName)?.projectName ??
+        located.file.sourceProject,
       atoms,
     });
   }

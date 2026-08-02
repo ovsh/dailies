@@ -6,4 +6,5 @@ dist-electron/
 .DS_Store
 *.dmg
 release/
+output/
 landscaping test/

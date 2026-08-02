@@ -31,7 +31,8 @@ export interface ChatTurnOptions {
   db: DailiesDB;
   history: ChatMessageRecord[]; // oldest first
   userText: string;
-  apiKey: string;
+  /** Null on a managed-beta install, where the proxy holds the key instead. */
+  apiKey: string | null;
   embedder: TextEmbedder | null;
   episodeId: number | null;
   emit: (ev: { type: "activity"; agent: string; status: string }) => void;

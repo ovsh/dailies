@@ -47,6 +47,11 @@ export interface Pipeline {
   retryFile(fileId: number): Promise<void>;
   /** Requeue prerequisite-blocked and otherwise missing derived stages. */
   refreshPrerequisites(kind: "whisper" | "openrouter" | "all"): Promise<void>;
+  /**
+   * Reads the Avid project tag of already-indexed clips that never had one.
+   * Metadata only: no clip is reprocessed. Returns the number queued.
+   */
+  backfillSourceProjects(): number;
   start(): void;
   stop(mode?: StopMode): Promise<void>;
 }
@@ -137,6 +142,7 @@ export function createPipeline(opts: PipelineOptions): Pipeline {
     ingestDocument: discovery.ingestDocument,
     retryFile: queue.retryFile,
     refreshPrerequisites: queue.refreshPrerequisites,
+    backfillSourceProjects: queue.backfillSourceProjects,
     start: queue.start,
     stop,
   };

@@ -155,7 +155,8 @@ export function UpdateCluster({ updateState }: UpdateClusterProps) {
           position: fixed;
           top: 0;
           right: 10px;
-          height: 34px;
+          /* Centers inside the 48px title strip (TitleStrip.tsx). */
+          height: 48px;
           z-index: 41;
           display: flex;
           align-items: center;

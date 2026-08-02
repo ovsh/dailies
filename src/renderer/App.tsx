@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
-import type { AppSettings, ProjectActivity, ProjectState } from "../shared/types";
+import { hasLlmAccessStatus, type AppSettings, type ProjectActivity, type ProjectState } from "../shared/types";
 import { Rail } from "./components/Rail";
+import { TitleStrip } from "./components/TitleStrip";
 import { Welcome } from "./components/Welcome";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { UpdateCluster } from "./components/UpdateCluster";
@@ -44,6 +45,26 @@ export function App() {
   const [returnScreen, setReturnScreen] = useState<Screen>("chat");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
+
+  const [railExpanded, setRailExpanded] = useState(() => localStorage.getItem("dailies.railExpanded") === "1");
+  const toggleRail = useCallback(() => {
+    setRailExpanded((prev) => {
+      localStorage.setItem("dailies.railExpanded", prev ? "0" : "1");
+      return !prev;
+    });
+  }, []);
+
+  // ⌘\ (Ctrl+\ on Windows) mirrors the title-strip toggle.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "\\" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        toggleRail();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleRail]);
 
   const [projectState, setProjectState] = useState<ProjectState | null>(null);
   const [projectLoaded, setProjectLoaded] = useState(false);
@@ -147,7 +168,7 @@ export function App() {
     projectState !== null &&
     !welcomeDismissed &&
     (forceWelcome ||
-      settings.apiKeyStatus !== "connected" ||
+      !hasLlmAccessStatus(settings.apiKeyStatus) ||
       projectState.folders.length === 0 ||
       !settings.whisperModelReady);
 
@@ -175,18 +196,23 @@ export function App() {
 
   return (
     <div className={`app-root platform-${api.platform}`}>
-      {titlebar}
+      <TitleStrip
+        projectName={projectState.project.name}
+        onOpenProjects={() => setShowProjects(true)}
+        railExpanded={railExpanded}
+        onToggleRail={toggleRail}
+      />
       {/* Exactly one restart affordance at a time: while the full-width banner
           is up it owns the "ready" story, so the fixed top-right cluster stays
           out of the corner entirely (its ready button and version tag would
           stack on top of the banner's controls). After "Later" the compact
           cluster button becomes the single persistent affordance. */}
       {!showUpdateBanner && <UpdateCluster updateState={updateState} />}
+      <div className="app-body">
       <Rail
         screen={screen === "clip" ? returnScreen : screen}
         onNavigate={navigate}
-        projectName={projectState.project.name}
-        onOpenProjects={() => setShowProjects(true)}
+        expanded={railExpanded}
         appVersion={updateState.currentVersion}
         updateReady={updateReady}
         updateDismissed={updateDismissed}
@@ -213,7 +239,7 @@ export function App() {
           {screen === "chat" && (
             <ChatScreen
               onOpenInLibrary={openInLibrary}
-              apiKeySet={settings ? settings.apiKeyStatus === "connected" : null}
+              apiKeySet={settings ? hasLlmAccessStatus(settings.apiKeyStatus) : null}
               onOpenSettings={() => setScreen("jobs")}
               episodeId={episodeId}
               episodes={projectState.episodes}
@@ -265,10 +291,18 @@ export function App() {
           />
         )}
       </main>
+      </div>
       <style>{`
         .app-root {
           display: flex;
+          flex-direction: column;
           height: 100%;
+          width: 100%;
+        }
+        .app-body {
+          flex: 1;
+          min-height: 0;
+          display: flex;
           width: 100%;
         }
         .app-main {
@@ -279,9 +313,6 @@ export function App() {
           flex-direction: column;
           overflow: hidden;
           position: relative;
-        }
-        .platform-win32 .update-banner {
-          margin-top: 0;
         }
         .app-screen-area {
           flex: 1;

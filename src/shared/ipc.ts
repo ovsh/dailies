@@ -15,6 +15,7 @@ import type {
   ClipListInput,
   Episode,
   EpisodeMembershipReport,
+  EpisodeProposal,
   ExportItem,
   ExportKind,
   DiagnosticsExportOutcome,
@@ -71,6 +72,19 @@ export interface DailiesAPI {
     episodeId: number,
     input: ClipListInput,
   ): Promise<EpisodeMembershipReport | ClipListImportBlocked>;
+  /**
+   * Starts episode detection from Avid media tags: queues a tag read for any
+   * clip that never had one, then returns what the stored tags say so far.
+   * Reading tags is background work, so call getEpisodeProposal again while
+   * pendingClipCount is above zero.
+   */
+  detectEpisodesFromMedia(): Promise<EpisodeProposal>;
+  /** The current proposal without queueing anything. */
+  getEpisodeProposal(): Promise<EpisodeProposal>;
+  /** Creates one media-tag episode per accepted row. */
+  applyEpisodeProposal(
+    rows: Array<{ code: string; sourceProject: string }>,
+  ): Promise<Episode[]>;
   /** Opens a native folder picker; returns the new folder or null if cancelled. */
   addProjectFolder(
     role: MediaRole,
@@ -169,6 +183,9 @@ export const IPC = {
   getEpisodeMembership: "dailies:getEpisodeMembership",
   setEpisodeMembershipSource: "dailies:setEpisodeMembershipSource",
   replaceEpisodeClipList: "dailies:replaceEpisodeClipList",
+  detectEpisodesFromMedia: "dailies:detectEpisodesFromMedia",
+  getEpisodeProposal: "dailies:getEpisodeProposal",
+  applyEpisodeProposal: "dailies:applyEpisodeProposal",
   addProjectFolder: "dailies:addProjectFolder",
   removeProjectFolder: "dailies:removeProjectFolder",
   clearProjectCache: "dailies:clearProjectCache",

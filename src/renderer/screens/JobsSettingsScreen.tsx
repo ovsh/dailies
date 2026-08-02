@@ -5,6 +5,7 @@ import type {
   ClipListInput,
   EpisodeMembershipReport,
   EpisodeMembershipResolution,
+  EpisodeProposal,
   MembershipSource,
   ModelDownloadProgress,
   AppSettings,
@@ -16,6 +17,7 @@ import type {
   UpdaterState,
 } from "../../shared/types";
 import type { ClipListImportBlocked, ClipListImportDiagnostic } from "../../shared/ipc";
+import { EpisodeProposalCard } from "../components/EpisodeProposalCard";
 import { InlineError } from "../components/InlineError";
 import { Toast } from "../components/Toast";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
@@ -131,6 +133,7 @@ function progressEqual(a: PipelineProgress, b: PipelineProgress): boolean {
 const MEMBERSHIP_SOURCE_LABEL: Record<MembershipSource, string> = {
   folder: "Folders",
   list: "Clip list",
+  "media-tag": "Media tags",
 };
 
 function isBlockedImport(
@@ -206,6 +209,9 @@ export function JobsSettingsScreen({
   const [toast, setToast] = useState<{ message: string; actionLabel?: string; onAction?: () => void } | null>(null);
   const [episodeReports, setEpisodeReports] = useState<Record<number, EpisodeMembershipReport>>({});
   const [expandedEpisodeId, setExpandedEpisodeId] = useState<number | null>(null);
+  const [proposal, setProposal] = useState<EpisodeProposal | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const [detectNotice, setDetectNotice] = useState<string | null>(null);
 
   const syncedFailedCount = useRef<number | null>(null);
 
@@ -343,6 +349,37 @@ export function JobsSettingsScreen({
       setNewEpisodeCode("");
       setRetryAction(null);
     }
+  }
+
+  /**
+   * Reads the Avid project tag out of any clip that never had one, then shows
+   * what the tags say. Tag reads run in the background, so a proposal can come
+   * back with rows still pending; the card offers a second look.
+   */
+  async function handleDetectEpisodes() {
+    setRetryAction(() => () => void handleDetectEpisodes());
+    const result = await runIpc(
+      () => api.detectEpisodesFromMedia(),
+      { setPending: setDetecting, setError: setActionError, fallback: "Could not read project tags from the media." },
+    );
+    if (!result.ok) return;
+    setRetryAction(null);
+    setProposal(result.value.rows.length > 0 ? result.value : null);
+    if (result.value.rows.length > 0) {
+      setDetectNotice(null);
+    } else if (result.value.pendingClipCount > 0) {
+      setDetectNotice(`Reading project tags on ${clipCount(result.value.pendingClipCount)}. Try again in a moment.`);
+    } else {
+      setDetectNotice("No Avid project tags were found in this media.");
+    }
+  }
+
+  async function handleApplyProposal(rows: Array<{ code: string; sourceProject: string }>) {
+    await api.applyEpisodeProposal(rows);
+    setProposal(null);
+    setDetectNotice(null);
+    await onRefresh();
+    await refreshEpisodeReports();
   }
 
   async function handleSetMembershipSource(episodeId: number, source: MembershipSource) {
@@ -1151,7 +1188,25 @@ export function JobsSettingsScreen({
                 >
                   {addingEpisode ? "Adding…" : "Add"}
                 </button>
+                <button
+                  className="ghost-btn label"
+                  onClick={() => void handleDetectEpisodes()}
+                  disabled={detecting}
+                >
+                  {detecting ? "Reading media…" : "Detect episodes from media"}
+                </button>
               </div>
+              {detectNotice && <p className="jobs-hint mono">{detectNotice}</p>}
+              {proposal && (
+                <div style={{ marginTop: 14 }}>
+                  <EpisodeProposalCard
+                    proposal={proposal}
+                    onApply={handleApplyProposal}
+                    onDismiss={() => setProposal(null)}
+                    onRefresh={() => void handleDetectEpisodes()}
+                  />
+                </div>
+              )}
             </div>
           </section>
 
@@ -1162,6 +1217,12 @@ export function JobsSettingsScreen({
               <span className="panel-bar-stripes" aria-hidden="true" />
             </div>
             <div className="panel-body">
+              {settings?.apiKeyStatus === "managed" && (
+                <p className="jobs-hint">
+                  Models are provided for this beta. Add your own key below to use
+                  your own OpenRouter account instead.
+                </p>
+              )}
               <ApiKeyField
                 label="OpenRouter API key"
                 connected={settings?.apiKeyStatus === "connected"}
@@ -1170,16 +1231,18 @@ export function JobsSettingsScreen({
                 onSave={() => handleSaveKey("openrouter")}
                 saving={savingProvider === "openrouter"}
               />
-              <p className="jobs-hint mono">
-                Need a key?{" "}
-                <button
-                  className="text-link"
-                  onClick={() => void api.openExternal("https://openrouter.ai/keys")}
-                >
-                  Create one at openrouter.ai/keys
-                </button>
-                . Free to sign up, then paste it here.
-              </p>
+              {settings?.apiKeyStatus !== "managed" && (
+                <p className="jobs-hint mono">
+                  Need a key?{" "}
+                  <button
+                    className="text-link"
+                    onClick={() => void api.openExternal("https://openrouter.ai/keys")}
+                  >
+                    Create one at openrouter.ai/keys
+                  </button>
+                  . Free to sign up, then paste it here.
+                </p>
+              )}
             </div>
           </section>
 
@@ -1879,6 +1942,7 @@ export function JobsSettingsScreen({
         }
         .episode-add-row {
           display: flex;
+          flex-wrap: wrap;
           gap: 10px;
         }
         .episode-add-input {
@@ -2390,12 +2454,36 @@ function EpisodeMembershipPanel({ episode, report, onSourceChange, onImport }: E
           >
             Clip list
           </button>
+          <button
+            type="button"
+            className={`segmented-btn label${source === "media-tag" ? " active" : ""}`}
+            onClick={() => void handleSource("media-tag")}
+            disabled={sourcePending || episode.mediaTag === null}
+            title={
+              episode.mediaTag === null
+                ? "This episode has no Avid project tag yet."
+                : `Avid project ${episode.mediaTag}`
+            }
+          >
+            Media tags
+          </button>
         </div>
       </div>
       <p className="episode-panel-hint mono">
         Watched folders still decide what Dailies indexes. This source decides which indexed clips belong to episode{" "}
         {episode.code}. Switching sources does not delete stored list entries.
       </p>
+      {episode.mediaTag === null ? (
+        <p className="episode-panel-hint mono">
+          This episode has no Avid project tag, so media tags cannot decide its members.
+        </p>
+      ) : (
+        source === "media-tag" && (
+          <p className="episode-panel-hint mono">
+            Clips whose Avid project is {episode.mediaTag} belong to this episode.
+          </p>
+        )
+      )}
       {sourceError && <p className="episode-panel-error mono">{sourceError}</p>}
 
       {source === "list" && (
@@ -2502,7 +2590,19 @@ function EpisodeMembershipPanel({ episode, report, onSourceChange, onImport }: E
       {report && (
         <div className="episode-report">
           <div className="episode-report-summary mono">
-            {report.matchedCount} matched · {report.ambiguousCount} ambiguous · {report.unmatchedCount} not found
+            {source === "media-tag" ? (
+              <>
+                {report.matchedCount} matched
+                {report.untaggedClipCount !== undefined && report.untaggedClipCount > 0 && (
+                  <> · {report.untaggedClipCount} clips have no project tag</>
+                )}
+              </>
+            ) : (
+              <>
+                {report.matchedCount} matched · {report.ambiguousCount} ambiguous ·{" "}
+                {report.unmatchedCount} not found
+              </>
+            )}
           </div>
           {resolutions.length > 0 ? (
             <table className="jobs-table mono">

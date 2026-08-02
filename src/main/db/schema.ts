@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS episodes (
   code TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL,
   membership_source TEXT NOT NULL DEFAULT 'folder'
-    CHECK (membership_source IN ('folder', 'list'))
+    CHECK (membership_source IN ('folder', 'list', 'media-tag')),
+  media_tag TEXT
 );
 
 CREATE TABLE IF NOT EXISTS folders (
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS files (
   has_video INTEGER,
   video_unplayable INTEGER NOT NULL DEFAULT 0,
   discovery_failed INTEGER NOT NULL DEFAULT 0,
-  discovery_error TEXT
+  discovery_error TEXT,
+  source_project TEXT
 );
 
 CREATE TABLE IF NOT EXISTS episode_members (

@@ -80,18 +80,21 @@ export const MOCK_EPISODES: Record<string, Episode[]> = {
       code: "201",
       createdAt: new Date(Date.UTC(2026, 3, 2, 9, 5)).toISOString(),
       membershipSource: "folder",
+      mediaTag: null,
     },
     {
       id: 202,
       code: "202",
       createdAt: new Date(Date.UTC(2026, 4, 1, 9, 5)).toISOString(),
       membershipSource: "list",
+      mediaTag: null,
     },
     {
       id: 203,
       code: "203",
       createdAt: new Date(Date.UTC(2026, 5, 3, 9, 5)).toISOString(),
       membershipSource: "folder",
+      mediaTag: null,
     },
   ],
   "lonely-island": [],
@@ -330,6 +333,7 @@ export const MOCK_FILES: MediaFile[] = FILE_SEEDS.map((s) => {
     clipKey: null,
     videoUnplayable: s.id === 9,
     discoveryFailed: false,
+    sourceProject: null,
     locations,
   };
 });

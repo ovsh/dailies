@@ -13,6 +13,7 @@ function fakeSettings(): AppSettingsStore {
     getOpenRouterKey: () => key,
     setOpenRouterKey: (k: string) => ((key = k), true),
     hasOpenRouterKey: () => key !== null,
+    hasLlmAccess: () => key !== null,
     getWhisperModel: () => "large-v3-turbo",
     getChatModelId: () => null,
     setChatModelId: () => {},

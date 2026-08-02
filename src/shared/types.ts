@@ -11,7 +11,7 @@ export type FileStatus = "pending" | "processing" | "ready" | "error";
 /** raw = camera media / dailies; final = exported cuts (timecode is timeline TC). */
 export type MediaRole = "raw" | "final";
 export type MediaKind = "standard" | "opatom";
-export type MembershipSource = "folder" | "list";
+export type MembershipSource = "folder" | "list" | "media-tag";
 
 export type ClipIdentity =
   | { kind: "path"; path: string }
@@ -93,11 +93,35 @@ export interface EpisodeMembershipReport {
   unmatchedCount: number;
   unresolvedCount: number;
   resolutions: EpisodeMembershipResolution[];
+  /**
+   * media-tag source only: clips in the project that carry no project tag at
+   * all, so no media-tag episode can ever claim them.
+   */
+  untaggedClipCount?: number;
 }
 
 export type ClipListInput =
   | { kind: "file"; sourceName: string; text: string }
   | { kind: "paste"; text: string };
+
+/** One suggested episode, derived from a distinct Avid project tag. */
+export interface EpisodeProposalRow {
+  sourceProject: string;
+  /** Suggested code: the trailing digits when unique, else the whole tag. */
+  code: string;
+  clipCount: number;
+  /** An episode with this media tag already exists. */
+  alreadyExists: boolean;
+}
+
+/** What media-tag detection found in the current project. */
+export interface EpisodeProposal {
+  rows: EpisodeProposalRow[];
+  /** Clips with no project tag; they join no proposed episode. */
+  untaggedClipCount: number;
+  /** Clips still waiting for a backfill job to read their tag. */
+  pendingClipCount: number;
+}
 
 // ---------- projects & episodes ----------
 
@@ -115,6 +139,8 @@ export interface Episode {
   code: string;
   createdAt: string;
   membershipSource: MembershipSource;
+  /** media-tag source: the Avid project name whose clips belong to this episode. */
+  mediaTag: string | null;
 }
 
 /** A watched folder within a project, optionally assigned to one episode. */
@@ -169,6 +195,8 @@ export interface MediaFile {
   videoUnplayable: boolean;
   /** Discovery could not read this file before a probe job could be created. */
   discoveryFailed: boolean;
+  /** Avid project that imported the media (MXF `project_name` tag), when present. */
+  sourceProject: string | null;
   locations: FileLocation[];
 }
 
@@ -217,6 +245,8 @@ export interface FileInput {
   mediaKind?: MediaKind;
   memberPaths?: string[] | null;
   clipKey?: string | null;
+  /** Undefined keeps the stored tag; null clears it. */
+  sourceProject?: string | null;
 }
 
 export interface SceneInput {
@@ -244,7 +274,13 @@ export type JobStage =
   | "proxy"
   | "scenes"
   | "transcribe"
-  | "embed";
+  | "embed"
+  /**
+   * Backfill only: reads the Avid project tag of an already-indexed clip.
+   * Deliberately outside the readiness stages — it produces no artifact and
+   * never blocks a clip from being ready.
+   */
+  | "media-tag";
 export type JobStatus = "queued" | "running" | "waiting" | "done" | "error";
 
 export interface Job {
@@ -490,8 +526,14 @@ export type LocatorExportOutcome =
 
 // ---------- settings ----------
 
-export type ApiKeyStatus = "missing" | "connected" | "invalid" | "unavailable";
-export type ApiKeyValidationStatus = Exclude<ApiKeyStatus, "missing">;
+/** "managed": no user key, but this build carries closed-beta managed access. */
+export type ApiKeyStatus = "missing" | "managed" | "connected" | "invalid" | "unavailable";
+export type ApiKeyValidationStatus = Exclude<ApiKeyStatus, "missing" | "managed">;
+
+/** True when chat and embeddings can run with either user-funded or beta-managed access. */
+export function hasLlmAccessStatus(status: ApiKeyStatus): boolean {
+  return status === "connected" || status === "managed";
+}
 
 /** OpenRouter `reasoning.effort` levels, lowest to highest. */
 export const CHAT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -592,6 +634,7 @@ export const EMBEDDING_DIM = 768;
 
 /** Global (cross-project) settings. Folders/episodes live on ProjectState. */
 export interface AppSettings {
+  /** Legacy readiness flag. Prefer `hasLlmAccessStatus(apiKeyStatus)` in typed callers. */
   apiKeySet: boolean;
   /** Usage-data sharing (questions, answers, file names, errors). Default on; user-visible switch. */
   telemetryEnabled: boolean;

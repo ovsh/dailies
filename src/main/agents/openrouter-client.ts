@@ -1,6 +1,11 @@
 import { EMBEDDING_MODEL, type ChatEffort } from "../../shared/types";
-
-const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+import {
+  managedLlmConfig,
+  OPENROUTER_BASE_URL,
+  resolveLlmRoute,
+  type LlmRoute,
+  type ManagedLlmConfig,
+} from "../managed-llm";
 
 export interface ContentPart {
   type: "text" | "image_url";
@@ -54,6 +59,13 @@ function headers(key: string): Record<string, string> {
   };
 }
 
+/** Same headers either way, plus the operator label the proxy attributes usage to. */
+function routeHeaders(route: LlmRoute): Record<string, string> {
+  const base = headers(route.authToken);
+  if (route.kind === "managed" && route.operator) base["X-Dailies-Operator"] = route.operator;
+  return base;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -79,18 +91,33 @@ function apiError(status: number, body: unknown): OpenRouterApiError {
   return new OpenRouterApiError(`OpenRouter API error ${status}${detail}`, status);
 }
 
-export function createOpenRouterClient(getKey: () => string | null): OpenRouterClient {
-  function requireKey(): string {
-    const key = getKey();
-    if (!key) throw new Error("OpenRouter API key not set");
-    return key;
+export interface OpenRouterClientOptions {
+  /** Read per request so a rename applies to the next call, not the next launch. */
+  operatorName?: () => string | null;
+  /** Test seam; production reads the config baked in at package time. */
+  managed?: () => ManagedLlmConfig | null;
+}
+
+export function createOpenRouterClient(
+  getKey: () => string | null,
+  options: OpenRouterClientOptions = {},
+): OpenRouterClient {
+  function requireRoute(): LlmRoute {
+    const route = resolveLlmRoute({
+      userKey: getKey(),
+      managed: (options.managed ?? managedLlmConfig)(),
+      operatorName: options.operatorName?.() ?? null,
+    });
+    if (!route) throw new Error("OpenRouter API key not set");
+    return route;
   }
 
   return {
     async chat(req: ChatRequest): Promise<ChatResponse> {
-      const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      const route = requireRoute();
+      const response = await fetch(`${route.baseUrl}/chat/completions`, {
         method: "POST",
-        headers: headers(requireKey()),
+        headers: routeHeaders(route),
         body: JSON.stringify({
           ...req,
           provider: { allow_fallbacks: false },
@@ -112,9 +139,10 @@ export function createOpenRouterClient(getKey: () => string | null): OpenRouterC
     },
 
     async embed(_model: string, input: string[], dimensions?: number): Promise<number[][]> {
-      const response = await fetch(`${OPENROUTER_BASE_URL}/embeddings`, {
+      const route = requireRoute();
+      const response = await fetch(`${route.baseUrl}/embeddings`, {
         method: "POST",
-        headers: headers(requireKey()),
+        headers: routeHeaders(route),
         body: JSON.stringify({
           model: EMBEDDING_MODEL,
           input,

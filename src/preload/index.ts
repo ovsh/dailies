@@ -30,6 +30,10 @@ const api: DailiesAPI = {
     ipcRenderer.invoke(IPC.setEpisodeMembershipSource, episodeId, source),
   replaceEpisodeClipList: (episodeId: number, input: ClipListInput) =>
     ipcRenderer.invoke(IPC.replaceEpisodeClipList, episodeId, input),
+  detectEpisodesFromMedia: () => ipcRenderer.invoke(IPC.detectEpisodesFromMedia),
+  getEpisodeProposal: () => ipcRenderer.invoke(IPC.getEpisodeProposal),
+  applyEpisodeProposal: (rows: Array<{ code: string; sourceProject: string }>) =>
+    ipcRenderer.invoke(IPC.applyEpisodeProposal, rows),
   addProjectFolder: (role: MediaRole, episodeId: number | null, e2eFolderPath?: string) =>
     ipcRenderer.invoke(IPC.addProjectFolder, role, episodeId, e2eFolderPath),
   removeProjectFolder: (folderId: number) =>

@@ -8,6 +8,8 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { managedLlmAvailable } from "./managed-llm";
+
 interface AppSettingsFile {
   openrouterKeyEnc?: string;
   openrouterKeyIsPlain?: boolean;
@@ -54,6 +56,11 @@ export interface AppSettingsStore {
   getOpenRouterKey(): string | null;
   setOpenRouterKey(key: string): boolean;
   hasOpenRouterKey(): boolean;
+  /**
+   * Whether chat and embeddings can run at all: the operator's own key, or a
+   * closed-beta build with managed access baked in.
+   */
+  hasLlmAccess(): boolean;
   getWhisperModel(): string;
   /** Raw stored id; callers resolve/validate against CHAT_MODEL_OPTIONS. */
   getChatModelId(): string | null;
@@ -120,6 +127,9 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
     },
     hasOpenRouterKey() {
       return this.getOpenRouterKey() !== null;
+    },
+    hasLlmAccess() {
+      return this.getOpenRouterKey() !== null || managedLlmAvailable();
     },
     getWhisperModel() {
       // q8_0: same model quantized to 8 bits — ~30-60% faster, half the

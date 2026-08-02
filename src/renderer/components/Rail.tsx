@@ -4,9 +4,8 @@ import type { Screen } from "../App";
 interface RailProps {
   screen: Screen;
   onNavigate: (screen: Screen) => void;
-  /** Full project name, e.g. "DUCK DYNASTY" — rendered as initials with a tooltip. */
-  projectName: string;
-  onOpenProjects: () => void;
+  /** Expanded shows icon + label rows; collapsed is the icon-only strip. */
+  expanded: boolean;
   /** The running app's version, e.g. "0.3.3". */
   appVersion: string;
   /** An update has finished downloading and is waiting to install. */
@@ -49,18 +48,15 @@ const ITEMS: { screen: Screen; label: string; icon: ReactElement }[] = [
   },
 ];
 
-function projectInitials(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "";
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[1][0]).toUpperCase();
-}
-
+/**
+ * Pure navigation below the title strip. The icon column is 56px in both
+ * states, so expanding only reveals labels — nothing slides. State changes
+ * snap (DESIGN.md motion rule): no width animation.
+ */
 export function Rail({
   screen,
   onNavigate,
-  projectName,
-  onOpenProjects,
+  expanded,
   appVersion,
   updateReady,
   updateDismissed,
@@ -68,15 +64,7 @@ export function Rail({
 }: RailProps) {
   const showUpdateDot = updateReady && updateDismissed;
   return (
-    <nav className="rail">
-      <button
-        className="rail-project"
-        onClick={onOpenProjects}
-        aria-label={projectName}
-        data-tooltip={projectName}
-      >
-        <span className="rail-project-initials display">{projectInitials(projectName)}</span>
-      </button>
+    <nav className={`rail${expanded ? " expanded" : ""}`}>
       <div className="rail-items">
         {ITEMS.map((item) => (
           <button
@@ -84,25 +72,30 @@ export function Rail({
             className={`rail-btn${screen === item.screen ? " active" : ""}`}
             onClick={() => onNavigate(item.screen)}
             aria-label={item.label}
-            data-tooltip={item.label}
+            data-tooltip={expanded ? undefined : item.label}
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              {item.icon}
-            </svg>
+            <span className="rail-ico">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                {item.icon}
+              </svg>
+            </span>
+            <span className="rail-lbl">{item.label}</span>
           </button>
         ))}
       </div>
       <div className="rail-spacer" />
       {appVersion && (
-        <button
-          className="rail-version-chip mono"
-          onClick={onShowUpdate}
-          aria-label={showUpdateDot ? `Dailies ${appVersion} — update ready, click to review` : `Dailies ${appVersion}`}
-          data-tooltip={showUpdateDot ? "Update ready — click to review" : undefined}
-        >
-          {appVersion}
-          {showUpdateDot && <span className="rail-version-dot" aria-hidden="true" />}
-        </button>
+        <div className="rail-foot">
+          <button
+            className="rail-version-chip mono"
+            onClick={onShowUpdate}
+            aria-label={showUpdateDot ? `Dailies ${appVersion} — update ready, click to review` : `Dailies ${appVersion}`}
+            data-tooltip={showUpdateDot ? "Update ready — click to review" : undefined}
+          >
+            {appVersion}
+            {showUpdateDot && <span className="rail-version-dot" aria-hidden="true" />}
+          </button>
+        </div>
       )}
       <style>{`
         .rail {
@@ -114,56 +107,51 @@ export function Rail({
           box-shadow: var(--bevel-out);
           display: flex;
           flex-direction: column;
-          align-items: center;
-          padding: 56px 0 24px;
+          padding: 12px 0 14px;
+          overflow: hidden;
         }
-        .rail-project {
-          position: relative;
-          width: 32px;
-          height: 32px;
-          flex: 0 0 auto;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: var(--ground-raised);
-          border: 1px solid var(--chrome-lo);
-          border-radius: 2px;
-          box-shadow: var(--bevel-out);
-          color: var(--ink);
-          margin-bottom: 36px;
-        }
-        .rail-project:hover {
-          background: #d2d6d9;
-        }
-        .rail-project:active {
-          box-shadow: var(--bevel-in);
-        }
-        .rail-project-initials {
-          font-size: 11px;
-          font-weight: 700;
-          letter-spacing: 0.04em;
-          user-select: none;
+        .rail.expanded {
+          width: var(--rail-w-expanded);
+          flex: 0 0 var(--rail-w-expanded);
         }
         .rail-items {
           display: flex;
           flex-direction: column;
-          gap: 6px;
+          gap: 4px;
+          width: 100%;
         }
         .rail-btn {
           position: relative;
-          width: 40px;
-          height: 40px;
           display: flex;
           align-items: center;
-          justify-content: center;
+          height: 40px;
+          width: 100%;
           background: transparent;
           border: 1px solid transparent;
           border-radius: 2px;
           color: var(--ink-dim);
+          padding: 0;
+          white-space: nowrap;
         }
-        .rail-btn svg {
+        .rail-ico {
+          width: 56px;
+          flex: 0 0 56px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .rail-ico svg {
           width: 19px;
           height: 19px;
+        }
+        .rail-lbl {
+          display: none;
+          font-size: 12px;
+          font-weight: 500;
+          letter-spacing: 0.01em;
+        }
+        .rail.expanded .rail-lbl {
+          display: block;
         }
         .rail-btn:hover {
           color: var(--ink);
@@ -173,8 +161,7 @@ export function Rail({
           background: var(--select-bg);
           border-color: var(--select-bg);
         }
-        .rail-btn[data-tooltip]::after,
-        .rail-project[data-tooltip]::after {
+        .rail-btn[data-tooltip]::after {
           content: attr(data-tooltip);
           position: absolute;
           left: calc(100% + 10px);
@@ -193,13 +180,21 @@ export function Rail({
           pointer-events: none;
           z-index: 20;
         }
-        .rail-btn[data-tooltip]:hover::after,
-        .rail-project[data-tooltip]:hover::after {
+        .rail-btn[data-tooltip]:hover::after {
           opacity: 1;
         }
         .rail-spacer {
           flex: 1;
-          min-height: 24px;
+          min-height: 12px;
+        }
+        .rail-foot {
+          display: flex;
+          justify-content: center;
+          width: 100%;
+          padding: 0 10px;
+        }
+        .rail.expanded .rail-foot {
+          justify-content: flex-start;
         }
         .rail-version-chip {
           position: relative;
@@ -215,6 +210,28 @@ export function Rail({
         }
         .rail-version-chip:hover {
           color: var(--ink);
+        }
+        .rail-version-chip[data-tooltip]::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          left: calc(100% + 10px);
+          top: 50%;
+          transform: translateY(-50%);
+          background: var(--ground-card);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--shadow-card);
+          color: var(--ink);
+          font-size: 11px;
+          letter-spacing: 0.04em;
+          white-space: nowrap;
+          padding: 5px 9px;
+          border-radius: 2px;
+          opacity: 0;
+          pointer-events: none;
+          z-index: 20;
+        }
+        .rail-version-chip[data-tooltip]:hover::after {
+          opacity: 1;
         }
         .rail-version-dot {
           position: absolute;

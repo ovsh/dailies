@@ -17,12 +17,14 @@ import type {
   FileDetail,
   LocatorExportOutcome,
   MediaRole,
+  MembershipSource,
   PipelineProgress,
   PipelineSnapshot,
   ProjectActivity,
   StructuredAgentAnswer,
 } from "../shared/types";
 import { CHAT_MODEL_OPTIONS, chatModelSelection } from "../shared/types";
+import { hasLlmAccessStatus } from "../shared/types";
 import type { DailiesDB } from "./db/types";
 import type { ProjectManager } from "./project-manager";
 import type { AppSettingsStore } from "./app-settings";
@@ -31,9 +33,15 @@ import { checkAvailability, findWhisperModel } from "./pipeline/binaries";
 import { DOC_EXTENSIONS } from "./pipeline/docs";
 import { runChatTurn } from "./agents/supervisor";
 import { createOpenRouterClient, validateOpenRouterKey } from "./agents/openrouter-client";
+import { managedLlmAvailable } from "./managed-llm";
 import { createOpenRouterEmbedder } from "./agents/openrouter";
 import { writeExport, writeLocatorExport } from "./export";
 import { parseClipList } from "./clip-list";
+import {
+  applyEpisodeProposal,
+  buildEpisodeProposal,
+  type EpisodeProposalApplication,
+} from "./episode-detection";
 import {
   readEpisodeMembershipReport,
   reconcileEpisodeMembership,
@@ -61,11 +69,33 @@ function episodeIdFrom(value: unknown): number {
   return value;
 }
 
-function membershipSourceFrom(value: unknown): "folder" | "list" {
-  if (value !== "folder" && value !== "list") {
+function membershipSourceFrom(value: unknown): MembershipSource {
+  if (value !== "folder" && value !== "list" && value !== "media-tag") {
     throw new Error("Invalid episode membership source");
   }
   return value;
+}
+
+const MAX_PROPOSAL_ROWS = 200;
+
+function episodeProposalRowsFrom(value: unknown): EpisodeProposalApplication[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PROPOSAL_ROWS) {
+    throw new Error("Invalid episode proposal");
+  }
+  return value.map((raw) => {
+    if (!isUnknownRecord(raw)) throw new Error("Invalid episode proposal");
+    const code = raw["code"];
+    const sourceProject = raw["sourceProject"];
+    if (
+      typeof code !== "string" ||
+      code.trim() === "" ||
+      typeof sourceProject !== "string" ||
+      sourceProject.trim() === ""
+    ) {
+      throw new Error("Invalid episode proposal");
+    }
+    return { code: code.trim(), sourceProject };
+  });
 }
 
 function clipListInputFrom(value: unknown): ClipListInput {
@@ -159,7 +189,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
   async function getApiKeyStatus(): Promise<ApiKeyStatus> {
     const key = settings.getOpenRouterKey();
-    if (!key) return "missing";
+    if (!key) return managedLlmAvailable() ? "managed" : "missing";
     if (cachedApiKeyStatus) return cachedApiKeyStatus;
     const status = await validateOpenRouterKey(key);
     if (status !== "unavailable") cachedApiKeyStatus = status;
@@ -235,6 +265,28 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       return report;
     },
   );
+
+  ipcMain.handle(IPC.detectEpisodesFromMedia, () => {
+    const { db, pipeline } = requireProject();
+    // Metadata only: this queues header reads, never reprocessing. Clips whose
+    // tag is already known, or that were already read, are skipped.
+    const queued = pipeline.backfillSourceProjects();
+    if (queued > 0) emitProjectUpdate();
+    return buildEpisodeProposal(db);
+  });
+
+  ipcMain.handle(IPC.getEpisodeProposal, () => {
+    const { db } = requireProject();
+    return buildEpisodeProposal(db);
+  });
+
+  ipcMain.handle(IPC.applyEpisodeProposal, (_e, rawRows: unknown) => {
+    const { db } = requireProject();
+    const rows = episodeProposalRowsFrom(rawRows);
+    const created = applyEpisodeProposal(db, rows);
+    emitProjectUpdate();
+    return created;
+  });
 
   ipcMain.handle(IPC.addProjectFolder, async (
     _e,
@@ -391,7 +443,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     const apiKeyStatus = await getApiKeyStatus();
     const chatSelection = chatModelSelection(settings.getChatModelId(), settings.getChatEffort());
     return {
-      apiKeySet: apiKeyStatus !== "missing",
+      apiKeySet: hasLlmAccessStatus(apiKeyStatus),
       apiKeyStatus,
       telemetryEnabled: settings.getTelemetryEnabled(),
       operatorName: settings.getOperatorName(),
@@ -488,7 +540,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
       void (async () => {
         const apiKey = settings.getOpenRouterKey();
-        if (!apiKey) {
+        if (!apiKey && !settings.hasLlmAccess()) {
           emitChatEvent({
             type: "error",
             chatId: id,
@@ -500,7 +552,9 @@ export function registerIpcHandlers(ctx: IpcContext): void {
         }
         const endChatTurn = c.beginChatTurn();
         try {
-          const client = createOpenRouterClient(() => apiKey);
+          const client = createOpenRouterClient(() => apiKey, {
+            operatorName: () => settings.getOperatorName(),
+          });
           const selection = chatModelSelection(settings.getChatModelId(), settings.getChatEffort());
           const modelStamp = { id: selection.option.id, effort: selection.effort };
           const answer = await runChatTurn({

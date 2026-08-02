@@ -149,6 +149,10 @@ export async function probeFile(path: string, knownFileHash?: string): Promise<F
 
   const dropFrame = startTc.includes(";") || (isNearDropFrameRate(fps) && startTc.includes(";"));
 
+  // Avid writes the importing project into the same tag block on non-atom MXF
+  // too; anything else simply has no such tag.
+  const rawProject = parsed.format?.tags?.["project_name"]?.trim() ?? "";
+
   const fileHash = knownFileHash ?? (await computeFileIdentity(path)).fileHash;
 
   return {
@@ -162,5 +166,6 @@ export async function probeFile(path: string, knownFileHash?: string): Promise<F
     audioChannels,
     fileHash,
     hasVideo: videoStream !== undefined,
+    sourceProject: rawProject.length > 0 ? rawProject : null,
   };
 }

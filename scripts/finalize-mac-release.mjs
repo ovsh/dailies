@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +16,14 @@ const zipName = `Dailies-${version}-arm64-mac.zip`;
 const dmgName = `Dailies-${version}-arm64.dmg`;
 const zipPath = path.join(releaseDir, zipName);
 const dmgPath = path.join(releaseDir, dmgName);
+
+runCheck("codesign", ["--verify", "--verbose=2", dmgPath], "DMG signature");
+runCheck("xcrun", ["stapler", "validate", dmgPath], "DMG notarization ticket");
+runCheck(
+  "spctl",
+  ["-a", "-vv", "-t", "open", "--context", "context:primary-signature", dmgPath],
+  "DMG Gatekeeper assessment",
+);
 
 await buildBlockMap(zipPath, "gzip", `${zipPath}.blockmap`);
 await buildBlockMap(dmgPath, "gzip", `${dmgPath}.blockmap`);
@@ -35,6 +44,14 @@ const manifest = [
 
 await writeFile(path.join(releaseDir, "latest-mac.yml"), manifest);
 console.log(`Finalized macOS release metadata for Dailies ${version}`);
+
+function runCheck(command, args, label) {
+  const result = spawnSync(command, args, { stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`${label} failed. Sign, notarize, staple, and verify the DMG before finalizing.`);
+  }
+}
 
 async function fileInfo(url, filePath) {
   const contents = await readFile(filePath);

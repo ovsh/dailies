@@ -93,6 +93,7 @@ interface FileRow {
   video_unplayable: number;
   discovery_failed: number;
   discovery_error: string | null;
+  source_project: string | null;
 }
 
 interface EpisodeRow {
@@ -100,6 +101,7 @@ interface EpisodeRow {
   code: string;
   created_at: string;
   membership_source: string;
+  media_tag: string | null;
 }
 
 interface FolderRow {
@@ -299,11 +301,12 @@ function mapFile(row: FileRow): CanonicalFile {
     clipKey: row.clip_key,
     videoUnplayable: row.video_unplayable === 1,
     discoveryFailed: row.discovery_failed === 1,
+    sourceProject: row.source_project,
   };
 }
 
 function mapMembershipSource(value: string): MembershipSource {
-  if (value === "folder" || value === "list") return value;
+  if (value === "folder" || value === "list" || value === "media-tag") return value;
   throw new Error(`Invalid membership source: ${value}`);
 }
 
@@ -313,6 +316,7 @@ function mapEpisode(row: EpisodeRow): Episode {
     code: row.code,
     createdAt: row.created_at,
     membershipSource: mapMembershipSource(row.membership_source),
+    mediaTag: row.media_tag,
   };
 }
 
@@ -668,6 +672,61 @@ function addMissingColumns(
   }
 }
 
+/**
+ * Widens the `episodes.membership_source` CHECK to admit 'media-tag'.
+ *
+ * SQLite cannot alter a CHECK constraint, so the table is rebuilt the same way
+ * `migrateLegacyFileScope` rebuilds `files`. The guard is structural, not a
+ * settings key: a table whose DDL already names 'media-tag' is done, which
+ * makes this exactly-once by construction and correct on a fresh database
+ * (SCHEMA_SQL already writes the wide CHECK). Existing rows keep their source
+ * and every foreign key into `episodes` survives, so behaviour is unchanged
+ * until an episode is actually given a media tag.
+ */
+function widenEpisodeMembershipCheck(db: BetterSqlite3Database): void {
+  const ddl = db
+    .prepare<[string], { sql: string | null }>(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .get("episodes")?.sql ?? "";
+  if (ddl.includes("'media-tag'")) return;
+
+  const before = db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM episodes")
+    .get()?.count ?? 0;
+
+  const migration = db.transaction(() => {
+    db.exec(`
+      DROP TABLE IF EXISTS episodes_v056;
+      CREATE TABLE episodes_v056 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        membership_source TEXT NOT NULL DEFAULT 'folder'
+          CHECK (membership_source IN ('folder', 'list', 'media-tag')),
+        media_tag TEXT
+      );
+      INSERT INTO episodes_v056 (id, code, created_at, membership_source, media_tag)
+      SELECT id, code, created_at, membership_source, media_tag FROM episodes;
+      DROP TABLE episodes;
+      ALTER TABLE episodes_v056 RENAME TO episodes;
+    `);
+    const after = db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM episodes")
+      .get()?.count ?? 0;
+    if (after !== before) {
+      throw new Error(
+        `episodes rebuild aborted: ${before} episode(s) before, ${after} after`,
+      );
+    }
+  });
+
+  db.pragma("foreign_keys = OFF");
+  try {
+    migration();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+}
+
 interface LegacyWatchedFolder {
   path: string;
   role?: string;
@@ -782,9 +841,11 @@ function migrate(db: BetterSqlite3Database, dbPath: string): boolean {
   addMissingColumns(db, "episodes", [
     [
       "membership_source",
-      "TEXT NOT NULL DEFAULT 'folder' CHECK (membership_source IN ('folder', 'list'))",
+      "TEXT NOT NULL DEFAULT 'folder' CHECK (membership_source IN ('folder', 'list', 'media-tag'))",
     ],
+    ["media_tag", "TEXT"],
   ]);
+  widenEpisodeMembershipCheck(db);
   addMissingColumns(db, "files", [
     ["role", "TEXT NOT NULL DEFAULT 'raw'"],
     ["clip_name", "TEXT"],
@@ -795,6 +856,7 @@ function migrate(db: BetterSqlite3Database, dbPath: string): boolean {
     ["video_unplayable", "INTEGER NOT NULL DEFAULT 0"],
     ["discovery_failed", "INTEGER NOT NULL DEFAULT 0"],
     ["discovery_error", "TEXT"],
+    ["source_project", "TEXT"],
   ]);
   addMissingColumns(db, "chats", [
     ["episode_id", "INTEGER REFERENCES episodes(id) ON DELETE SET NULL"],
@@ -930,19 +992,20 @@ function migrateLegacyFileScope(
         has_video INTEGER,
         video_unplayable INTEGER NOT NULL DEFAULT 0,
         discovery_failed INTEGER NOT NULL DEFAULT 0,
-        discovery_error TEXT
+        discovery_error TEXT,
+        source_project TEXT
       );
       INSERT INTO files_v05 (
         id, path, filename, duration_s, fps, drop_frame, start_tc, codec,
         audio_channels, file_hash, status, added_at, has_transcript, proxy_path,
         role, clip_name, media_kind, member_paths, clip_key, has_video,
-        video_unplayable, discovery_failed, discovery_error
+        video_unplayable, discovery_failed, discovery_error, source_project
       )
       SELECT
         id, path, filename, duration_s, fps, drop_frame, start_tc, codec,
         audio_channels, file_hash, status, added_at, has_transcript, proxy_path,
         role, clip_name, media_kind, member_paths, clip_key, has_video,
-        video_unplayable, discovery_failed, discovery_error
+        video_unplayable, discovery_failed, discovery_error, source_project
       FROM files;
       DROP TABLE files;
       ALTER TABLE files_v05 RENAME TO files;
@@ -1045,14 +1108,16 @@ export function openDatabase(dbPath: string): DailiesDB {
       string | null,
       string | null,
       number | null,
+      string | null,
     ],
     FileRow
   >(
     `INSERT INTO files (
        path, filename, duration_s, fps, drop_frame, start_tc, codec, audio_channels, file_hash,
-       status, added_at, role, clip_name, media_kind, member_paths, clip_key, has_video
+       status, added_at, role, clip_name, media_kind, member_paths, clip_key, has_video,
+       source_project
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
      RETURNING *`,
   );
   const stmtUpdateFile = db.prepare<
@@ -1072,13 +1137,14 @@ export function openDatabase(dbPath: string): DailiesDB {
       string | null,
       string | null,
       number | null,
+      string | null,
       number,
     ],
     FileRow
   >(
     `UPDATE files SET path = ?, filename = ?, duration_s = ?, fps = ?, drop_frame = ?, start_tc = ?, codec = ?, audio_channels = ?, file_hash = ?,
        role = ?, clip_name = ?, media_kind = ?, member_paths = ?, clip_key = ?, has_video = ?,
-       discovery_failed = 0, discovery_error = NULL
+       source_project = ?, discovery_failed = 0, discovery_error = NULL
      WHERE id = ?
      RETURNING *`,
   );
@@ -1110,6 +1176,37 @@ export function openDatabase(dbPath: string): DailiesDB {
        AND status = 'error'
        AND duration_s = 0
        AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.file_id = files.id)`,
+  );
+  const stmtSetFileSourceProject = db.prepare<[string | null, number]>(
+    "UPDATE files SET source_project = ? WHERE id = ?",
+  );
+  // Backfill candidates: MXF clips with no tag that were never looked at.
+  // OP-Atom rows carry the logical clip filename, which need not end in .mxf;
+  // standard MXF rows retain the physical .mxf filename.
+  // A finished 'media-tag' job is the "already read, genuinely untagged"
+  // record, so a second detection run does not re-probe the same media.
+  const stmtListFilesMissingSourceProject = db.prepare<[], FileRow>(
+    `SELECT * FROM files
+     WHERE (media_kind = 'opatom' OR lower(filename) LIKE '%.mxf')
+       AND source_project IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM jobs
+         WHERE jobs.file_id = files.id AND jobs.stage = 'media-tag' AND jobs.status = 'done'
+       )
+     ORDER BY id ASC`,
+  );
+  const stmtTallySourceProjects = db.prepare<[], { source_project: string; count: number }>(
+    `SELECT source_project, COUNT(*) AS count
+     FROM files
+     WHERE source_project IS NOT NULL
+     GROUP BY source_project
+     ORDER BY source_project ASC`,
+  );
+  const stmtCountUntaggedFiles = db.prepare<[], { count: number }>(
+    "SELECT COUNT(*) AS count FROM files WHERE source_project IS NULL",
+  );
+  const stmtListFileIdsBySourceProject = db.prepare<[string], { id: number }>(
+    "SELECT id FROM files WHERE source_project = ? ORDER BY id ASC",
   );
   const stmtSetFileProxy = db.prepare<[string, number]>("UPDATE files SET proxy_path = ? WHERE id = ?");
   const stmtSetVideoUnplayable = db.prepare<[number, number]>(
@@ -1193,6 +1290,9 @@ export function openDatabase(dbPath: string): DailiesDB {
   );
   const stmtSetEpisodeMembershipSource = db.prepare<[string, number]>(
     "UPDATE episodes SET membership_source = ? WHERE id = ?",
+  );
+  const stmtSetEpisodeMediaTag = db.prepare<[string | null, number]>(
+    "UPDATE episodes SET media_tag = ? WHERE id = ?",
   );
   const stmtListEpisodeEntries = db.prepare<[number], EpisodeListEntryRow>(
     `SELECT episode_id, ordinal, raw_name, clip_name, clip_key
@@ -1419,6 +1519,10 @@ export function openDatabase(dbPath: string): DailiesDB {
   const stmtHasActiveJob = db.prepare<[number, string], { count: number }>(
     `SELECT COUNT(*) AS count FROM jobs
      WHERE file_id = ? AND stage = ? AND status IN ('queued', 'running', 'waiting')`,
+  );
+  const stmtCountActiveJobsForStage = db.prepare<[string], { count: number }>(
+    `SELECT COUNT(*) AS count FROM jobs
+     WHERE stage = ? AND status IN ('queued', 'running', 'waiting')`,
   );
   const stmtClaimJob = db.prepare<[string, number], JobRow>(
     `UPDATE jobs SET status = 'running', updated_at = ?
@@ -1815,6 +1919,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       input.memberPaths ? JSON.stringify(input.memberPaths) : null,
       input.clipKey ?? null,
       input.hasVideo === undefined ? existing.has_video : input.hasVideo ? 1 : 0,
+      input.sourceProject === undefined ? existing.source_project : input.sourceProject,
       existing.id,
     );
     if (!updated) throw new Error(`updateFile: file ${existing.id} not found`);
@@ -1867,6 +1972,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       memberPaths,
       clipKey,
       input.hasVideo === undefined ? null : input.hasVideo ? 1 : 0,
+      input.sourceProject ?? null,
     );
     if (!row) throw new Error("upsertFile: insert failed");
     stmtUpsertCompatibilityLocation.run(
@@ -2271,6 +2377,10 @@ export function openDatabase(dbPath: string): DailiesDB {
   // ---------- DailiesDB implementation ----------
 
   const api: DailiesDB = {
+    runInTransaction<T>(operation: () => T): T {
+      return db.transaction(operation)();
+    },
+
     // files
     upsertFile(input: FileInput): MediaFile {
       const file = upsertFileTx(input);
@@ -2347,6 +2457,29 @@ export function openDatabase(dbPath: string): DailiesDB {
       stmtSetFileHasVideo.run(hasVideo === null ? null : hasVideo ? 1 : 0, id);
     },
 
+    setFileSourceProject(id: number, sourceProject: string | null): void {
+      stmtSetFileSourceProject.run(sourceProject, id);
+    },
+
+    listFilesMissingSourceProject(): MediaFile[] {
+      return stmtListFilesMissingSourceProject.all().map(mapStoredFile);
+    },
+
+    tallySourceProjects(): Array<{ sourceProject: string; clipCount: number }> {
+      return stmtTallySourceProjects.all().map((row) => ({
+        sourceProject: row.source_project,
+        clipCount: row.count,
+      }));
+    },
+
+    countFilesWithoutSourceProject(): number {
+      return stmtCountUntaggedFiles.get()?.count ?? 0;
+    },
+
+    listFileIdsBySourceProject(sourceProject: string): number[] {
+      return stmtListFileIdsBySourceProject.all(sourceProject).map((row) => row.id);
+    },
+
     setDiscoveryFailed(id: number, failed: boolean): void {
       stmtSetDiscoveryFailed.run(failed ? 1 : 0, failed ? 1 : 0, id);
     },
@@ -2405,6 +2538,17 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     setEpisodeMembershipSource(episodeId: number, source: MembershipSource): void {
       const result = stmtSetEpisodeMembershipSource.run(source, episodeId);
+      if (result.changes === 0) throw new Error(`Episode ${episodeId} not found`);
+    },
+
+    getEpisodeMediaTag(episodeId: number): string | null {
+      const row = stmtGetEpisodeById.get(episodeId);
+      if (!row) throw new Error(`Episode ${episodeId} not found`);
+      return row.media_tag;
+    },
+
+    setEpisodeMediaTag(episodeId: number, mediaTag: string | null): void {
+      const result = stmtSetEpisodeMediaTag.run(mediaTag, episodeId);
       if (result.changes === 0) throw new Error(`Episode ${episodeId} not found`);
     },
 
@@ -2671,6 +2815,10 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     hasActiveJob(fileId: number, stage: JobStage): boolean {
       return (stmtHasActiveJob.get(fileId, stage)?.count ?? 0) > 0;
+    },
+
+    countActiveJobsForStage(stage: JobStage): number {
+      return stmtCountActiveJobsForStage.get(stage)?.count ?? 0;
     },
 
     claimNextJob(excludeStage?: JobStage): Job | null {

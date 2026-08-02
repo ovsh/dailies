@@ -12,6 +12,7 @@ import type {
   ChatScope,
   Episode,
   EpisodeMembershipResolution,
+  EpisodeProposal,
   ExportItem,
   ExportKind,
   ExportWriteOutcome,
@@ -268,6 +269,31 @@ export function createMockApi(): DailiesAPI {
     return next;
   }
 
+  // Computed from the mock library rather than invented: the seed clips carry
+  // no Avid project tag, so the browser preview honestly reports none found.
+  function episodeProposal(): EpisodeProposal {
+    const tally = new Map<string, number>();
+    for (const file of MOCK_FILES) {
+      if (file.sourceProject === null) continue;
+      tally.set(file.sourceProject, (tally.get(file.sourceProject) ?? 0) + 1);
+    }
+    const claimed = new Set(
+      (episodesByProject[currentProjectId ?? ""] ?? [])
+        .map((episode) => episode.mediaTag)
+        .filter((tag): tag is string => tag !== null),
+    );
+    return {
+      rows: [...tally.entries()].map(([sourceProject, clipCount]) => ({
+        sourceProject,
+        code: sourceProject,
+        clipCount,
+        alreadyExists: claimed.has(sourceProject),
+      })),
+      untaggedClipCount: MOCK_FILES.filter((file) => file.sourceProject === null).length,
+      pendingClipCount: 0,
+    };
+  }
+
   async function replaceEpisodeClipList(
     episodeId: number,
     input: ClipListInput,
@@ -477,6 +503,7 @@ export function createMockApi(): DailiesAPI {
         code: code.trim(),
         createdAt: new Date().toISOString(),
         membershipSource: "folder",
+        mediaTag: null,
       };
       episodesByProject[currentProjectId] = [...(episodesByProject[currentProjectId] ?? []), episode];
       notifyProjectUpdate();
@@ -486,6 +513,50 @@ export function createMockApi(): DailiesAPI {
     getEpisodeMembership,
     setEpisodeMembershipSource,
     replaceEpisodeClipList,
+
+    async detectEpisodesFromMedia() {
+      return episodeProposal();
+    },
+
+    async getEpisodeProposal() {
+      return episodeProposal();
+    },
+
+    async applyEpisodeProposal(rows: Array<{ code: string; sourceProject: string }>) {
+      if (!currentProjectId) throw new Error("No project open");
+      const created: Episode[] = rows.map((row) => ({
+        id: nextEpisodeId++,
+        code: row.code,
+        createdAt: new Date().toISOString(),
+        membershipSource: "media-tag" as const,
+        mediaTag: row.sourceProject,
+      }));
+      episodesByProject[currentProjectId] = [
+        ...(episodesByProject[currentProjectId] ?? []),
+        ...created,
+      ];
+      for (const episode of created) {
+        episodeMembers.set(
+          episode.id,
+          new Set(
+            MOCK_FILES.filter((file) => file.sourceProject === episode.mediaTag).map((f) => f.id),
+          ),
+        );
+        membershipReports.set(episode.id, {
+          episodeId: episode.id,
+          source: "media-tag",
+          memberCount: episodeMembers.get(episode.id)?.size ?? 0,
+          matchedCount: episodeMembers.get(episode.id)?.size ?? 0,
+          ambiguousCount: 0,
+          unmatchedCount: 0,
+          unresolvedCount: 0,
+          resolutions: [],
+          untaggedClipCount: MOCK_FILES.filter((file) => file.sourceProject === null).length,
+        });
+      }
+      notifyProjectUpdate();
+      return created;
+    },
 
     async addProjectFolder(role: MediaRole, episodeId: number | null) {
       if (!currentProjectId) throw new Error("No project open");

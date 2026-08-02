@@ -22,7 +22,7 @@ Avid-native export (markers + EDL). Built for documentary and reality editors.
 1. Download the installer from [Releases](https://github.com/ovsh/dailies/releases):
    - macOS: open `Dailies-<version>-arm64.dmg` and drag **Dailies** to Applications.
      The app is signed and notarized.
-   - Windows beta: run `Dailies-0.5.4-Setup-x64.exe`. This beta is unsigned, so Windows shows "Unknown publisher."
+   - Windows beta: run `Dailies-0.5.6-Setup-x64.exe`. This beta is unsigned, so Windows shows "Unknown publisher."
 2. Requirements: Apple Silicon with macOS 14+, or 64-bit Windows 10/11.
 3. The installer is only for the first install. Dailies checks
    GitHub Releases at launch, hourly, and whenever the window comes to
@@ -117,7 +117,7 @@ All timecodes are source TC (or timeline TC for finals), drop-frame handled corr
 | Symptom | Fix |
 |---|---|
 | macOS says it cannot verify the app | Download the current notarized DMG from Releases. |
-| Windows warns about an unknown publisher | Version 0.5.4 is an unsigned beta. Confirm that the file came from the official Dailies release before you select **More info** and **Run anyway**. |
+| Windows warns about an unknown publisher | The Windows build is an unsigned beta. Confirm that the file came from the official Dailies release before you select **More info** and **Run anyway**. |
 | Update banner never appears | It only shows once a download finishes. Check status any time in Settings & Jobs, or **Dailies ▸ Check for Updates…**. |
 | Chat says a key is needed | Settings & Jobs → paste your OpenRouter key. |
 | Clips stuck without transcripts | Download the speech model: Settings & Jobs → Transcription → Download. |
@@ -137,7 +137,7 @@ npm run dev:renderer   # renderer only in a browser, with mock data
 npm run typecheck
 npm test
 npm run dist:mac       # macOS arm64 DMG + ZIP + latest-mac.yml into release/
-npm run dist:win       # signed Windows x64 NSIS installer + latest.yml into release/
+npm run dist:win       # unsigned Windows x64 NSIS installer + latest.yml into release/
 npm run rebuild        # force a fresh Electron native rebuild (normally unnecessary)
 ```
 
@@ -172,14 +172,14 @@ Un-notarized builds are blocked by Gatekeeper on current macOS ("damaged / move 
 Trash"). Workaround for a machine you control: `xattr -d com.apple.quarantine /Applications/Dailies.app`.
 
 The Windows build runs in `.github/workflows/windows-release.yml` from the exact
-`v0.5.4` tag. It requires `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`, and both telemetry
-secrets. The workflow downloads the SHA-256-pinned whisper.cpp `v1.9.1` archive,
-runs the checks, verifies Authenticode and `latest.yml`, then adds these files to
+release tag. It requires both telemetry secrets. The workflow downloads the
+SHA-256-pinned whisper.cpp `v1.9.1` archive, runs the checks, confirms that the
+app is unsigned, verifies `latest.yml`, then adds these files to
 an existing draft release:
 
 ```text
-Dailies-0.5.4-Setup-x64.exe
-Dailies-0.5.4-Setup-x64.exe.blockmap
+Dailies-<version>-Setup-x64.exe
+Dailies-<version>-Setup-x64.exe.blockmap
 latest.yml
 ```
 

@@ -157,6 +157,72 @@ describe("legacy database migration", () => {
     verify.close();
   });
 
+  it("widens the episode membership check and leaves existing episodes untouched", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dailies-mig-media-tag-"));
+    const dbPath = path.join(dir, "dailies.db");
+    const created = new Date(0).toISOString();
+
+    // The 0.5.5 episodes table: no media_tag, and a check that rejects 'media-tag'.
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE episodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        membership_source TEXT NOT NULL DEFAULT 'folder'
+          CHECK (membership_source IN ('folder', 'list'))
+      );
+    `);
+    const insertEpisode = raw.prepare(
+      "INSERT INTO episodes (code, created_at, membership_source) VALUES (?, ?, ?)",
+    );
+    const folderEpisode = Number(insertEpisode.run("201", created, "folder").lastInsertRowid);
+    const listEpisode = Number(insertEpisode.run("202", created, "list").lastInsertRowid);
+    expect(() => insertEpisode.run("203", created, "media-tag")).toThrow();
+    raw.close();
+
+    const db = openDatabase(dbPath);
+    expect(db.listEpisodes()).toEqual([
+      {
+        id: folderEpisode,
+        code: "201",
+        createdAt: created,
+        membershipSource: "folder",
+        mediaTag: null,
+      },
+      {
+        id: listEpisode,
+        code: "202",
+        createdAt: created,
+        membershipSource: "list",
+        mediaTag: null,
+      },
+    ]);
+
+    // The new source is accepted only after the rebuild.
+    const tagged = db.createEpisode("203");
+    db.setEpisodeMediaTag(tagged.id, "RWAR_EDIT_03");
+    db.setEpisodeMembershipSource(tagged.id, "media-tag");
+    expect(db.getEpisodeMembershipSource(tagged.id)).toBe("media-tag");
+    db.close();
+
+    const verify = new Database(dbPath);
+    // Rows referencing episodes must survive the DROP/RENAME with their keys intact.
+    expect(verify.pragma("foreign_key_check")).toEqual([]);
+    expect(verify.prepare<[], { seq: number }>(
+      "SELECT seq FROM sqlite_sequence WHERE name = 'episodes'",
+    ).get()?.seq).toBe(tagged.id);
+    expect(() => verify.prepare(
+      "INSERT INTO episodes (code, created_at, membership_source) VALUES (?, ?, ?)",
+    ).run("204", created, "nonsense")).toThrow();
+    verify.close();
+
+    // Re-opening is a no-op: the structural guard sees the widened check.
+    const reopened = openDatabase(dbPath);
+    expect(reopened.listEpisodes().map((episode) => episode.code)).toEqual(["201", "202", "203"]);
+    reopened.close();
+  });
+
   it("opens a v1 database and migrates it in place (regression: clip_key)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-mig-"));
     const dbPath = path.join(dir, "legacy.db");

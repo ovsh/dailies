@@ -64,6 +64,7 @@
   /* elevation: hard offset, no blur glow */
   --shadow-card: 2px 3px 0 rgba(23, 25, 27, 0.22);
 
-  /* rail */
-  --rail-w: 72px;
+  /* rail: icon-only collapsed width / icons + labels expanded width */
+  --rail-w: 56px;
+  --rail-w-expanded: 232px;
 }

@@ -346,7 +346,9 @@ export function createProjectManager(opts: {
     const db = openDatabase(record.dbPath);
     db.resetRunningJobs();
 
-    const client = createOpenRouterClient(() => opts.settings.getOpenRouterKey());
+    const client = createOpenRouterClient(() => opts.settings.getOpenRouterKey(), {
+      operatorName: () => opts.settings.getOperatorName(),
+    });
     const textEmbedder = createOpenRouterEmbedder(client);
 
     const pipeline = createPipeline({
@@ -354,7 +356,7 @@ export function createProjectManager(opts: {
       dataDir: path.dirname(record.mediaDir) === opts.dataDir ? opts.dataDir : path.dirname(record.mediaDir),
       whisperModel: opts.settings.getWhisperModel(),
       embedder: () => {
-        return opts.settings.hasOpenRouterKey() ? textEmbedder : null;
+        return opts.settings.hasLlmAccess() ? textEmbedder : null;
       },
       onUpdate: opts.onUpdate,
       budget,

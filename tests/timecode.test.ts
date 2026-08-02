@@ -187,6 +187,7 @@ const fileA: MediaFile = {
   mediaKind: "standard" as const,
   memberPaths: null,
   clipKey: null,
+  sourceProject: null,
   videoUnplayable: false,
   discoveryFailed: false,
   locations: [{
@@ -222,6 +223,7 @@ const fileB: MediaFile = {
   mediaKind: "standard" as const,
   memberPaths: null,
   clipKey: null,
+  sourceProject: null,
   videoUnplayable: false,
   discoveryFailed: false,
   locations: [{

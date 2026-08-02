@@ -45,13 +45,19 @@ Dailies' specifics:
   shipped without them. A delta needs a blockmap on BOTH sides — the
   installed version and the new one — so the chain only restarts once two
   consecutive releases carry them (0.5.1 is the first again).
-- electron-builder does the signing and app notarization itself — it just
-  needs the shared profile: `APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist`
+- electron-builder does the app signing and app notarization itself — it just
+  needs the shared profile: `APPLE_KEYCHAIN_PROFILE=digital-lane npm run dist:mac`
   (hardened runtime is on in `package.json → build.mac`, `notarize: true`).
-- It does NOT notarize the DMG. Submit and staple that yourself afterward,
-  then run `npm run finalize:mac` to rebuild both blockmaps and
-  `latest-mac.yml` from the final bytes. Verify the mounted app with `spctl`
-  before shipping.
+- It does NOT sign or notarize the DMG. Sign the DMG with the same Developer ID
+  identity, submit it, and staple it afterward. The global `apple-sign` helper
+  does these steps in the required order:
+
+      ~/.claude/skills/apple-sign/scripts/sign-notarize.sh release release/Dailies-<version>-arm64.dmg
+
+  Then run `npm run finalize:mac` to rebuild both blockmaps and
+  `latest-mac.yml` from the final bytes. The finalizer rejects a DMG that fails
+  its code signature, staple, or Gatekeeper check. Verify the mounted app with
+  `spctl` before shipping.
 - Nested Mach-O under `asarUnpack` (ffmpeg/ffprobe/whisper) is the usual cause
   of an `Invalid` notarization — check each with `codesign -dv`.
 

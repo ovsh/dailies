@@ -3,11 +3,12 @@ import { join } from "node:path";
 
 import { setFileStatusInternal } from "../db/database";
 import type { DailiesDB } from "../db/types";
+import { reconcileEpisodeMembership } from "../membership";
 import type { Job, JobStage, MediaFile, TextEmbedder } from "../../shared/types";
 import { formatElapsedOffset, tcAddSeconds } from "../../shared/timecode";
 import { findFfprobeBinary, findWhisperBinary, findWhisperModel } from "./binaries";
 import { isSystemicSpawnError } from "./exec";
-import { analyzeMxf } from "./opatom";
+import { analyzeMxf, readMxfProjectName } from "./opatom";
 import { extractAudio, extractKeyframe, isNoAudioStreamError, makeProxy } from "./proxy";
 import { probeFile } from "./probe";
 import { detectScenes } from "./scenes";
@@ -50,6 +51,20 @@ export function createStages(opts: StageOptions): Stages {
     throw signal.reason instanceof Error
       ? signal.reason
       : new Error("Pipeline job was abandoned");
+  }
+
+  function reconcileMediaTagEpisodes(...projectNames: Array<string | null>): void {
+    const changedTags = new Set(projectNames.filter((name): name is string => name !== null));
+    if (changedTags.size === 0) return;
+    for (const episode of db.listEpisodes()) {
+      if (
+        episode.membershipSource === "media-tag" &&
+        episode.mediaTag !== null &&
+        changedTags.has(episode.mediaTag)
+      ) {
+        reconcileEpisodeMembership(db, episode.id);
+      }
+    }
   }
 
   function reconcile(fileId: number): void {
@@ -97,10 +112,13 @@ export function createStages(opts: StageOptions): Stages {
     if (file.mediaKind === "standard" && file.hasVideo === null) {
       const probed = await probeFile(file.path, file.fileHash);
       checkActive(signal);
-      db.upsertFile({
+      const updated = db.upsertFile({
         ...probed,
         role: file.role,
       });
+      if (updated.sourceProject !== file.sourceProject) {
+        reconcileMediaTagEpisodes(file.sourceProject, updated.sourceProject);
+      }
     } else {
       await hasVideoAtom(file, signal);
     }
@@ -379,6 +397,30 @@ export function createStages(opts: StageOptions): Stages {
     reconcile(file.id);
   }
 
+  /**
+   * Reads the Avid project tag of one already-indexed clip.
+   *
+   * Header-only and deliberately inert: it enqueues nothing, touches no
+   * derived state, and never calls ensureWork. Only a successful header read
+   * with no tag records an untagged clip. Read failures propagate to the queue
+   * so a temporary drive or ffprobe problem can be retried.
+   */
+  async function handleMediaTag(job: Job, signal: AbortSignal): Promise<void> {
+    const file = db.getFile(job.fileId);
+    if (!file) throw new Error(`Job ${job.id}: file ${job.fileId} not found`);
+
+    const path = file.memberPaths?.[0] ?? file.path;
+    const projectName = await readMxfProjectName(findFfprobeBinary(), path);
+    checkActive(signal);
+
+    if (projectName !== null) {
+      db.setFileSourceProject(file.id, projectName);
+      // A tag read after the fact can hand this clip to an existing episode.
+      reconcileMediaTagEpisodes(file.sourceProject, projectName);
+    }
+    db.completeJob(job.id);
+  }
+
   function reconcileAndEnsureAllFiles(): void {
     db.backfillDiscoveryFailures();
     const files = db.listFiles();
@@ -405,6 +447,9 @@ export function createStages(opts: StageOptions): Stages {
         break;
       case "embed":
         await handleEmbed(job, signal);
+        break;
+      case "media-tag":
+        await handleMediaTag(job, signal);
         break;
       default: {
         const unhandledStage: never = job.stage;

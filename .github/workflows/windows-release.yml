@@ -97,7 +97,8 @@ jobs:
           npm run icon
           npm run native:electron
           npm run build:renderer
-          npm run build:main
+          npm run build:main:stable
+          npm run verify:main:stable
           npx electron-builder --win nsis --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false
 
       - name: Verify unsigned beta and update metadata
@@ -139,6 +140,25 @@ jobs:
           $actualSha = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData($bytes))
           if ($shaLine.Groups[1].Value -ne $actualSha) {
             throw 'latest.yml SHA-512 does not match the installer.'
+          }
+
+      - name: Smoke-test a fresh Windows profile
+        shell: pwsh
+        run: |
+          $profile = Join-Path $env:RUNNER_TEMP 'dailies-fresh-profile'
+          $log = Join-Path $env:RUNNER_TEMP 'dailies-smoke.log'
+          $process = Start-Process 'release/win-unpacked/Dailies.exe' `
+            -ArgumentList "--user-data-dir=$profile", '--disable-gpu', '--enable-logging', "--log-file=$log" `
+            -PassThru
+          Start-Sleep -Seconds 15
+          if ($process.HasExited) {
+            $details = if (Test-Path $log) { Get-Content $log -Raw } else { 'No Electron log was written.' }
+            throw "Dailies exited during the fresh-profile smoke test. $details"
+          }
+          Stop-Process -Id $process.Id
+          Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+          if (-not (Test-Path $profile)) {
+            throw 'Dailies did not create the isolated user-data directory.'
           }
 
       - name: Upload to existing draft without clobbering

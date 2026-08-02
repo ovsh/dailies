@@ -55,14 +55,14 @@ upload of media or don't speak Avid natively.
 ## Capabilities and Constraints
 
 - Apple Silicon with macOS 14+, or x64 with Windows 10/11. The Mac app is signed with
-  Digital Lane LLC Developer ID (team 7Z82LSPAPP) and notarized. The Windows 0.5.4
-  beta is unsigned.
+  Digital Lane LLC Developer ID (team 7Z82LSPAPP) and notarized. The Windows beta
+  is unsigned.
 - Speed claim (confirmed, use this and not the raw benchmark numbers): an hour of
   footage indexes in roughly 10 minutes on an M-series Mac, mostly transcription.
 - Whisper speech model is a one-time ~0.9 GB download inside the app.
 - Requires an OpenRouter API key for chat + embeddings (user-supplied).
 - Free public download from GitHub Releases (github.com/ovsh/dailies): a notarized DMG
-  for Mac and an unsigned NSIS beta for Windows. Version at time of writing: 0.5.4.
+  for Mac and an unsigned NSIS beta for Windows. Version at time of writing: 0.5.6.
 - Terminology: dailies, clips, atoms, markers/locators, EDL, selects, stringout,
   source TC, timeline TC. Use the audience's words.
 

@@ -53,6 +53,9 @@ export type FileLocationRemoval =
   | { kind: "deleted"; file: MediaFile; removed: FileLocation };
 
 export interface DailiesDB {
+  /** Runs one synchronous database operation atomically, including nested DB calls. */
+  runInTransaction<T>(operation: () => T): T;
+
   // files
   upsertFile(input: FileInput): MediaFile;
   getFile(id: number): MediaFile | null;
@@ -74,6 +77,13 @@ export interface DailiesDB {
   /** All files, or one episode's when episodeId is given. */
   listFiles(episodeId?: number): MediaFile[];
   setFileHasVideo(id: number, hasVideo: boolean | null): void;
+  setFileSourceProject(id: number, sourceProject: string | null): void;
+  /** Backfill candidates: MXF clips whose Avid project tag was never read. */
+  listFilesMissingSourceProject(): MediaFile[];
+  /** Distinct Avid project tags in this project, with their clip counts. */
+  tallySourceProjects(): Array<{ sourceProject: string; clipCount: number }>;
+  countFilesWithoutSourceProject(): number;
+  listFileIdsBySourceProject(sourceProject: string): number[];
   setDiscoveryFailed(id: number, failed: boolean): void;
   setDiscoveryFailure(id: number, reason: string | null): void;
   /** Backfill legacy unreadable stubs. Returns the number of changed rows. */
@@ -88,6 +98,8 @@ export interface DailiesDB {
   listEpisodes(): Episode[];
   getEpisodeMembershipSource(episodeId: number): MembershipSource;
   setEpisodeMembershipSource(episodeId: number, source: MembershipSource): void;
+  getEpisodeMediaTag(episodeId: number): string | null;
+  setEpisodeMediaTag(episodeId: number, mediaTag: string | null): void;
   getEpisodeListEntries(episodeId: number): EpisodeListEntry[];
   replaceEpisodeListEntries(episodeId: number, entries: EpisodeListEntry[]): void;
   getEpisodeMemberIds(episodeId: number): number[];
@@ -152,6 +164,8 @@ export interface DailiesDB {
   // job queue
   enqueueJob(fileId: number, stage: JobStage): void;
   hasActiveJob(fileId: number, stage: JobStage): boolean;
+  /** Jobs of one stage that are queued, running, or waiting across the project. */
+  countActiveJobsForStage(stage: JobStage): number;
   /**
    * Claims the highest-priority queued job (search-first stage order, FIFO
    * within a stage). Pass excludeStage to skip a stage whose concurrency cap

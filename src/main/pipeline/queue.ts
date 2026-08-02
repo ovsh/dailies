@@ -247,6 +247,8 @@ export interface QueueOptions {
 export interface JobQueue {
   retryFile(fileId: number): Promise<void>;
   refreshPrerequisites(kind: "whisper" | "openrouter" | "all"): Promise<void>;
+  /** Queues an Avid project-tag read for every clip that has never had one. */
+  backfillSourceProjects(): number;
   start(): void;
   stop(mode?: StopMode): Promise<void>;
 }
@@ -318,6 +320,22 @@ export function createQueue(opts: QueueOptions): JobQueue {
     ensureWork(fileId);
     scheduleUpdate();
     kick();
+  }
+
+  /**
+   * Enqueues the metadata backfill only. It calls neither reconcile nor
+   * ensureWork, so no audio, proxy, scenes, transcribe, or embed job can come
+   * out of it; enqueueJob itself skips clips that already have one in flight.
+   * Returns how many clips were queued.
+   */
+  function backfillSourceProjects(): number {
+    const pending = db.listFilesMissingSourceProject();
+    for (const file of pending) db.enqueueJob(file.id, "media-tag");
+    if (pending.length > 0) {
+      scheduleUpdate();
+      kick();
+    }
+    return pending.length;
   }
 
   function isTransientError(err: unknown): boolean {
@@ -591,6 +609,7 @@ export function createQueue(opts: QueueOptions): JobQueue {
   return {
     retryFile,
     refreshPrerequisites,
+    backfillSourceProjects,
     start,
     stop,
   };

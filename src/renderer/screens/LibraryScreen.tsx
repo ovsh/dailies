@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, mediaUrl } from "../api";
 import type {
   Episode,
+  EpisodeProposal,
   MediaFile,
   MediaRole,
   PipelineSnapshot,
@@ -9,6 +10,7 @@ import type {
 } from "../../shared/types";
 import { ClipCard } from "../components/ClipCard";
 import { EpisodeBar } from "../components/EpisodeBar";
+import { EpisodeProposalCard } from "../components/EpisodeProposalCard";
 import { Toast } from "../components/Toast";
 import { InlineError } from "../components/InlineError";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
@@ -71,6 +73,9 @@ export function LibraryScreen({
   const [toast, setToast] = useState<string | null>(null);
   const [focusedFileId, setFocusedFileId] = useState<number | null>(null);
   const [focusNotice, setFocusNotice] = useState<string | null>(null);
+  const [proposal, setProposal] = useState<EpisodeProposal | null>(null);
+  const proposalDismissedRef = useRef(false);
+  const proposalPollingRef = useRef(false);
   const keyframesRef = useRef<Record<number, string | null>>({});
   const detailSignaturesRef = useRef<Record<number, string>>({});
   const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -109,16 +114,55 @@ export function LibraryScreen({
           keyframesRef.current = next;
           setKeyframes(next);
         }
+
+        // Detection queues header reads and returns before they finish. Project
+        // updates wake this load function as those jobs complete, so keep the
+        // proposal in step until no tag reads remain.
+        if (
+          proposalPollingRef.current &&
+          !proposalDismissedRef.current &&
+          episodes.length === 0
+        ) {
+          try {
+            const nextProposal = await api.getEpisodeProposal();
+            proposalPollingRef.current = nextProposal.pendingClipCount > 0;
+            if (nextProposal.rows.filter((row) => !row.alreadyExists).length >= 2) {
+              setProposal(nextProposal);
+            }
+          } catch {
+            // A library refresh must still succeed when proposal refresh fails.
+          }
+        } else if (episodes.length > 0) {
+          proposalPollingRef.current = false;
+          setProposal(null);
+        }
       },
       { setPending: setLoading, setError: setLoadError, fallback: "Could not refresh the library." },
     );
-  }, [episodeId]);
+  }, [episodeId, episodes.length]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useLiveRefresh(load);
+
+  /**
+   * Offers episodes after a scan when the media itself says what they are.
+   * Only for a project with no episodes yet, and only when two or more Avid
+   * project tags were found. Detection is an offer, not part of the scan, so a
+   * failure here stays quiet instead of reporting a scan error.
+   */
+  async function maybeProposeEpisodes() {
+    if (episodes.length > 0 || proposalDismissedRef.current) return;
+    try {
+      const next = await api.detectEpisodesFromMedia();
+      proposalPollingRef.current = next.pendingClipCount > 0;
+      if (next.rows.filter((row) => !row.alreadyExists).length >= 2) setProposal(next);
+    } catch {
+      // stays silent
+    }
+  }
 
   async function addFolder(role: MediaRole) {
     setRetryAction(() => () => void addFolder(role));
@@ -128,6 +172,7 @@ export function LibraryScreen({
         if (folder) {
           await onRefresh();
           await load();
+          await maybeProposeEpisodes();
         }
         return folder;
       },
@@ -157,6 +202,7 @@ export function LibraryScreen({
         await api.rescanFolders(episodeId);
         await onRefresh();
         await load();
+        await maybeProposeEpisodes();
       },
       { setPending: setScanning, setError: setActionError, fallback: "Could not rescan watched folders." },
     );
@@ -182,6 +228,14 @@ export function LibraryScreen({
       },
     );
     if (result.ok) setRetryAction(null);
+  }
+
+  async function applyProposal(rows: Array<{ code: string; sourceProject: string }>) {
+    await api.applyEpisodeProposal(rows);
+    proposalPollingRef.current = false;
+    setProposal(null);
+    await onRefresh();
+    await load();
   }
 
   const isEmpty = files !== null && files.length === 0;
@@ -292,6 +346,21 @@ export function LibraryScreen({
         {!files && loading && <p className="library-loading mono">Loading…</p>}
         {loadError && <InlineError message={loadError} onRetry={() => void load()} retrying={loading} />}
         {focusNotice && <p className="library-focus-notice mono">{focusNotice}</p>}
+
+        {proposal && (
+          <EpisodeProposalCard
+            proposal={proposal}
+            onApply={applyProposal}
+            onDismiss={() => {
+              proposalDismissedRef.current = true;
+              proposalPollingRef.current = false;
+              setProposal(null);
+            }}
+            onRefresh={() => {
+              void api.getEpisodeProposal().then(setProposal).catch(() => undefined);
+            }}
+          />
+        )}
 
         {isEmpty && (
           <div className="library-empty">

@@ -6,7 +6,12 @@ vi.mock("../src/main/pipeline/exec", async (importOriginal) => ({
   run: mockRun,
 }));
 
-import { analyzeMxf, OpAtomGrouper, type MxfAtomInfo } from "../src/main/pipeline/opatom";
+import {
+  analyzeMxf,
+  OpAtomGrouper,
+  readMxfProjectName,
+  type MxfAtomInfo,
+} from "../src/main/pipeline/opatom";
 
 function audioProbe(tags: Record<string, string> = {}) {
   return JSON.stringify({
@@ -43,6 +48,50 @@ describe("OP-Atom metadata and grouping", () => {
     expect((await analyzeMxf("ffprobe", "/avid/unknown.mxf"))?.fps).toBe(0);
   });
 
+  it("reads the Avid project name from the format tags, header probe included", async () => {
+    mockRun
+      .mockResolvedValueOnce({ stdout: audioProbe({ project_name: " RWAR_EDIT " }), code: 0 })
+      .mockResolvedValueOnce({ stdout: audioProbe({ project_name: "  " }), code: 0 })
+      .mockResolvedValueOnce({ stdout: audioProbe(), code: 0 })
+      .mockResolvedValueOnce({ stdout: audioProbe({ project_name: "RWAR_EDIT_02" }), code: 0 });
+
+    expect((await analyzeMxf("ffprobe", "/avid/tagged.mxf"))?.projectName).toBe("RWAR_EDIT");
+    expect((await analyzeMxf("ffprobe", "/avid/blank.mxf"))?.projectName).toBeNull();
+    expect((await analyzeMxf("ffprobe", "/avid/untagged.mxf"))?.projectName).toBeNull();
+    expect(await readMxfProjectName("ffprobe", "/avid/tagged.mxf")).toBe("RWAR_EDIT_02");
+
+    // The backfill probe must stay header-only: no -show_streams.
+    expect(mockRun.mock.calls[3]?.[1]).toEqual([
+      "-v", "error", "-print_format", "json", "-show_format", "/avid/tagged.mxf",
+    ]);
+  });
+
+  it("carries the first project name a clip's atoms report onto the clip", async () => {
+    vi.useFakeTimers();
+    const emitted: Array<{ projectName: string | null }> = [];
+    const grouper = new OpAtomGrouper({ debounceMs: 20, onClip: (clip) => emitted.push(clip) });
+    const base = {
+      clipKey: "umid-tagged",
+      clipName: "Tagged Clip",
+      durationS: 10,
+      fps: 24,
+      dropFrame: false,
+      startTc: "01:00:00:00",
+    };
+    grouper.addAtom({ ...base, path: "/avid/A01.mxf", essence: "audio", codec: "pcm", projectName: null });
+    grouper.addAtom({
+      ...base,
+      path: "/avid/V01.mxf",
+      essence: "video",
+      codec: "dnx",
+      projectName: "RWAR_EDIT",
+    });
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]?.projectName).toBe("RWAR_EDIT");
+  });
+
   it("emits a late atom in a fresh batch and releases fired group state", async () => {
     vi.useFakeTimers();
     const emitted: Array<{ atoms: MxfAtomInfo[] }> = [];
@@ -54,6 +103,7 @@ describe("OP-Atom metadata and grouping", () => {
     const base = {
       clipKey: "umid-late",
       clipName: "Late Clip",
+      projectName: null,
       durationS: 10,
       fps: 24,
       dropFrame: false,

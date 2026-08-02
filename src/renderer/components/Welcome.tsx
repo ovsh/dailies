@@ -1,6 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
-import type { AppSettings, MediaRole, ModelDownloadProgress, ProjectFolder } from "../../shared/types";
+import {
+  hasLlmAccessStatus,
+  type AppSettings,
+  type MediaRole,
+  type ModelDownloadProgress,
+  type ProjectFolder,
+} from "../../shared/types";
 import { InlineError } from "./InlineError";
 import { runIpc } from "../lib/async";
 
@@ -11,21 +17,41 @@ interface WelcomeProps {
   onDismiss: () => void;
 }
 
+/** The four independent first-run checks, in bin-row order. */
+type CheckId = "name" | "openrouter" | "folder" | "model";
+
+const CHECK_ORDER: CheckId[] = ["name", "openrouter", "folder", "model"];
+
 /**
- * First-run setup. Each requirement is independent and reports its real state.
+ * First-run setup as a bin: three rows, every state visible at a glance.
+ * The selected row opens its action drawer; selection follows the first
+ * incomplete check, so exactly one action is on screen at a time.
  */
 export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: WelcomeProps) {
+  const [operatorName, setOperatorName] = useState("");
   const [openRouterKey, setOpenRouterKey] = useState("");
-  const [saving, setSaving] = useState<"openrouter" | null>(null);
+  const [saving, setSaving] = useState<"name" | "openrouter" | null>(null);
   const [addingFolder, setAddingFolder] = useState(false);
+  const [folderRole, setFolderRole] = useState<MediaRole>("raw");
   const [modelProgress, setModelProgress] = useState<ModelDownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
+  const [manualSelection, setManualSelection] = useState<CheckId | null>(null);
   const onSettingsChangedRef = useRef(onSettingsChanged);
   onSettingsChangedRef.current = onSettingsChanged;
 
-  const keyConnected = settings.apiKeyStatus === "connected";
-  const allReady = keyConnected && folders.length > 0 && settings.whisperModelReady;
+  const llmAccessReady = hasLlmAccessStatus(settings.apiKeyStatus);
+  const done: Record<CheckId, boolean> = {
+    name: settings.operatorName !== null,
+    openrouter: llmAccessReady,
+    folder: folders.length > 0,
+    model: settings.whisperModelReady,
+  };
+  const allReady = CHECK_ORDER.every((id) => done[id]);
+  // A manually selected row holds focus until its check completes, then
+  // selection falls back to the first incomplete check (auto-advance).
+  const firstIncomplete = CHECK_ORDER.find((id) => !done[id]) ?? null;
+  const selected = manualSelection && !done[manualSelection] ? manualSelection : firstIncomplete;
 
   useEffect(() => api.onModelProgress((progress) => {
     setModelProgress(progress);
@@ -35,6 +61,23 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
       onSettingsChangedRef.current();
     }
   }), []);
+
+  async function saveName(name: string) {
+    if (!name.trim()) return;
+    setRetryAction(() => () => void saveName(name));
+    const result = await runIpc(
+      () => api.setOperatorName(name),
+      {
+        setPending: (pending) => setSaving(pending ? "name" : null),
+        setError,
+        fallback: "Could not save your name.",
+      },
+    );
+    if (!result.ok) return;
+    setOperatorName("");
+    setRetryAction(null);
+    onSettingsChanged();
+  }
 
   async function saveKey(provider: "openrouter", key: string) {
     if (!key.trim()) return;
@@ -83,6 +126,45 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
     if (result.ok) setRetryAction(null);
   }
 
+  const keyState = settings.apiKeyStatus === "managed"
+    ? { label: "Provided for beta", tone: "ok" }
+    : settings.apiKeyStatus === "connected"
+      ? { label: "Connected", tone: "ok" }
+    : settings.apiKeyStatus === "invalid"
+      ? { label: "Invalid", tone: "error" }
+      : settings.apiKeyStatus === "unavailable"
+        ? { label: "Not verified", tone: "pending" }
+        : { label: "Not connected", tone: "pending" };
+
+  function row(
+    id: CheckId,
+    name: string,
+    meta: string | null,
+    state: { label: string; tone: string },
+    drawer: ReactNode,
+  ) {
+    const isSelected = selected === id;
+    return (
+      <>
+        <button
+          type="button"
+          className={`welcome-bin-row${isSelected ? " sel" : ""}`}
+          onClick={() => setManualSelection(id)}
+          disabled={done[id]}
+          aria-expanded={isSelected}
+        >
+          <span className={`welcome-tick${done[id] ? " done" : ""}`} aria-hidden="true" />
+          <span className="welcome-row-name">
+            {name}
+            {meta && <span className="welcome-row-meta mono">{meta}</span>}
+          </span>
+          <span className={`welcome-state ${state.tone}`}>{state.label}</span>
+        </button>
+        {isSelected && <div className="welcome-drawer">{drawer}</div>}
+      </>
+    );
+  }
+
   return (
     <div className="welcome-overlay">
       <div className="welcome-panel">
@@ -94,7 +176,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
         <div className="welcome-body">
         <p className="welcome-mark display">Dailies</p>
         <p className="welcome-sub">
-          Chat with your footage. Three independent setup checks. Continue now, or finish them later in Settings.
+          Chat with your footage. Four independent setup checks. Continue now, or finish them later in Settings.
         </p>
 
         {error && (
@@ -105,118 +187,162 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           />
         )}
 
-        <div className="welcome-step">
-          <div className="welcome-step-head">
-            <span className="welcome-step-num mono">01</span>
-            <span className="label">OpenRouter API key</span>
-            <span className={`welcome-check${keyConnected ? "" : " missing"}`}>
-              {keyConnected ? "connected" : settings.apiKeyStatus === "invalid" ? "invalid" : settings.apiKeyStatus === "unavailable" ? "not verified" : "not connected"}
-            </span>
+        <div className="welcome-bin">
+          <div className="welcome-bin-head">
+            <span aria-hidden="true" />
+            <span>Setup check</span>
+            <span className="welcome-col-state">State</span>
           </div>
-          <p className="welcome-step-why">
-            Powers the chat agents that search your transcripts and producer notes. Don't have a key?{" "}
-            <button
-              className="text-link"
-              onClick={() => void api.openExternal("https://openrouter.ai/keys")}
-            >
-              Create one at openrouter.ai/keys
-            </button>
-            . Free to sign up, takes about a minute, then paste it below.
-          </p>
-          {!keyConnected && (
-            <div className="welcome-row">
-              <input
-                type="password"
-                className="welcome-input mono"
-                placeholder="sk-or-v1-…"
-                value={openRouterKey}
-                onChange={(e) => setOpenRouterKey(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && saveKey("openrouter", openRouterKey)}
-              />
-              <button
-                className="ghost-btn label"
-                onClick={() => saveKey("openrouter", openRouterKey)}
-                disabled={!openRouterKey.trim() || saving === "openrouter"}
-              >
-                {saving === "openrouter" ? "Validating…" : "Validate & save"}
-              </button>
-            </div>
-          )}
-        </div>
 
-        <div className="welcome-step">
-          <div className="welcome-step-head">
-            <span className="welcome-step-num mono">02</span>
-            <span className="label">Footage folder</span>
-            <span className={`welcome-check${folders.length > 0 ? "" : " missing"}`}>
-              {folders.length > 0 ? "watching" : "not selected"}
-            </span>
-          </div>
-          <p className="welcome-step-why">
-            Point Dailies at a folder. Files are indexed in place, nothing is moved or copied, and
-            new footage dropped in later is picked up automatically.
-          </p>
-          {folders.map((f) => (
-            <p key={f.id} className="welcome-folder mono">
-              <span className="welcome-folder-role label">{f.role === "raw" ? "RAW" : "FINAL"}</span>
-              {f.path}
-            </p>
-          ))}
-          <div className="welcome-folder-btns">
-            <button className="ghost-btn label" onClick={() => chooseFolder("raw")} disabled={addingFolder}>
-              Choose raw footage folder…
-            </button>
-            <button className="ghost-btn label" onClick={() => chooseFolder("final")} disabled={addingFolder}>
-              Choose finals folder…
-            </button>
-          </div>
-        </div>
-
-        <div className="welcome-step">
-          <div className="welcome-step-head">
-            <span className="welcome-step-num mono">03</span>
-            <span className="label">Speech model</span>
-            <span className={`welcome-check${settings.whisperModelReady ? "" : " missing"}`}>
-              {settings.whisperModelReady ? "downloaded" : "not downloaded"}
-            </span>
-          </div>
-          <p className="welcome-step-why">
-            Transcribes dialogue locally. The {settings.whisperModel} model is a one-time download of about 1.6 GB.
-          </p>
-          {!settings.whisperAvailable && (
-            <p className="welcome-prereq-note mono">The local Whisper engine is missing; transcription will remain unavailable.</p>
+          {row(
+            "name",
+            "What's your name?",
+            null,
+            done.name
+              ? { label: settings.operatorName ?? "Saved", tone: "ok" }
+              : { label: "Not set", tone: "pending" },
+            <>
+              <p className="welcome-why">
+                Labels this copy's diagnostics so we can tell testers apart when
+                something breaks. First name is plenty.
+              </p>
+              <div className="welcome-row">
+                <input
+                  type="text"
+                  className="welcome-input"
+                  placeholder="Your name"
+                  aria-label="Your name"
+                  maxLength={40}
+                  value={operatorName}
+                  onChange={(e) => setOperatorName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void saveName(operatorName)}
+                />
+                <button
+                  className="welcome-primary"
+                  onClick={() => void saveName(operatorName)}
+                  disabled={!operatorName.trim() || saving === "name"}
+                >
+                  {saving === "name" ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </>,
           )}
-          {!settings.whisperModelReady && (
-            <div className="welcome-model-row">
+
+          {row(
+            "openrouter",
+            settings.apiKeyStatus === "managed" ? "AI models" : "OpenRouter API key",
+            null,
+            keyState,
+            <>
+              <p className="welcome-why">
+                Powers the chat agents that search your transcripts and producer notes. Don't have a key?{" "}
+                <button
+                  className="text-link"
+                  onClick={() => void api.openExternal("https://openrouter.ai/keys")}
+                >
+                  Create one at openrouter.ai/keys
+                </button>
+                . Free to sign up, takes about a minute, then paste it below.
+              </p>
+              <div className="welcome-row">
+                <input
+                  type="password"
+                  className="welcome-input mono"
+                  placeholder="sk-or-v1-…"
+                  aria-label="OpenRouter API key"
+                  value={openRouterKey}
+                  onChange={(e) => setOpenRouterKey(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && saveKey("openrouter", openRouterKey)}
+                />
+                <button
+                  className="welcome-primary"
+                  onClick={() => saveKey("openrouter", openRouterKey)}
+                  disabled={!openRouterKey.trim() || saving === "openrouter"}
+                >
+                  {saving === "openrouter" ? "Validating…" : "Validate & save"}
+                </button>
+              </div>
+            </>,
+          )}
+
+          {row(
+            "folder",
+            "Footage folder",
+            null,
+            done.folder ? { label: "Watching", tone: "ok" } : { label: "Not selected", tone: "pending" },
+            <>
+              <p className="welcome-why">
+                Point Dailies at a folder. Files are indexed in place, nothing is moved or copied, and
+                new footage dropped in later is picked up automatically.
+              </p>
+              <div className="welcome-row">
+                <div className="welcome-seg" role="group" aria-label="Folder role">
+                  <button
+                    type="button"
+                    className={`welcome-seg-btn${folderRole === "raw" ? " on" : ""}`}
+                    onClick={() => setFolderRole("raw")}
+                  >
+                    Raw footage
+                  </button>
+                  <button
+                    type="button"
+                    className={`welcome-seg-btn${folderRole === "final" ? " on" : ""}`}
+                    onClick={() => setFolderRole("final")}
+                  >
+                    Finals
+                  </button>
+                </div>
+                <button
+                  className="welcome-primary"
+                  onClick={() => void chooseFolder(folderRole)}
+                  disabled={addingFolder}
+                >
+                  Choose folder…
+                </button>
+              </div>
+              <p className="welcome-note">Most editors start with raw footage. Add a finals folder any time in Settings.</p>
+            </>,
+          )}
+
+          {row(
+            "model",
+            "Speech model",
+            "1.6 GB",
+            done.model ? { label: "Downloaded", tone: "ok" } : { label: "Not downloaded", tone: "pending" },
+            <>
+              <p className="welcome-why">
+                Transcribes dialogue locally. The {settings.whisperModel} model is a one-time download of about 1.6 GB.
+              </p>
+              {!settings.whisperAvailable && (
+                <p className="welcome-prereq-note mono">The local Whisper engine is missing; transcription will remain unavailable.</p>
+              )}
               {modelProgress && !modelProgress.done ? (
-                <span className="welcome-model-progress mono">
-                  {modelProgress.pct !== null ? `${modelProgress.pct}% downloaded` : `${Math.round(modelProgress.downloadedMb)} MB downloaded`}
-                </span>
+                <div className="welcome-model-row">
+                  <span className="welcome-model-progress mono">
+                    {modelProgress.pct !== null ? `${modelProgress.pct}% downloaded` : `${Math.round(modelProgress.downloadedMb)} MB downloaded`}
+                  </span>
+                </div>
               ) : (
-                <button className="ghost-btn label" onClick={() => void downloadModel()}>
+                <button className="welcome-primary" onClick={() => void downloadModel()}>
                   Download speech model
                 </button>
               )}
-            </div>
-          )}
-          {modelProgress && !modelProgress.done && modelProgress.pct !== null && (
-            <div className="welcome-progress-bar">
-              <div className="welcome-progress-fill" style={{ transform: `scaleX(${modelProgress.pct / 100})` }} />
-            </div>
+              {modelProgress && !modelProgress.done && modelProgress.pct !== null && (
+                <div className="welcome-progress-bar">
+                  <div className="welcome-progress-fill" style={{ transform: `scaleX(${modelProgress.pct / 100})` }} />
+                </div>
+              )}
+            </>,
           )}
         </div>
 
-        <div className="welcome-footer">
-          {!allReady && (
-            <p className="welcome-limitations mono">
-              {!keyConnected && "Without a validated OpenRouter key, chat and semantic search will wait. "}
-              {folders.length === 0 && "Without a footage folder, there is nothing to index. "}
-              {!settings.whisperModelReady && "Without the speech model, transcription will wait."}
-            </p>
+        <div className="welcome-foot">
+          <p>Dailies opens either way. Unfinished checks stay in Settings.</p>
+          {allReady ? (
+            <button className="welcome-primary welcome-enter" onClick={onDismiss}>Enter Dailies →</button>
+          ) : (
+            <button className="ghost-btn label welcome-enter" onClick={onDismiss}>Open Dailies →</button>
           )}
-          <button className="welcome-enter" onClick={onDismiss}>
-            {allReady ? "Enter Dailies →" : "Continue with missing setup →"}
-          </button>
         </div>
         </div>
       </div>
@@ -275,13 +401,14 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           background: var(--ground-card);
           border: 1px solid var(--chrome-lo);
           margin: 10px;
-          padding: 26px 28px 30px;
+          padding: 24px 28px 26px;
         }
         .welcome-mark {
           font-size: 40px;
           color: var(--ink);
           margin: 0 0 10px;
           letter-spacing: -0.015em;
+          line-height: 1;
         }
         .text-link {
           background: none;
@@ -299,43 +426,134 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           font-size: 13.5px;
           color: var(--ink-dim);
           line-height: 1.65;
-          margin: 0 0 40px;
-          max-width: 400px;
+          margin: 0 0 22px;
+          max-width: 420px;
         }
-        .welcome-step {
-          padding: 22px 0;
-          border-top: 1px solid var(--hairline);
+        .welcome-bin {
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          background: var(--ground-card);
         }
-        .welcome-step-head {
-          display: flex;
-          align-items: baseline;
+        .welcome-bin-head {
+          display: grid;
+          grid-template-columns: 26px 1fr auto;
+          align-items: center;
           gap: 12px;
-          margin-bottom: 6px;
+          padding: 5px 10px;
+          background: var(--paper-alt);
+          border-bottom: 1px solid var(--hairline-strong);
         }
-        .welcome-step-num {
-          font-size: 11px;
-          color: var(--accent-dim);
+        .welcome-bin-head span {
+          font-size: 9.5px;
+          font-weight: 600;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--ink-dimmer);
         }
-        .welcome-check {
-          margin-left: auto;
+        .welcome-col-state {
+          justify-self: end;
+        }
+        .welcome-bin-row {
+          width: 100%;
+          display: grid;
+          grid-template-columns: 26px 1fr auto;
+          align-items: center;
+          gap: 12px;
+          padding: 9px 10px;
+          background: transparent;
+          border: 0;
+          border-bottom: 1px solid var(--hairline);
+          border-radius: 0;
+          text-align: left;
+          cursor: pointer;
+          font: inherit;
+        }
+        .welcome-bin-row:last-child {
+          border-bottom: 0;
+        }
+        .welcome-bin-row:disabled {
+          cursor: default;
+        }
+        .welcome-bin-row:hover:not(.sel):not(:disabled) {
+          background: var(--paper-alt);
+        }
+        .welcome-bin-row.sel {
+          background: var(--select-bg);
+        }
+        .welcome-row-name {
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--ink);
+        }
+        .welcome-bin-row.sel .welcome-row-name {
+          color: var(--select-ink);
+        }
+        .welcome-row-meta {
+          font-size: 10.5px;
+          color: var(--ink-faint);
+          margin-left: 8px;
+        }
+        .welcome-bin-row.sel .welcome-row-meta {
+          color: #9aa1a8;
+        }
+        .welcome-state {
           font-size: 10.5px;
           letter-spacing: 0.08em;
           text-transform: uppercase;
-          color: var(--status-ok);
         }
-        .welcome-check.missing {
-          color: var(--status-warn);
+        .welcome-state.ok { color: var(--status-ok); }
+        .welcome-state.pending { color: var(--status-warn); }
+        .welcome-state.error { color: var(--status-error); }
+        .welcome-bin-row.sel .welcome-state { color: var(--select-hit); }
+        .welcome-tick {
+          width: 13px;
+          height: 13px;
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
         }
-        .welcome-step-why {
+        .welcome-tick.done {
+          background: var(--status-ok);
+          position: relative;
+        }
+        .welcome-tick.done::after {
+          content: "";
+          position: absolute;
+          left: 3px;
+          top: 1px;
+          width: 4px;
+          height: 8px;
+          border: solid #fff;
+          border-width: 0 2px 2px 0;
+          transform: rotate(42deg);
+        }
+        .welcome-bin-row.sel .welcome-tick {
+          border-color: #3d4348;
+        }
+        .welcome-drawer {
+          background: #fff;
+          border-bottom: 1px solid var(--hairline);
+          box-shadow: inset 2px 0 0 var(--select-bg), var(--bevel-in);
+          padding: 18px 18px 20px 22px;
+        }
+        .welcome-why {
           font-size: 12.5px;
           color: var(--ink-dimmer);
           line-height: 1.6;
           margin: 0 0 14px;
-          max-width: 400px;
+          max-width: 430px;
+        }
+        .welcome-note {
+          font-size: 11.5px;
+          color: var(--ink-dimmer);
+          line-height: 1.5;
+          margin: 10px 0 0;
+          max-width: 430px;
         }
         .welcome-row {
           display: flex;
           gap: 10px;
+          align-items: center;
         }
         .welcome-input {
           flex: 1;
@@ -345,7 +563,7 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           border-radius: 2px;
           color: var(--ink);
           font-size: 12.5px;
-          padding: 8px 10px;
+          padding: 9px 10px;
         }
         .welcome-input:focus {
           outline: 2px solid var(--accent);
@@ -354,46 +572,89 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
         .welcome-input::placeholder {
           color: var(--ink-faint);
         }
-        .welcome-folder {
-          display: flex;
-          align-items: baseline;
-          gap: 10px;
-          font-size: 11.5px;
+        .welcome-primary {
+          appearance: none;
+          cursor: pointer;
+          flex: none;
+          background: var(--marker-red);
+          border: 1px solid var(--marker-red-dn);
+          border-radius: 2px;
+          color: #fff;
+          font-family: var(--font-body);
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          padding: 10px 18px;
+          box-shadow: inset 1px 1px 0 rgba(255,255,255,.28), inset -1px -1px 0 rgba(0,0,0,.24), 2px 2px 0 rgba(23,25,27,.30);
+        }
+        .welcome-primary:hover:not(:disabled) {
+          transform: translate(1px, 1px);
+          box-shadow: inset 1px 1px 0 rgba(255,255,255,.28), inset -1px -1px 0 rgba(0,0,0,.24), 1px 1px 0 rgba(23,25,27,.30);
+        }
+        .welcome-primary:active:not(:disabled) {
+          box-shadow: var(--bevel-in);
+          transform: translate(1px, 1px);
+        }
+        .welcome-primary:disabled {
+          cursor: default;
+          opacity: 0.55;
+        }
+        .welcome-seg {
+          display: inline-flex;
+          flex: none;
+          border: 1px solid var(--chrome-lo);
+          border-radius: 2px;
+          box-shadow: var(--bevel-out);
+          overflow: hidden;
+        }
+        .welcome-seg-btn {
+          appearance: none;
+          cursor: pointer;
+          background: var(--ground-raised);
+          border: 0;
           color: var(--ink-dim);
-          margin: 0 0 10px;
-        }
-        .welcome-folder-role {
-          color: var(--ink-dimmer);
-          font-size: 9.5px;
-        }
-        .welcome-folder-btns {
-          display: flex;
-          gap: 10px;
-        }
-        .welcome-footer {
-          border-top: 1px solid var(--hairline);
-          padding-top: 28px;
-          display: flex;
-          align-items: flex-end;
-          justify-content: space-between;
-          gap: 24px;
-        }
-        .welcome-limitations {
-          color: var(--ink-dimmer);
+          font-family: var(--font-body);
           font-size: 10.5px;
-          line-height: 1.55;
-          margin: 0;
-          max-width: 350px;
+          font-weight: 600;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          padding: 8px 14px;
         }
-        .welcome-model-row {
+        .welcome-seg-btn + .welcome-seg-btn {
+          border-left: 1px solid var(--chrome-lo);
+        }
+        .welcome-seg-btn:hover:not(.on) {
+          background: #d2d6d9;
+        }
+        .welcome-seg-btn.on {
+          background: var(--select-bg);
+          color: var(--select-ink);
+        }
+        .welcome-foot {
           display: flex;
           align-items: center;
-          min-height: 34px;
+          justify-content: space-between;
+          gap: 20px;
+          margin-top: 20px;
+          padding-top: 16px;
+          border-top: 1px solid var(--hairline);
+        }
+        .welcome-foot p {
+          margin: 0;
+          font-size: 12px;
+          color: var(--ink-dimmer);
+          max-width: 340px;
         }
         .welcome-prereq-note {
           color: var(--status-error);
           font-size: 10.5px;
           margin: -4px 0 12px;
+        }
+        .welcome-model-row {
+          display: flex;
+          align-items: center;
+          min-height: 34px;
         }
         .welcome-model-progress {
           color: var(--accent);
@@ -413,23 +674,8 @@ export function Welcome({ settings, folders, onSettingsChanged, onDismiss }: Wel
           transform-origin: left;
           transition: transform 400ms var(--ease-out);
         }
-        .welcome-enter {
-          flex: 0 0 auto;
-          background: var(--marker-red);
-          border: 1px solid var(--marker-red-dn);
-          border-radius: 999px;
-          font-family: var(--font-body);
-          font-size: 12px;
-          font-weight: 800;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: #fff;
-          padding: 12px 22px;
-          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 2px 3px 0 rgba(23,25,27,.3);
-        }
-        .welcome-enter:hover {
-          transform: translate(1px, 1px);
-          box-shadow: inset 1px 2px 0 rgba(255,255,255,.28), inset -1px -2px 0 rgba(0,0,0,.22), 1px 1px 0 rgba(23,25,27,.3);
+        @media (prefers-reduced-motion: reduce) {
+          .welcome-primary:hover:not(:disabled) { transform: none; }
         }
       `}</style>
     </div>

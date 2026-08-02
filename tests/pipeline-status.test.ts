@@ -62,6 +62,7 @@ const pipelineFile: MediaFile = {
   mediaKind: "standard",
   memberPaths: null,
   clipKey: null,
+  sourceProject: null,
   videoUnplayable: false,
   discoveryFailed: false,
   locations: [{
@@ -238,7 +239,27 @@ describe("computeFileStatus", () => {
       scenes: { blocksReadiness: false, failureImpact: "job-only" },
       transcribe: { blocksReadiness: true, failureImpact: "file-error" },
       embed: { blocksReadiness: false, failureImpact: "job-only" },
+      "media-tag": { blocksReadiness: false, failureImpact: "job-only" },
     });
+  });
+
+  it("leaves readiness alone while a tag read is queued, running, or failed", () => {
+    const ready = facts({
+      hasVideo: true,
+      hasTranscript: true,
+      proxyPath: "/cache/proxy.mp4",
+      probed: true,
+    });
+    for (const status of ["queued", "running", "error", "done"] as const) {
+      expect(computeFileStatus({
+        ...ready,
+        latestJobs: new Map([["media-tag", makeJob(1, "media-tag", status)]]),
+      })).toBe("ready");
+    }
+    // A tag read alone never makes an unprobed clip look like it started.
+    expect(computeFileStatus(facts({
+      latestJobs: new Map([["media-tag", makeJob(1, "media-tag", "running")]]),
+    }))).toBe("pending");
   });
 });
 
@@ -280,6 +301,20 @@ describe("pipeline file state and snapshot", () => {
     {
       name: "classifies completed searchable footage as done",
       input: pipelineFacts(),
+      expected: "done",
+    },
+    {
+      name: "keeps a done file done while a tag read is still queued",
+      input: pipelineFacts({
+        latestJobsByStage: new Map([["media-tag", makeJob(1, "media-tag", "queued")]]),
+      }),
+      expected: "done",
+    },
+    {
+      name: "keeps a done file done when a tag read fails",
+      input: pipelineFacts({
+        latestJobsByStage: new Map([["media-tag", makeJob(1, "media-tag", "error")]]),
+      }),
       expected: "done",
     },
   ])("$name", ({ input, expected }) => {

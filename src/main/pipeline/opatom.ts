@@ -11,6 +11,8 @@ export interface MxfAtomInfo {
   path: string;
   clipKey: string;
   clipName: string | null;
+  /** Avid project that imported the media (format tag `project_name`). */
+  projectName: string | null;
   essence: "video" | "audio";
   durationS: number;
   fps: number;
@@ -91,6 +93,17 @@ function findPackageUmid(format: FfprobeFormat | undefined, streams: FfprobeStre
 }
 
 /**
+ * The Avid project that imported the media. Avid writes it into the atom
+ * header; an empty tag is treated as absent so callers never store "".
+ */
+function readProjectName(format: FfprobeFormat | undefined): string | null {
+  const raw = format?.tags?.["project_name"];
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
  * Runs ffprobe (json, -show_format -show_streams) against an .mxf file and
  * returns its OP-Atom info, or null when the file is not OP-Atom (e.g. it
  * carries both audio and video streams — treat as standard media).
@@ -150,6 +163,7 @@ export async function analyzeMxf(ffprobePath: string, path: string): Promise<Mxf
   }
 
   const clipName = parsed.format?.tags?.["material_package_name"] ?? null;
+  const projectName = readProjectName(parsed.format);
   const essence: "video" | "audio" = videoStreams.length > 0 ? "video" : "audio";
 
   const primaryStream = essence === "video" ? videoStreams[0] : audioStreams[0];
@@ -172,6 +186,7 @@ export async function analyzeMxf(ffprobePath: string, path: string): Promise<Mxf
     path,
     clipKey,
     clipName,
+    projectName,
     essence,
     durationS,
     fps,
@@ -181,9 +196,45 @@ export async function analyzeMxf(ffprobePath: string, path: string): Promise<Mxf
   };
 }
 
+/**
+ * Header-only read of the Avid project tag for one atom. Used by the backfill,
+ * which needs nothing but `format.tags` and must stay far cheaper than a
+ * re-probe: no -show_streams, no hashing, no reprocessing.
+ *
+ * Throws on a probe that could not run, like analyzeMxf. Returns null when the
+ * probe succeeded and the file carries no project tag.
+ */
+export async function readMxfProjectName(
+  ffprobePath: string,
+  path: string,
+): Promise<string | null> {
+  const args = ["-v", "error", "-print_format", "json", "-show_format", path];
+  const { stdout, stderr, code, timedOut } = await withVolumeRead(path, () =>
+    run(ffprobePath, args, { timeoutMs: PROBE_TIMEOUT_MS }),
+  );
+  if (timedOut) {
+    throw new Error(`ffprobe timed out after ${PROBE_TIMEOUT_MS}ms for ${path}`);
+  }
+  if (code !== 0) {
+    const detail = stderr.trim().split("\n").slice(-3).join(" · ").slice(0, 300);
+    throw new Error(
+      `ffprobe failed for ${path} (exit ${code ?? "unknown"})${detail ? `: ${detail}` : ""}`,
+    );
+  }
+
+  let parsed: FfprobeOutput;
+  try {
+    parsed = JSON.parse(stdout) as FfprobeOutput;
+  } catch (err) {
+    throw new Error(`ffprobe returned invalid JSON for ${path}: ${(err as Error).message}`);
+  }
+  return readProjectName(parsed.format);
+}
+
 export interface OpAtomClip {
   clipKey: string;
   clipName: string | null;
+  projectName: string | null;
   atoms: MxfAtomInfo[];
 }
 
@@ -230,7 +281,8 @@ export class OpAtomGrouper {
       if (!atoms || atoms.length === 0) return;
 
       const clipName = atoms.find((a) => a.clipName)?.clipName ?? null;
-      this.onClip({ clipKey: info.clipKey, clipName, atoms });
+      const projectName = atoms.find((a) => a.projectName)?.projectName ?? null;
+      this.onClip({ clipKey: info.clipKey, clipName, projectName, atoms });
     }, this.debounceMs);
 
     this.timers.set(info.clipKey, timer);

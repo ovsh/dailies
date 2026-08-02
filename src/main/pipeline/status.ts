@@ -33,8 +33,12 @@ export const STAGE_POLICY: Record<JobStage, {
   scenes: { blocksReadiness: false, failureImpact: "job-only" },
   transcribe: { blocksReadiness: true, failureImpact: "file-error" },
   embed: { blocksReadiness: false, failureImpact: "job-only" },
+  "media-tag": { blocksReadiness: false, failureImpact: "job-only" },
 };
 
+// The readiness stages, in order. "media-tag" is deliberately absent: it is a
+// metadata backfill, not part of what makes a clip ready, so it must not move
+// any status, percentage, or ETA.
 const JOB_STAGES: JobStage[] = [
   "probe",
   "audio",
@@ -69,6 +73,7 @@ function hasRequiredArtifact(
       return facts.proxyPath !== null || facts.videoUnplayable;
     case "scenes":
     case "embed":
+    case "media-tag":
       return true;
   }
 }
@@ -108,6 +113,7 @@ function isPipelineStageExpected(stage: JobStage, facts: PipelineFileFacts): boo
         facts.file.proxyPath === null;
     case "scenes":
     case "embed":
+    case "media-tag":
       return false;
   }
 }
@@ -129,6 +135,7 @@ function isPipelineStageComplete(stage: JobStage, facts: PipelineFileFacts): boo
         facts.file.proxyPath !== null;
     case "scenes":
     case "embed":
+    case "media-tag":
       return false;
   }
 }
@@ -169,7 +176,9 @@ export function computePipelineFileState(facts: PipelineFileFacts): PipelineFile
 
 function latestTerminalTimestamp(facts: PipelineFileFacts): number | null {
   let latest: number | null = null;
-  for (const job of facts.latestJobsByStage.values()) {
+  for (const stage of JOB_STAGES) {
+    const job = facts.latestJobsByStage.get(stage);
+    if (!job) continue;
     if (job.status !== "done" && job.status !== "error") continue;
     const timestamp = Date.parse(job.updatedAt);
     if (Number.isNaN(timestamp)) continue;
@@ -187,8 +196,12 @@ function makeActiveFile(facts: PipelineFileFacts): PipelineActiveFile | null {
   return null;
 }
 
+// Readiness stages only: a queued media-tag backfill is not work that keeps a
+// clip out of the library, so it must not show the clip as still indexing.
 function hasPendingWork(facts: PipelineFileFacts): boolean {
-  for (const job of facts.latestJobsByStage.values()) {
+  for (const stage of JOB_STAGES) {
+    const job = facts.latestJobsByStage.get(stage);
+    if (!job) continue;
     if (job.status === "queued" || job.status === "running" || job.status === "waiting") {
       return true;
     }

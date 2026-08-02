@@ -98,9 +98,11 @@ function reportFor(
   fileIds: number[],
   resolutions: EpisodeMembershipResolution[],
 ): EpisodeMembershipReport {
-  const matchedCount = source === "folder"
-    ? new Set(fileIds).size
-    : resolutions.filter((resolution) => resolution.kind === "matched").length;
+  // Only the list source enumerates entries one by one; the folder and
+  // media-tag sources match whatever is there, so every member is a match.
+  const matchedCount = source === "list"
+    ? resolutions.filter((resolution) => resolution.kind === "matched").length
+    : new Set(fileIds).size;
   const ambiguousCount = resolutions.filter(
     (resolution) => resolution.kind === "ambiguous",
   ).length;
@@ -130,6 +132,46 @@ function resolveFolderMembership(db: DailiesDB, episodeId: number): ResolvedMemb
     fileIds: resolved,
     report: reportFor(episodeId, "folder", resolved, []),
   };
+}
+
+/**
+ * The clips whose stored Avid project tag equals this episode's media tag.
+ *
+ * An episode with no media tag yet resolves to nothing rather than to
+ * everything, so switching source before a tag is set cannot swallow the
+ * whole library. The untagged count rides along in the report because a
+ * media-tag episode can never claim those clips, and the operator should see
+ * that plainly.
+ */
+function resolveMediaTagMembership(db: DailiesDB, episodeId: number): ResolvedMembership {
+  const mediaTag = db.getEpisodeMediaTag(episodeId);
+  const fileIds = mediaTag === null ? [] : db.listFileIdsBySourceProject(mediaTag);
+  const report = reportFor(episodeId, "media-tag", fileIds, []);
+  return {
+    fileIds,
+    report: { ...report, untaggedClipCount: db.countFilesWithoutSourceProject() },
+  };
+}
+
+/** Resolves an episode's members through whichever source it is set to. */
+function resolveMembership(
+  db: DailiesDB,
+  episodeId: number,
+  source: MembershipSource,
+): ResolvedMembership {
+  switch (source) {
+    case "folder":
+      return resolveFolderMembership(db, episodeId);
+    case "media-tag":
+      return resolveMediaTagMembership(db, episodeId);
+    case "list":
+      return resolveListEntries(
+        db,
+        episodeId,
+        db.getEpisodeListEntries(episodeId),
+        listMembershipSource(db, episodeId),
+      );
+  }
 }
 
 function listIdentitySet(entries: EpisodeListEntry[]): ClipIdentitySet {
@@ -238,13 +280,7 @@ export function readEpisodeMembershipReport(
   if (source === "folder") {
     return reportFor(episodeId, source, db.getEpisodeMemberIds(episodeId), []);
   }
-  const resolved = resolveListEntries(
-    db,
-    episodeId,
-    db.getEpisodeListEntries(episodeId),
-    listMembershipSource(db, episodeId),
-  );
-  return resolved.report;
+  return resolveMembership(db, episodeId, source).report;
 }
 
 export function reconcileEpisodeMembership(
@@ -252,14 +288,7 @@ export function reconcileEpisodeMembership(
   episodeId: number,
 ): EpisodeMembershipReport {
   const source = db.getEpisodeMembershipSource(episodeId);
-  const resolved = source === "folder"
-    ? resolveFolderMembership(db, episodeId)
-    : resolveListEntries(
-        db,
-        episodeId,
-        db.getEpisodeListEntries(episodeId),
-        listMembershipSource(db, episodeId),
-      );
+  const resolved = resolveMembership(db, episodeId, source);
   db.setEpisodeMembershipSourceAndMembers(episodeId, source, resolved.fileIds);
   return resolved.report;
 }
@@ -269,14 +298,7 @@ export function setEpisodeMembershipSource(
   episodeId: number,
   source: MembershipSource,
 ): EpisodeMembershipReport {
-  const resolved = source === "folder"
-    ? resolveFolderMembership(db, episodeId)
-    : resolveListEntries(
-        db,
-        episodeId,
-        db.getEpisodeListEntries(episodeId),
-        listMembershipSource(db, episodeId),
-      );
+  const resolved = resolveMembership(db, episodeId, source);
   db.setEpisodeMembershipSourceAndMembers(episodeId, source, resolved.fileIds);
   return resolved.report;
 }

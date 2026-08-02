@@ -4,6 +4,7 @@
  * clip; atoms of the same clip share a material package UMID (clipKey).
  */
 import { run } from "./exec";
+import { withVolumeRead } from "./io-gate";
 import { PROBE_TIMEOUT_MS } from "./timeouts";
 
 export interface MxfAtomInfo {
@@ -107,9 +108,12 @@ export async function analyzeMxf(ffprobePath: string, path: string): Promise<Mxf
     "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path,
   ];
 
-  const { stdout, stderr, code, timedOut } = await run(ffprobePath, args, {
-    timeoutMs: PROBE_TIMEOUT_MS,
-  });
+  // Only the spawn+read is gated (parsing below is pure CPU). The timeout
+  // clock starts inside the gate, so waiting for a busy drive never eats
+  // into ffprobe's own budget.
+  const { stdout, stderr, code, timedOut } = await withVolumeRead(path, () =>
+    run(ffprobePath, args, { timeoutMs: PROBE_TIMEOUT_MS }),
+  );
   if (timedOut) {
     throw new Error(`ffprobe timed out after ${PROBE_TIMEOUT_MS}ms for ${path}`);
   }

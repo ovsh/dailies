@@ -1,4 +1,4 @@
-import { isAbsolute, parse as parsePath, relative, sep } from "node:path";
+import { parse as parsePath } from "node:path";
 import type {
   ClipIdentity,
   ClipIdentitySet,
@@ -15,6 +15,7 @@ import {
   normalizeClipName,
 } from "../shared/types";
 import type { DailiesDB } from "./db/types";
+import { pathIsWithin } from "./path-compare";
 
 interface ResolvedMembership {
   fileIds: number[];
@@ -41,15 +42,6 @@ function identitySet(identities: Iterable<ClipIdentity>): ClipIdentitySet {
     result.set(clipIdentityKey(normalized), normalized);
   }
   return result;
-}
-
-function pathIsWithin(path: string, root: string): boolean {
-  const relativePath = relative(root, path);
-  return relativePath === "" || (
-    relativePath !== ".." &&
-    !relativePath.startsWith(`..${sep}`) &&
-    !isAbsolute(relativePath)
-  );
 }
 
 function candidate(file: MediaFile): EpisodeMembershipCandidate {

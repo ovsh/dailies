@@ -4,10 +4,12 @@
 import Database from "better-sqlite3";
 import type { Database as BetterSqlite3Database } from "better-sqlite3";
 import { constants as fsConstants, copyFileSync, existsSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, parse as parsePath, relative, sep } from "node:path";
+import { dirname, join, parse as parsePath } from "node:path";
 import { SCHEMA_SQL } from "./schema";
 import { cachedBetterSqlite3Binding, repairBetterSqlite3Binding } from "./native-binding";
 import { usesFullContentHash } from "../file-hash";
+import { comparablePath, pathIsWithin } from "../path-compare";
+import { reconcileEpisodeMembership } from "../membership";
 import type {
   AnswerHit,
   ChatModelStamp,
@@ -119,23 +121,20 @@ interface FileLocationRow {
   member_paths: string | null;
 }
 
-function pathIsWithin(path: string, root: string): boolean {
-  const relativePath = relative(root, path);
-  return relativePath === "" || (
-    relativePath !== ".." &&
-    !relativePath.startsWith(`..${sep}`) &&
-    !isAbsolute(relativePath)
-  );
-}
-
+/**
+ * The innermost watched folder containing `path`, or null. Longest root wins,
+ * measured on the comparison key so a case- or separator-only difference in
+ * the stored strings cannot change which folder is "deeper".
+ */
 function folderIdForPath(
   path: string,
   folders: Array<Pick<FolderRow, "id" | "path">>,
 ): number | null {
-  let best: Pick<FolderRow, "id" | "path"> | null = null;
+  let best: { id: number; depth: number } | null = null;
   for (const folder of folders) {
     if (!pathIsWithin(path, folder.path)) continue;
-    if (!best || folder.path.length > best.path.length) best = folder;
+    const depth = comparablePath(folder.path).length;
+    if (!best || depth > best.depth) best = { id: folder.id, depth };
   }
   return best?.id ?? null;
 }
@@ -582,7 +581,9 @@ interface TableInfoRow {
 }
 
 const VISUAL_CLEANUP_MIGRATION_KEY = "migration_visual_cleanup_done";
+const FOLDER_REPAIR_MIGRATION_KEY = "folderAssignmentRepairV1";
 const PRE_V05_BACKUP_FILENAME = "dailies-pre-0.5.bak";
+const PRE_FOLDER_REPAIR_BACKUP_SUFFIX = ".pre-folder-repair.bak";
 
 function tableInfo(db: BetterSqlite3Database, table: string): TableInfoRow[] {
   const rows: unknown = db.pragma(`table_info(${table})`);
@@ -617,7 +618,11 @@ function createFinalFileIndexes(db: BetterSqlite3Database): void {
   `);
 }
 
-function copyPreV05Backup(db: BetterSqlite3Database, dbPath: string): void {
+/**
+ * Flushes the WAL into the main database file so a plain file copy is a
+ * complete snapshot. Throws when another connection holds the WAL open.
+ */
+function checkpointForBackup(db: BetterSqlite3Database, purpose: string): void {
   const checkpoint: unknown = db.pragma("wal_checkpoint(TRUNCATE)");
   if (
     !Array.isArray(checkpoint) ||
@@ -627,8 +632,12 @@ function copyPreV05Backup(db: BetterSqlite3Database, dbPath: string): void {
     !("busy" in checkpoint[0]) ||
     checkpoint[0].busy !== 0
   ) {
-    throw new Error("Could not checkpoint the database before creating the v0.5 backup");
+    throw new Error(`Could not checkpoint the database before creating the ${purpose} backup`);
   }
+}
+
+function copyPreV05Backup(db: BetterSqlite3Database, dbPath: string): void {
+  checkpointForBackup(db, "v0.5");
   const backupPath = join(dirname(dbPath), PRE_V05_BACKUP_FILENAME);
   try {
     copyFileSync(dbPath, backupPath, fsConstants.COPYFILE_EXCL);
@@ -701,11 +710,75 @@ function migrateWatchedFoldersKv(db: BetterSqlite3Database): void {
 }
 
 /**
+ * One-time repair of `file_locations.folder_id`.
+ *
+ * Folder assignment was written three different ways over the app's life:
+ * SQLite `LIKE` (ASCII case-insensitive), raw `startsWith`, and — in v0.5.4 —
+ * a case-SENSITIVE JS comparison that ran over every row at every startup.
+ * On macOS and Windows that last one cleared assignments that were correct,
+ * which empties every episode-scoped view, and a wrong non-NULL id is worse
+ * than NULL because `folderMembershipSource` only falls back to path
+ * containment when the id is NULL.
+ *
+ * So this is corrective, not additive: every row is recomputed with the one
+ * shared comparator and every stored value that disagrees is rewritten, in
+ * both directions. It must run AFTER `migrateWatchedFoldersKv` — legacy
+ * folders have to exist in `folders` before assignment means anything.
+ *
+ * Returns true only on the run that actually performed the repair; the caller
+ * uses that to rebuild folder-sourced episode membership.
+ */
+function repairFolderAssignments(db: BetterSqlite3Database, dbPath: string): boolean {
+  const alreadyDone = db
+    .prepare<[string], { value: string }>("SELECT value FROM settings WHERE key = ?")
+    .get(FOLDER_REPAIR_MIGRATION_KEY);
+  if (alreadyDone) return false;
+
+  const folderRows = db
+    .prepare<[], Pick<FolderRow, "id" | "path">>("SELECT id, path FROM folders")
+    .all();
+  const locationRows = db
+    .prepare<[], Pick<FileLocationRow, "id" | "path" | "folder_id">>(
+      "SELECT id, path, folder_id FROM file_locations",
+    )
+    .all();
+  const corrections: Array<{ id: number; folderId: number | null }> = [];
+  for (const location of locationRows) {
+    const folderId = folderIdForPath(location.path, folderRows);
+    if (folderId !== location.folder_id) corrections.push({ id: location.id, folderId });
+  }
+
+  if (corrections.length > 0) {
+    // A fresh snapshot every attempt: a backup left behind by a run that
+    // failed part-way is older than the state we are about to rewrite.
+    checkpointForBackup(db, "folder repair");
+    copyFileSync(dbPath, `${dbPath}${PRE_FOLDER_REPAIR_BACKUP_SUFFIX}`);
+    const updateLocationFolder = db.prepare<[number | null, number]>(
+      "UPDATE file_locations SET folder_id = ? WHERE id = ?",
+    );
+    db.transaction(() => {
+      for (const correction of corrections) {
+        updateLocationFolder.run(correction.folderId, correction.id);
+      }
+    })();
+  }
+
+  db.prepare<[string, string]>("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+    .run(FOLDER_REPAIR_MIGRATION_KEY, "1");
+  const cleared = corrections.filter((correction) => correction.folderId === null).length;
+  console.warn(
+    `folder assignment repair: examined ${locationRows.length} location(s), ` +
+      `corrected ${corrections.length}, cleared ${cleared}`,
+  );
+  return corrections.length > 0;
+}
+
+/**
  * Brings a database created by an earlier schema version up to date.
  * CREATE TABLE IF NOT EXISTS leaves existing tables untouched, so older databases
  * are missing columns added later; ALTER them in when absent. Idempotent.
  */
-function migrate(db: BetterSqlite3Database): void {
+function migrate(db: BetterSqlite3Database, dbPath: string): boolean {
   addMissingColumns(db, "episodes", [
     [
       "membership_source",
@@ -778,23 +851,6 @@ function migrate(db: BetterSqlite3Database): void {
       files.member_paths
     FROM files;
   `);
-  const folderRows = db
-    .prepare<[], Pick<FolderRow, "id" | "path">>("SELECT id, path FROM folders")
-    .all();
-  const locationRows = db
-    .prepare<[], Pick<FileLocationRow, "id" | "path" | "folder_id">>(
-      "SELECT id, path, folder_id FROM file_locations",
-    )
-    .all();
-  const updateLocationFolder = db.prepare<[number | null, number]>(
-    "UPDATE file_locations SET folder_id = ? WHERE id = ?",
-  );
-  db.transaction(() => {
-    for (const location of locationRows) {
-      const folderId = folderIdForPath(location.path, folderRows);
-      if (folderId !== location.folder_id) updateLocationFolder.run(folderId, location.id);
-    }
-  })();
   if (!tableHasColumn(db, "files", "episode_id")) createFinalFileIndexes(db);
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_episode_id ON documents(episode_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_chats_episode_id ON chats(episode_id)");
@@ -814,6 +870,7 @@ function migrate(db: BetterSqlite3Database): void {
     })();
   }
   migrateWatchedFoldersKv(db);
+  return repairFolderAssignments(db, dbPath);
 }
 
 function migrateLegacyFileScope(
@@ -952,7 +1009,7 @@ export function openDatabase(dbPath: string): DailiesDB {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA_SQL);
-  migrate(db);
+  const folderAssignmentsRepaired = migrate(db, dbPath);
 
   // ---------- prepared statements ----------
 
@@ -2063,6 +2120,32 @@ export function openDatabase(dbPath: string): DailiesDB {
 
     const location = matchingLocations[0];
     if (!location) throw new Error("updateOpAtomMembers: matching location not found");
+
+    // The path move below runs under UNIQUE(file_locations.path). When a
+    // stale row already holds the target path — an unreadable stub, or an
+    // atom once registered on its own — the plain UPDATE threw on every
+    // scan and the clip could never re-register. A path holds exactly one
+    // file on disk, so absorb the stale claim the way registerFileLocation
+    // does instead of failing forever.
+    const pathOwner = stmtGetLocationByPath.get(input.path);
+    if (pathOwner && pathOwner.id !== location.id) {
+      const ownerFile = stmtGetFileById.get(pathOwner.file_id);
+      const ownerMembers = parseMemberPaths(pathOwner.member_paths) ?? [];
+      const stale = ownerFile?.file_hash.startsWith("unreadable:") === true ||
+        ownerMembers.length === 0 ||
+        ownerMembers.every((path) => inputMembers.has(path));
+      if (!stale) {
+        throw new Error(
+          `updateOpAtomMembers: ${input.path} is held by file ${pathOwner.file_id} ` +
+            `with unrelated members`,
+        );
+      }
+      removeFileLocationTx(input.path);
+    }
+
+    const canonical = stmtGetFileById.get(fileId);
+    if (!canonical) throw new Error(`updateOpAtomMembers: file ${fileId} not found`);
+
     const updatedLocation = stmtUpdateOpAtomLocation.get(
       input.path,
       input.filename,
@@ -2075,7 +2158,7 @@ export function openDatabase(dbPath: string): DailiesDB {
       throw new Error(`updateOpAtomMembers: location ${location.id} not found`);
     }
 
-    updateExistingFile(existing, input);
+    updateExistingFile(canonical, input);
     return recomputeCanonicalRole(fileId);
   });
 
@@ -2723,5 +2806,15 @@ export function openDatabase(dbPath: string): DailiesDB {
   fileStatusWriters.set(api, (id, status) => {
     stmtSetFileStatus.run(status, id);
   });
+  // Stored `episode_members` rows for folder-sourced episodes were derived
+  // from the folder ids the repair just rewrote, so they are stale until
+  // rebuilt. Deferred to here because reconciliation needs the finished
+  // DailiesDB surface, the same reason `migrateLegacyFileScope` runs late.
+  if (folderAssignmentsRepaired) {
+    for (const episode of api.listEpisodes()) {
+      if (episode.membershipSource !== "folder") continue;
+      reconcileEpisodeMembership(api, episode.id);
+    }
+  }
   return api;
 }

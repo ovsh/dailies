@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, parse as parsePath, relative, sep } from "node:path";
+import { dirname, extname, join, parse as parsePath } from "node:path";
 
 import type { DailiesDB, FileLocationRemoval } from "../db/types";
 import type {
@@ -12,6 +12,7 @@ import type {
 } from "../../shared/types";
 import { normalizeClipName } from "../../shared/types";
 import { reconcileEpisodeMembership } from "../membership";
+import { pathIsWithin } from "../path-compare";
 import { usesFullContentHash } from "../file-hash";
 import { findFfprobeBinary } from "./binaries";
 import { DOC_EXTENSIONS, extractDocument } from "./docs";
@@ -142,15 +143,6 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     discoveryTasks.add(owned);
     void owned.then(() => discoveryTasks.delete(owned));
     return task;
-  }
-
-  function pathIsWithin(path: string, root: string): boolean {
-    const relativePath = relative(root, path);
-    return relativePath === "" || (
-      relativePath !== ".." &&
-      !relativePath.startsWith(`..${sep}`) &&
-      !isAbsolute(relativePath)
-    );
   }
 
   function folderForPath(path: string): ProjectFolder | null {
@@ -470,6 +462,14 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
    * clip count doesn't match what the editor put in the folder and it
    * looks like the app "lost" a file. Record a stub in error state; a later
    * successful discovery of the same path clears it.
+   *
+   * A probe failure is NEVER proof the media is permanently bad. On a slow
+   * USB volume ffprobe hits its 20-second timeout purely from I/O
+   * contention. So a failure against a path the library already knows only
+   * ANNOTATES the existing row: it must not remove the location (removing
+   * the last one deletes the file and cascades away transcripts,
+   * embeddings and episode membership) and must not replace it with a
+   * fresh stub under a new id. Only a path with no row at all gets a stub.
    */
   function recordUnreadable(
     path: string,
@@ -477,27 +477,32 @@ export function createDiscovery(opts: DiscoveryOptions): Discovery {
     located: ReturnType<typeof locationForPath>,
     existing: MediaFile | null,
   ): void {
-    let unreadable = existing;
-    const unreadableHash = `unreadable:${path}`;
-    if (located && located.file.fileHash !== unreadableHash) {
-      removeLocation(located.location.path);
-      unreadable = null;
-    }
-    if (!unreadable) {
-      unreadable = db.registerFileLocation({
-        path,
-        filename: basenameOf(path),
-        durationS: 0,
-        fps: 0,
-        dropFrame: false,
-        startTc: "00:00:00:00",
-        codec: "unknown",
-        audioChannels: 0,
-        fileHash: unreadableHash,
-        role: roleForPath(path),
-      }).file;
-    }
     const message = err instanceof Error ? err.message : String(err);
+    // `existing` is the caller's lookup (located.file when the path matched
+    // a location exactly, otherwise getFileByPath); either one is a row we
+    // must preserve, stub or real clip alike.
+    const known = located?.file ?? existing;
+    if (known) {
+      db.setDiscoveryFailure(known.id, message);
+      reconcile(known.id);
+      reconcileMemberships([path]);
+      scheduleUpdate();
+      console.warn(`onFileFound: unreadable media ${path}:`, err);
+      return;
+    }
+
+    const unreadable = db.registerFileLocation({
+      path,
+      filename: basenameOf(path),
+      durationS: 0,
+      fps: 0,
+      dropFrame: false,
+      startTc: "00:00:00:00",
+      codec: "unknown",
+      audioChannels: 0,
+      fileHash: `unreadable:${path}`,
+      role: roleForPath(path),
+    }).file;
     db.setDiscoveryFailure(unreadable.id, message);
     reconcile(unreadable.id);
     reconcileMemberships([path]);

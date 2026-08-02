@@ -10,6 +10,7 @@ import { basename } from "node:path";
 import type { FileInput } from "../../shared/types";
 import { findFfprobeBinary } from "./binaries";
 import { run } from "./exec";
+import { withVolumeRead } from "./io-gate";
 import { PROBE_TIMEOUT_MS } from "./timeouts";
 
 interface FfprobeStream {
@@ -82,13 +83,18 @@ export interface FileIdentity {
 }
 
 export async function computeFileIdentity(path: string): Promise<FileIdentity> {
-  const { size } = await stat(path);
-  return {
-    path,
-    filename: basename(path),
-    fileHash: await computeFileHash(path, size),
-    size,
-  };
+  // stat + the two 1MB chunk reads are the whole I/O cost; hold one volume
+  // read slot for all of it so discovery cannot fan out 30 hashes at once
+  // onto one spinning drive.
+  return withVolumeRead(path, async () => {
+    const { size } = await stat(path);
+    return {
+      path,
+      filename: basename(path),
+      fileHash: await computeFileHash(path, size),
+      size,
+    };
+  });
 }
 
 export async function probeFile(path: string, knownFileHash?: string): Promise<FileInput> {
@@ -105,9 +111,13 @@ export async function probeFile(path: string, knownFileHash?: string): Promise<F
     path,
   ];
 
-  const { stdout, stderr, code, timedOut } = await run(ffprobeBin, args, {
-    timeoutMs: PROBE_TIMEOUT_MS,
-  });
+  // Gated like analyzeMxf: the probe stage runs up to 8 jobs at once, and on
+  // one external drive that alone is enough to push ffprobe past its timeout.
+  // Nothing gated is held across this call — the computeFileIdentity below
+  // acquires its own slot only after this one is released, so no nesting.
+  const { stdout, stderr, code, timedOut } = await withVolumeRead(path, () =>
+    run(ffprobeBin, args, { timeoutMs: PROBE_TIMEOUT_MS }),
+  );
   if (timedOut) {
     throw new Error(`ffprobe timed out after ${PROBE_TIMEOUT_MS}ms for ${path}`);
   }

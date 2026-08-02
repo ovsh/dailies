@@ -96,16 +96,30 @@ export function createWatcher(opts: CreateWatcherOptions): Watcher {
     const entry = pending.get(path);
     if (!entry || closed) return;
     let current: { size: number; mtimeMs: number } | null;
+    let statErrorCode: string | undefined;
     try {
       const s = await stat(path);
       current = { size: s.size, mtimeMs: s.mtimeMs };
-    } catch {
+    } catch (err) {
       current = null;
+      statErrorCode = (err as NodeJS.ErrnoException | null)?.code;
     }
     if (closed || pending.get(path) !== entry) return;
     if (current === null) {
       pending.delete(path);
-      emit(path, kind, false);
+      // Only "the name is gone" means the media was removed. Every other
+      // stat error is about the volume or the process — EIO on a failing
+      // USB drive, EBUSY, a permission loss, an unmount race — and
+      // reporting it as a removal deletes the location and everything
+      // derived from it. Stay silent instead; a later watch event or the
+      // next folder scan re-observes the path.
+      if (statErrorCode === "ENOENT" || statErrorCode === "ENOTDIR") {
+        emit(path, kind, false);
+        return;
+      }
+      console.warn(
+        `[watcher] cannot stat ${path} (${statErrorCode ?? "unknown error"}); not treating as removed`,
+      );
       return;
     }
     if (current.size !== entry.size || current.mtimeMs !== entry.mtimeMs) {

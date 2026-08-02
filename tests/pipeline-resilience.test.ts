@@ -1811,7 +1811,7 @@ describe("pipeline prerequisite and applicability handling", () => {
   });
 
   it("skips a manually scanned video that changes during the stability window", async () => {
-    const realSetImmediate = setImmediate;
+    const realSetTimeout = setTimeout;
     vi.useFakeTimers();
     const { dataDir, db, pipeline } = setup();
     const mediaPath = path.join(dataDir, "copying.mov");
@@ -1837,8 +1837,11 @@ describe("pipeline prerequisite and applicability handling", () => {
       episodeId: null,
       lastScannedAt: null,
     });
-    for (let i = 0; i < 20 && vi.getTimerCount() === 0; i += 1) {
-      await new Promise<void>((resolve) => realSetImmediate(resolve));
+    // Windows can complete the asynchronous directory read after many empty
+    // event-loop turns. Give real filesystem work time to finish before we
+    // advance the fake stability timer.
+    for (let i = 0; i < 500 && vi.getTimerCount() === 0; i += 1) {
+      await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
     }
     expect(vi.getTimerCount()).toBeGreaterThan(0);
     setTimeout(() => appendFileSync(mediaPath, " more"), 1000);

@@ -243,6 +243,7 @@ void app.whenReady().then(async () => {
   telemetry = createTelemetryShipper({
     isEnabled: () => settings.getTelemetryEnabled(),
     installId: settings.getTelemetryInstallId(),
+    operatorName: () => settings.getOperatorName(),
   });
   console.info(`[telemetry] session ${telemetry.sessionId}`);
   let indexRevision = 0;

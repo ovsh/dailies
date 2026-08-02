@@ -95,6 +95,8 @@ export interface DailiesAPI {
   // settings (global)
   getSettings(): Promise<AppSettings>;
   setTelemetryEnabled(enabled: boolean): Promise<AppSettings>;
+  /** Trimmed and capped in main; an empty string clears the name. */
+  setOperatorName(name: string): Promise<AppSettings>;
   /**
    * Selects the chat model (id must be one of CHAT_MODEL_OPTIONS) and,
    * optionally, its reasoning effort (must be supported by that model).
@@ -179,6 +181,7 @@ export const IPC = {
   retryFile: "dailies:retryFile",
   getSettings: "dailies:getSettings",
   setTelemetryEnabled: "dailies:setTelemetryEnabled",
+  setOperatorName: "dailies:setOperatorName",
   setChatModel: "dailies:setChatModel",
   exportDiagnostics: "dailies:exportDiagnostics",
   downloadWhisperModel: "dailies:downloadWhisperModel",

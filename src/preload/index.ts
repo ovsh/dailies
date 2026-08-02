@@ -49,6 +49,7 @@ const api: DailiesAPI = {
   // settings
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   setTelemetryEnabled: (enabled: boolean) => ipcRenderer.invoke(IPC.setTelemetryEnabled, enabled),
+  setOperatorName: (name: string) => ipcRenderer.invoke(IPC.setOperatorName, name),
   setChatModel: (modelId: string, effort?: string) =>
     ipcRenderer.invoke(IPC.setChatModel, modelId, effort),
   exportDiagnostics: () => ipcRenderer.invoke(IPC.exportDiagnostics),

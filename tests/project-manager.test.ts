@@ -23,6 +23,8 @@ function fakeSettings(): AppSettingsStore {
       telemetryEnabled = enabled;
     },
     getTelemetryInstallId: () => "test-install-id",
+    getOperatorName: () => null,
+    setOperatorName: () => {},
   };
 }
 

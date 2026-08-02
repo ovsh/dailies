@@ -394,6 +394,7 @@ export function registerIpcHandlers(ctx: IpcContext): void {
       apiKeySet: apiKeyStatus !== "missing",
       apiKeyStatus,
       telemetryEnabled: settings.getTelemetryEnabled(),
+      operatorName: settings.getOperatorName(),
       whisperModel: model,
       chatModelId: chatSelection.option.id,
       chatEffort: chatSelection.effort,
@@ -608,6 +609,11 @@ export function registerIpcHandlers(ctx: IpcContext): void {
 
   ipcMain.handle(IPC.setTelemetryEnabled, (_e, enabled: boolean): Promise<AppSettings> => {
     settings.setTelemetryEnabled(enabled === true);
+    return assembleSettings();
+  });
+
+  ipcMain.handle(IPC.setOperatorName, (_e, name: string): Promise<AppSettings> => {
+    settings.setOperatorName(typeof name === "string" ? name : "");
     return assembleSettings();
   });
 

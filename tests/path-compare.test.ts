@@ -1,3 +1,4 @@
+import { normalize } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { comparablePath, pathIsWithin, pathsEqual } from "../src/main/path-compare";
@@ -10,7 +11,9 @@ describe("comparablePath", () => {
   });
 
   it("keeps the filesystem root intact", () => {
-    expect(comparablePath("/")).toBe("/");
+    // normalize("/") is "\" on win32 and "/" elsewhere; the point is that the
+    // root does not get its only separator stripped.
+    expect(comparablePath("/")).toBe(normalize("/"));
   });
 
   it("unifies NFC and NFD spellings of the same name", () => {

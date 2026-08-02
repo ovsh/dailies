@@ -540,6 +540,7 @@ export const MOCK_JOBS: Job[] = [
 export const MOCK_SETTINGS: AppSettings = {
   apiKeySet: true,
   telemetryEnabled: true,
+  operatorName: null,
   chatModelId: DEFAULT_CHAT_MODEL_ID,
   chatEffort: chatModelSelection(DEFAULT_CHAT_MODEL_ID, null).effort,
   apiKeyStatus: "connected",

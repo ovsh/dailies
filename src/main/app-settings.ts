@@ -16,6 +16,7 @@ interface AppSettingsFile {
   chatEffort?: string;
   telemetryEnabled?: boolean;
   telemetryInstallId?: string;
+  operatorName?: string;
 }
 
 function parseAppSettings(value: unknown): AppSettingsFile {
@@ -43,6 +44,9 @@ function parseAppSettings(value: unknown): AppSettingsFile {
   if ("telemetryInstallId" in value && typeof value.telemetryInstallId === "string") {
     settings.telemetryInstallId = value.telemetryInstallId;
   }
+  if ("operatorName" in value && typeof value.operatorName === "string") {
+    settings.operatorName = value.operatorName;
+  }
   return settings;
 }
 
@@ -65,6 +69,10 @@ export interface AppSettingsStore {
   setTelemetryEnabled(enabled: boolean): void;
   /** Stable anonymous install id, created on first read. */
   getTelemetryInstallId(): string;
+  /** Who runs this install; labels telemetry batches. Null until onboarding asks. */
+  getOperatorName(): string | null;
+  /** Trimmed and capped; an empty string clears the name. */
+  setOperatorName(name: string): void;
 }
 
 export function createAppSettings(dataDir: string): AppSettingsStore {
@@ -142,6 +150,14 @@ export function createAppSettings(dataDir: string): AppSettingsStore {
       const id = randomUUID();
       write({ telemetryInstallId: id });
       return id;
+    },
+    getOperatorName() {
+      const name = read().operatorName;
+      return name && name.length > 0 ? name : null;
+    },
+    setOperatorName(name: string) {
+      const cleaned = name.trim().replace(/\s+/g, " ").slice(0, 40);
+      write({ operatorName: cleaned });
     },
   };
 }

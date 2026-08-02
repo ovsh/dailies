@@ -595,6 +595,8 @@ export interface AppSettings {
   apiKeySet: boolean;
   /** Usage-data sharing (questions, answers, file names, errors). Default on; user-visible switch. */
   telemetryEnabled: boolean;
+  /** Who runs this install ("What's your name?" at onboarding). Labels telemetry batches. */
+  operatorName: string | null;
   /** Only "connected" means the stored key passed an OpenRouter API request. */
   apiKeyStatus: ApiKeyStatus;
   whisperModel: string;

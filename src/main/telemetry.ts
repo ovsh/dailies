@@ -43,6 +43,8 @@ export interface TelemetryShipper {
 export function createTelemetryShipper(opts: {
   isEnabled: () => boolean;
   installId: string;
+  /** Read at flush time so a rename applies to the next batch, not the next launch. */
+  operatorName?: () => string | null;
 }): TelemetryShipper {
   const url = typeof __DAILIES_TELEMETRY_URL__ === "string" ? __DAILIES_TELEMETRY_URL__ : "";
   const token = typeof __DAILIES_TELEMETRY_TOKEN__ === "string" ? __DAILIES_TELEMETRY_TOKEN__ : "";
@@ -80,6 +82,7 @@ export function createTelemetryShipper(opts: {
     buffer = [];
     const body = JSON.stringify({
       installId: opts.installId,
+      operator: opts.operatorName?.() ?? null,
       sessionId,
       seq,
       appVersion: app.getVersion(),

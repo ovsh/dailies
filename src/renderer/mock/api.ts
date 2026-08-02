@@ -593,6 +593,12 @@ export function createMockApi(): DailiesAPI {
       return settings;
     },
 
+    async setOperatorName(name: string) {
+      const cleaned = name.trim().replace(/\s+/g, " ").slice(0, 40);
+      settings = { ...settings, operatorName: cleaned.length > 0 ? cleaned : null };
+      return settings;
+    },
+
     async setChatModel(modelId: string, effort?: string) {
       const selection = chatModelSelection(modelId, effort ?? settings.chatEffort);
       settings = { ...settings, chatModelId: selection.option.id, chatEffort: selection.effort };

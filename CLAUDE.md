@@ -58,18 +58,42 @@ Dailies' specifics:
 The `digital-lane` notarytool profile is per-team and already set up — no
 first-run credential step. Never handle Apple ID passwords.
 
-## Windows signing and draft upload
+## Releases ship BOTH platforms at the same version
 
-Windows x64 releases use `.github/workflows/windows-release.yml`. Run it only from
-the exact `v0.5.4` tag. The workflow requires `WIN_CSC_LINK`,
-`WIN_CSC_KEY_PASSWORD`, `DAILIES_TELEMETRY_URL`, and
-`DAILIES_TELEMETRY_TOKEN` as repository secrets. It downloads the fixed
-whisper.cpp `v1.9.1` x64 archive by SHA-256, signs the NSIS build and bundled
-runtime, verifies Authenticode
-and `latest.yml`, and uploads these files to an existing draft release:
+Policy (from 0.5.6): every release carries macOS AND Windows assets for the
+SAME version, built from the SAME tag, on ONE GitHub release. A Mac-only or
+Windows-only release is an incident exception, not a workflow. (0.5.5 shipped
+Mac-only to fix active data loss; 0.5.4 was a Windows-only beta — both are the
+pattern to avoid.)
 
-    Dailies-0.5.4-Setup-x64.exe
-    Dailies-0.5.4-Setup-x64.exe.blockmap
+Release order, one version `vX.Y.Z`:
+
+1. Bump `package.json`, commit, tag `vX.Y.Z`, push the tag.
+2. `gh release create vX.Y.Z --draft` (the Windows workflow refuses
+   non-draft targets).
+3. Build/notarize the Mac side locally (previous section), upload the five
+   Mac assets to the draft.
+4. Run the `Windows unsigned beta` workflow with the tag as input. It is
+   parameterized: it validates the tag against package.json/package-lock and
+   the checked-out commit, then uploads the three Windows assets to the same
+   draft. Do not use `--clobber`; an existing draft asset with different
+   bytes is a hard failure.
+5. Verify all eight assets are present, then publish the release by hand.
+   A pre-release is invisible to updaters on stable versions — publish as a
+   full release unless the intent really is a closed beta.
+
+## Windows build details
+
+Windows x64 builds use `.github/workflows/windows-release.yml`
+(workflow_dispatch, tag input). Currently UNSIGNED beta builds
+(`CSC_IDENTITY_AUTO_DISCOVERY=false`); Authenticode signing returns when
+`WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` are wired back in. The workflow needs
+`DAILIES_TELEMETRY_URL` and `DAILIES_TELEMETRY_TOKEN` as repository secrets,
+downloads the pinned whisper.cpp `v1.9.1` x64 archive by SHA-256, verifies
+the build and `latest.yml`, and uploads to the existing draft:
+
+    Dailies-X.Y.Z-Setup-x64.exe
+    Dailies-X.Y.Z-Setup-x64.exe.blockmap
     latest.yml
 
 The workflow never publishes. Add and verify the Mac assets first, then publish

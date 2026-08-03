@@ -16,6 +16,10 @@
  * dashboard); the proxy does no metering of its own. The kill switch is
  * removing a token from DAILIES_BETA_TOKENS, or revoking the OpenRouter key.
  */
+import { randomUUID } from "node:crypto";
+import { put } from "@vercel/blob";
+import { waitUntil } from "@vercel/functions";
+
 import { bearerToken, constantTimeEqual } from "./auth";
 import { resolveSealedSecret, type ResolvedSecret } from "./key-store";
 
@@ -90,6 +94,8 @@ export interface ProxyOptions {
   env?: ProxyEnv;
   fetchImpl?: typeof fetch;
   log?: (entry: UsageEntry) => void;
+  /** Durable copy of the usage line. Injected so tests never touch the store. */
+  persist?: (entry: UsageEntry) => void;
   now?: () => Date;
   resolveKey?: OpenRouterKeyResolver;
 }
@@ -237,6 +243,51 @@ function defaultLog(entry: UsageEntry): void {
   console.log(`managed-llm ${JSON.stringify(entry)}`);
 }
 
+/**
+ * The same line, kept. Vercel's runtime logs age out within days, so the
+ * dashboard reads these blobs instead.
+ *
+ * Three constraints, in order of importance:
+ * - It must never delay or fail the proxy. Nothing awaits this; the synchronous
+ *   part is wrapped so a misconfigured store cannot throw into the response
+ *   path, and the promise's rejection is handled rather than dropped.
+ * - It writes the SAME object the log line carries — no request or response
+ *   content, ever. The blob store is public-by-URL, so this is the boundary
+ *   that keeps the privacy promise true.
+ * - Without a store token (dev, tests) it does nothing at all.
+ *
+ * `waitUntil` is what makes "fire and forget" true on Vercel. The runtime is
+ * free to freeze the instance the moment the response ends, so an unregistered
+ * background write is simply lost — most often on the last request of a quiet
+ * period, which is the one worth having. It extends the instance's life, not
+ * the client's wait.
+ */
+function defaultPersist(entry: UsageEntry): void {
+  if (!process.env["BLOB_READ_WRITE_TOKEN"]) return;
+  try {
+    const at = new Date(entry.t);
+    const stamp = Number.isNaN(at.getTime()) ? new Date() : at;
+    const day = stamp.toISOString().slice(0, 10);
+    const key = `llm/${day}/${stamp.getTime()}-${randomUUID().slice(0, 8)}.json`;
+    const write = put(key, JSON.stringify(entry), {
+      access: "public",
+      contentType: "application/json",
+    }).catch((error: unknown) => {
+      // Bookkeeping is not worth a failed request, but a store that has been
+      // silently rejecting writes for a week is worth knowing about.
+      console.warn(`managed-llm persist failed ${key}: ${String(error)}`);
+    });
+    try {
+      waitUntil(write);
+    } catch {
+      // Outside a request context (a local script, a test) there is nothing to
+      // extend; the promise still runs to completion on its own.
+    }
+  } catch (error) {
+    console.warn(`managed-llm persist skipped: ${String(error)}`);
+  }
+}
+
 function plain(status: number, message: string): Response {
   return new Response(message, {
     status,
@@ -268,6 +319,7 @@ function modelAllowed(route: string, model: unknown): model is string {
 export async function proxyToOpenRouter(request: Request, options: ProxyOptions): Promise<Response> {
   const env = options.env ?? readProxyEnv(process.env);
   const log = options.log ?? defaultLog;
+  const persist = options.persist ?? defaultPersist;
   const fetchImpl = options.fetchImpl ?? fetch;
   const route = options.path.replace(/^\//, "");
 
@@ -304,7 +356,7 @@ export async function proxyToOpenRouter(request: Request, options: ProxyOptions)
   const at = (options.now ?? (() => new Date()))().toISOString();
 
   const record = (status: number, usage: UsageCounts | null, model: string | null): void => {
-    log({
+    const entry: UsageEntry = {
       t: at,
       route,
       operator,
@@ -313,7 +365,17 @@ export async function proxyToOpenRouter(request: Request, options: ProxyOptions)
       status,
       stream,
       ...(usage ? { usage } : {}),
-    });
+    };
+    // record() runs inside the streaming TransformStream's flush. A throw there
+    // does not surface as an error — it tears the SSE stream down mid-answer,
+    // which the app sees as a truncated reply. Bookkeeping never gets to do
+    // that, injected or not.
+    try {
+      log(entry);
+      persist(entry);
+    } catch (error) {
+      console.warn(`managed-llm record failed: ${String(error)}`);
+    }
   };
 
   let upstream: Response;

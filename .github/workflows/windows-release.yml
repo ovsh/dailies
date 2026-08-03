@@ -95,6 +95,14 @@ jobs:
           npm run typecheck
           npm test
 
+      # The telemetry service is a separate Vercel project with its own tests
+      # (node:test, no dependencies to install — the reducers import nothing).
+      # Files are named explicitly rather than globbed: cmd.exe does not expand
+      # a glob, and the runner's node is 22.x, where TypeScript still needs the
+      # --experimental-strip-types flag the script carries.
+      - name: Test telemetry aggregation
+        run: npm --prefix infra/telemetry test
+
       - name: Build unsigned NSIS beta
         run: |
           npm run icon

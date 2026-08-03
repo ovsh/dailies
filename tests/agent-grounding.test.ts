@@ -657,6 +657,96 @@ describe("flat agent loop", () => {
     db.close();
   });
 
+  it("keeps up to five grounded sentences when the model declares an overview question", () => {
+    const db = makeDb("overview-summary");
+    const file = addFile(db, "episode.mov", 20);
+    db.replaceTranscript(file.id, [{
+      startS: 2,
+      endS: 4,
+      text: "The host checks the beach for trash.",
+      avgConf: 1,
+      words: [],
+    }]);
+    const hit = db.getTranscriptHit(db.listSegments(file.id)[0]!.id)!;
+    const registry = createCandidateRegistry();
+    registry.segments.set(hit.segmentId, hit);
+
+    const answer = hydrateFinalAnswer({
+      disposition: "results",
+      question_kind: "overview",
+      hits: [{ source: "segment", id: hit.segmentId, confidence: "high" }],
+      summary: {
+        text: "One. Two. Three. Four. Five. The sixth sentence must not render.",
+        source_segment_ids: [hit.segmentId],
+      },
+    }, db, registry, null, "whats the episode about");
+
+    expect(answer.kind).toBe("results");
+    if (answer.kind !== "results") throw new Error("expected results");
+    expect(answer.summary).toBe("One. Two. Three. Four. Five.");
+    db.close();
+  });
+
+  it("lets a declared analytical kind widen the summary without a regex match", () => {
+    const db = makeDb("declared-analytical");
+    const file = addFile(db, "threads.mov", 20);
+    db.replaceTranscript(file.id, [{
+      startS: 2,
+      endS: 4,
+      text: "A supported result row.",
+      avgConf: 1,
+      words: [],
+    }]);
+    const hit = db.getTranscriptHit(db.listSegments(file.id)[0]!.id)!;
+    const registry = createCandidateRegistry();
+    registry.segments.set(hit.segmentId, hit);
+
+    const answer = hydrateFinalAnswer({
+      disposition: "results",
+      question_kind: "analytical",
+      hits: [{ source: "segment", id: hit.segmentId, confidence: "high" }],
+      summary: {
+        text: "One. Two. Three. The fourth sentence must not render.",
+        source_segment_ids: [hit.segmentId],
+      },
+    }, db, registry, null, "tell me about the beach segments");
+
+    expect(answer.kind).toBe("results");
+    if (answer.kind !== "results") throw new Error("expected results");
+    expect(answer.summary).toBe("One. Two. Three.");
+    db.close();
+  });
+
+  it("keeps the one-sentence cap when the model declares a lookup question", () => {
+    const db = makeDb("declared-lookup");
+    const file = addFile(db, "lookup.mov", 20);
+    db.replaceTranscript(file.id, [{
+      startS: 2,
+      endS: 4,
+      text: "A supported result row.",
+      avgConf: 1,
+      words: [],
+    }]);
+    const hit = db.getTranscriptHit(db.listSegments(file.id)[0]!.id)!;
+    const registry = createCandidateRegistry();
+    registry.segments.set(hit.segmentId, hit);
+
+    const answer = hydrateFinalAnswer({
+      disposition: "results",
+      question_kind: "lookup",
+      hits: [{ source: "segment", id: hit.segmentId, confidence: "high" }],
+      summary: {
+        text: "The first sentence renders. How many more must not render.",
+        source_segment_ids: [hit.segmentId],
+      },
+    }, db, registry, null, "how many houses do they compare?");
+
+    expect(answer.kind).toBe("results");
+    if (answer.kind !== "results") throw new Error("expected results");
+    expect(answer.summary).toBe("The first sentence renders.");
+    db.close();
+  });
+
   it("sanitizes and caps a model-written hit reason without changing the stored quote", () => {
     const db = makeDb("hit-reason");
     const file = addFile(db, "reason.mov", 20);

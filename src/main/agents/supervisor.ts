@@ -70,9 +70,13 @@ Always finish by calling final_answer exactly once with one disposition.
 
 For results, reference only segment candidate IDs that appeared in transcript tool results during this turn. A hit contains source "segment", its candidate ID, confidence, and an optional reason. The reason is short model-written commentary that explains why the hit answers the editor's question. Do not restate or invent a quote in the reason. Never write a clip name, quote, timecode, or other database fact into the hit. The application reloads those facts from the database.
 
-Classify counting, comparison, contrast, and "which house..." questions as analytical. For an analytical question, gather relevant transcript evidence first, then reason over the gathered hits; do not return empty merely because no transcript segment states the combined answer verbatim. If the evidence is incomplete, state what can and cannot be established.
+Classify the question and set question_kind in final_answer:
 
-A descriptive summary must be one sentence. An analytical summary may use up to three sentences. Every factual claim in a summary must be supported by source_segment_ids, and every support ID must also be a selected rendered hit. A useful analytical shape is: "They look at three houses: the rustic house (clip A), the modern house (clip B), and the coastal house (clip C)." Otherwise omit the summary. Do not put factual prose anywhere else.
+- "lookup" — the editor wants specific footage or one specific fact. The summary is at most one sentence.
+- "analytical" — counting, comparison, contrast, and "which house..." questions. Gather relevant transcript evidence first, then reason over the gathered hits; do not return empty merely because no transcript segment states the combined answer verbatim. If the evidence is incomplete, state what can and cannot be established. The summary may use up to three sentences.
+- "overview" — the editor asks what the footage, episode, or a stretch of it is about as a whole. Search the distinct threads you see in the library overview, select the hits that best represent each thread, and write a summary of up to five sentences that ties the threads together. The summary is the primary answer; the hits are its evidence.
+
+Every factual claim in a summary must be supported by source_segment_ids, and every support ID must also be a selected rendered hit. A useful analytical shape is: "They look at three houses: the rustic house (clip A), the modern house (clip B), and the coastal house (clip C)." Otherwise omit the summary. Do not put factual prose anywhere else.
 
 Search is grounded in spoken transcripts. Do not claim that an unspoken subject is visible on screen. A "raw" hit uses source timecode. A "final" hit uses timeline timecode in the finished episode.`;
 
@@ -201,6 +205,11 @@ const SUPERVISOR_TOOLS: ToolDef[] = [
       type: "object",
       properties: {
         disposition: { type: "string", enum: ["message", "empty", "results"] },
+        question_kind: {
+          type: "string",
+          enum: ["lookup", "analytical", "overview"],
+          description: "How the editor's question is classified; controls the summary length allowance",
+        },
         message: {
           type: "string",
           description: "Conversation or one clarification only; never footage facts",
@@ -234,7 +243,7 @@ const SUPERVISOR_TOOLS: ToolDef[] = [
           required: ["text", "source_segment_ids"],
         },
       },
-      required: ["disposition", "hits"],
+      required: ["disposition", "question_kind", "hits"],
     },
   ),
 ];
@@ -333,8 +342,21 @@ function isValidStoredRange(startS: number, endS: number, durationS: number): bo
   );
 }
 
-function boundedSummary(text: string, question: string): string | null {
-  const sentenceLimit = ANALYTICAL_QUESTION.test(question) ? 3 : 1;
+type QuestionKind = "lookup" | "analytical" | "overview";
+
+function coerceQuestionKind(value: unknown): QuestionKind | null {
+  return value === "lookup" || value === "analytical" || value === "overview" ? value : null;
+}
+
+function summarySentenceLimit(kind: QuestionKind | null, question: string): number {
+  if (kind === "overview") return 5;
+  // Models that omit question_kind fall back to the regex classification.
+  if (kind === "analytical" || (kind === null && ANALYTICAL_QUESTION.test(question))) return 3;
+  return 1;
+}
+
+function boundedSummary(text: string, question: string, kind: QuestionKind | null): string | null {
+  const sentenceLimit = summarySentenceLimit(kind, question);
   const trimmed = text.trim();
   if (trimmed.length === 0) return null;
   return trimmed.split(/(?<=[.!?])\s+/).slice(0, sentenceLimit).join(" ").trim() || null;
@@ -449,7 +471,9 @@ export function hydrateFinalAnswer(
     warn("[chat-grounding] dropped summary with unsupported segment references");
   }
   const summaryText =
-    summaryIsGrounded && summary !== null ? boundedSummary(summary.text, question) : null;
+    summaryIsGrounded && summary !== null
+      ? boundedSummary(summary.text, question, coerceQuestionKind(rec.question_kind))
+      : null;
   const supportIds = summaryText !== null && summary !== null
     ? new Set(summary.sourceSegmentIds)
     : new Set<number>();

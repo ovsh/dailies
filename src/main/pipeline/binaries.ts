@@ -162,6 +162,28 @@ function binaryRuns(bin: string): boolean {
   }
 }
 
+/**
+ * Logs which ffmpeg/ffprobe binaries this install actually runs, once at
+ * startup. The bundles differ per platform and can silently fall back to a
+ * PATH binary, and a decode bug is meaningless without knowing the build —
+ * the Windows green-noise proxies were undiagnosable from logs without this.
+ */
+export function logMediaBinaryVersions(): void {
+  for (const bin of [findFfmpegBinary(), findFfprobeBinary()]) {
+    try {
+      const result = spawnSync(bin, ["-version"], { encoding: "utf8", timeout: 10_000 });
+      const firstLine = result.stdout?.split("\n")[0]?.trim();
+      if (result.error || !firstLine) {
+        console.warn(`[pipeline] media binary unavailable: ${bin}`);
+      } else {
+        console.info(`[pipeline] media binary: ${bin} — ${firstLine}`);
+      }
+    } catch {
+      console.warn(`[pipeline] media binary unavailable: ${bin}`);
+    }
+  }
+}
+
 /** Quick availability check for ffmpeg and whisper, used by Settings UI. */
 export function checkAvailability(): { ffmpeg: boolean; whisper: boolean } {
   const ffmpegBin = findFfmpegBinary();

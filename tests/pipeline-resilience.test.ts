@@ -14,7 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   run: vi.fn(),
-  makeProxyForTest: async (_path: string, _outDir: string, _timeoutMs?: number): Promise<string> => {
+  makeProxyForTest: async (
+    _path: string,
+    _outDir: string,
+    _timeoutMs?: number,
+    _expectedDurationS?: number,
+  ): Promise<string> => {
     throw new Error("Proxy test helper was not initialized");
   },
   whisperReady: false,
@@ -239,28 +244,32 @@ describe("pipeline prerequisite and applicability handling", () => {
       .rejects.toThrow("signal SIGKILL");
   });
 
-  it("keeps the proxy ffmpeg finished writing when only the decode error rate failed", async () => {
-    // ffmpeg exit 69 (FFMPEG_ERROR_RATE_EXCEEDED) happens after the output is
-    // fully muxed: damaged camera-card media, but a complete proxy.
+  it("re-attempts an exit 69 first run instead of storing its mostly-noise output", async () => {
+    // ffmpeg exit 69 (FFMPEG_ERROR_RATE_EXCEEDED) means most decoded frames
+    // errored — the muxed output is mostly garbage. Accepting it once shipped
+    // green-static previews; now it goes through the tolerant retry.
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-proxy-"));
     tempDirs.push(dir);
     writeFileSync(path.join(dir, "proxy.mp4"), "a complete proxy");
-    mocks.run.mockResolvedValue({
-      stdout: "",
-      stderr: "[hevc @ 0x1] Could not find ref with POC 3\nConversion failed!\n",
-      code: 69,
-      signal: null,
-      timedOut: false,
-    });
+    mocks.run
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "[hevc @ 0x1] Could not find ref with POC 3\nConversion failed!\n",
+        code: 69,
+        signal: null,
+        timedOut: false,
+      })
+      .mockResolvedValueOnce({ stdout: "", stderr: "", code: 0, signal: null, timedOut: false });
 
     await expect(mocks.makeProxyForTest("/media/GH011482.MP4", dir))
       .resolves.toBe(path.join(dir, "proxy.mp4"));
-    expect(mocks.run).toHaveBeenCalledTimes(1);
+    expect(mocks.run).toHaveBeenCalledTimes(2);
   });
 
-  it("fails an exit 69 that left no output behind", async () => {
+  it("fails when both attempts exceed the decode error rate", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dailies-proxy-"));
     tempDirs.push(dir);
+    writeFileSync(path.join(dir, "proxy.mp4"), "mostly noise");
     mocks.run.mockResolvedValue({
       stdout: "",
       stderr: "Conversion failed!\n",
@@ -269,7 +278,55 @@ describe("pipeline prerequisite and applicability handling", () => {
       timedOut: false,
     });
 
-    await expect(mocks.makeProxyForTest("/media/GH011482.MP4", dir)).rejects.toThrow("exit 69");
+    await expect(mocks.makeProxyForTest("/media/GH011482.MP4", dir))
+      .rejects.toThrow("exit 69 (decode error rate exceeded)");
+    expect(mocks.run).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a tolerant retry whose output covers too little of the source", async () => {
+    // +discardcorrupt shortens the output without raising the frame error
+    // rate, so duration is the only honest signal left.
+    mocks.run.mockImplementation(async (bin: string, args: string[]) => {
+      if (args.includes("-show_entries")) {
+        return { stdout: "12.5\n", stderr: "", code: 0, signal: null, timedOut: false };
+      }
+      if (args.includes("+discardcorrupt")) {
+        return { stdout: "", stderr: "", code: 0, signal: null, timedOut: false };
+      }
+      return {
+        stdout: "",
+        stderr: "[mxf @ 0x1] Error while decoding\nConversion failed!\n",
+        code: 1,
+        signal: null,
+        timedOut: false,
+      };
+    });
+
+    await expect(
+      mocks.makeProxyForTest("/media/DAMAGED.mxf", "/cache", undefined, 100),
+    ).rejects.toThrow("dropped too much of the source: proxy is 12.5s of 100.0s");
+  });
+
+  it("keeps a tolerant retry that still covers the source duration", async () => {
+    mocks.run.mockImplementation(async (bin: string, args: string[]) => {
+      if (args.includes("-show_entries")) {
+        return { stdout: "97.2\n", stderr: "", code: 0, signal: null, timedOut: false };
+      }
+      if (args.includes("+discardcorrupt")) {
+        return { stdout: "", stderr: "", code: 0, signal: null, timedOut: false };
+      }
+      return {
+        stdout: "",
+        stderr: "[mxf @ 0x1] Error while decoding\nConversion failed!\n",
+        code: 1,
+        signal: null,
+        timedOut: false,
+      };
+    });
+
+    await expect(
+      mocks.makeProxyForTest("/media/SCRATCHED.mxf", "/cache", undefined, 100),
+    ).resolves.toBe(path.join("/cache", "proxy.mp4"));
   });
 
   it("re-attempts a failed proxy once with tolerant decode flags", async () => {
@@ -289,12 +346,10 @@ describe("pipeline prerequisite and applicability handling", () => {
     const retryArgs = mocks.run.mock.calls[1]?.[1] as string[];
     expect(retryArgs).toEqual([
       "-y",
-      "-err_detect",
-      "ignore_err",
       "-fflags",
       "+discardcorrupt",
       "-max_error_rate",
-      "1",
+      "0.05",
       "-i",
       "/media/GH011482.MP4",
       "-vf",

@@ -106,6 +106,11 @@ The workflow never publishes. Add and verify the Mac assets first, then publish
 the complete release by hand. An existing draft asset with different bytes is a
 hard failure. Do not use `--clobber`.
 
+Both platforms' builds verify the bundled ffmpeg/ffprobe bytes against SHA-256
+pins in `scripts/verify-media-binaries.mjs` (ffmpeg-static downloads at `npm ci`
+time with no checksum of its own). A pin mismatch fails the build on purpose:
+test the new binary on real MXF/DNxHD media before updating pins (`--print`).
+
 ## Telemetry (from 0.5.3)
 
 Always-on log shipping for installs with the toggle on. The app streams

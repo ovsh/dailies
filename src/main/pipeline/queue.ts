@@ -315,6 +315,10 @@ export function createQueue(opts: QueueOptions): JobQueue {
     db.reopenErroredJobs(fileId);
 
     if (file.videoUnplayable) db.setVideoUnplayable(fileId, false);
+    // A manual retry also regenerates the proxy. Versions through 0.5.7 could
+    // store a corrupt (green-noise) proxy as a healthy one, and a stored proxy
+    // otherwise blocks the stage forever — Retry is the recovery path.
+    if (file.proxyPath) db.clearFileProxy(fileId);
     db.setDiscoveryFailure(fileId, null);
     reconcile(fileId);
     ensureWork(fileId);
@@ -407,6 +411,13 @@ export function createQueue(opts: QueueOptions): JobQueue {
         outcome = "parked";
       } else {
         db.failJob(job.id, message);
+        // The full reason lives in the jobs table; this headline is the only
+        // trace that reaches dailies.log and telemetry, so keep it greppable.
+        console.error(
+          `[pipeline] job-error {"stage":"${job.stage}","fileId":${job.fileId}} ${
+            message.split("\n")[0]?.slice(0, 300) ?? ""
+          }`,
+        );
         if (STAGE_POLICY[job.stage].failureImpact === "degrade-video") {
           db.setVideoUnplayable(job.fileId, true);
         }

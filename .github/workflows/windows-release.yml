@@ -65,6 +65,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ffmpeg-static downloads its binary during npm ci with no checksum of
+      # its own; ffprobe-static ships prebuilt binaries. Verify the exact
+      # bytes before they go into a shipped build (see the green-noise proxy
+      # incident, 0.5.x). Update pins in scripts/verify-media-binaries.mjs
+      # only after testing a new build on real MXF/DNxHD media.
+      - name: Verify pinned media binaries
+        run: node scripts/verify-media-binaries.mjs
+
       - name: Install telemetry dependencies
         run: npm ci --prefix infra/telemetry
 

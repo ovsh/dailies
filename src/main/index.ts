@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { IPC } from "../shared/ipc";
 import type { IndexUpdate } from "../shared/types";
-import { setGlobalModelsDir } from "./pipeline/binaries";
+import { logMediaBinaryVersions, setGlobalModelsDir } from "./pipeline/binaries";
 import { createAppSettings } from "./app-settings";
 import { createProjectManager } from "./project-manager";
 import { registerIpcHandlers } from "./ipc-handlers";
@@ -246,6 +246,7 @@ void app.whenReady().then(async () => {
     operatorName: () => settings.getOperatorName(),
   });
   console.info(`[telemetry] session ${telemetry.sessionId}`);
+  logMediaBinaryVersions();
   let indexRevision = 0;
   const manager = createProjectManager({
     dataDir,

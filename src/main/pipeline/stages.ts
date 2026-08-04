@@ -216,7 +216,12 @@ export function createStages(opts: StageOptions): Stages {
     const mediaDir = mediaDirFor(dataDir, file.id);
     await mkdir(mediaDir, { recursive: true });
 
-    const proxyPath = await makeProxy(file.path, mediaDir, proxyTimeoutMs(file.durationS));
+    const proxyPath = await makeProxy(
+      file.path,
+      mediaDir,
+      proxyTimeoutMs(file.durationS),
+      file.durationS,
+    );
     checkActive(signal);
     db.setFileProxy(file.id, proxyPath);
 

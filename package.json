@@ -26,10 +26,11 @@
     "e2e:onboarding": "node scripts/e2e-onboarding.mjs",
     "rebuild": "node scripts/manage-better-sqlite3.mjs electron --force",
     "finalize:mac": "node scripts/finalize-mac-release.mjs",
+    "verify:media-binaries": "node scripts/verify-media-binaries.mjs",
     "dist": "npm run dist:mac",
-    "dist:mac": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:stable && npm run verify:main:stable && electron-builder --mac --publish never",
-    "dist:mac:managed": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:managed && npm run verify:main:managed && electron-builder --mac --publish never",
-    "dist:win": "npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:stable && npm run verify:main:stable && electron-builder --win nsis --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false"
+    "dist:mac": "npm run verify:media-binaries && npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:stable && npm run verify:main:stable && electron-builder --mac --publish never",
+    "dist:mac:managed": "npm run verify:media-binaries && npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:managed && npm run verify:main:managed && electron-builder --mac --publish never",
+    "dist:win": "npm run verify:media-binaries && npm run icon && npm run native:electron && npm run build:renderer && npm run build:main:stable && npm run verify:main:stable && electron-builder --win nsis --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false"
   },
   "build": {
     "appId": "com.dailies.app",

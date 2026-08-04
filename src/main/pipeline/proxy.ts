@@ -2,19 +2,16 @@
  * ffmpeg-backed derivative media generation: web-playable proxies,
  * single-frame keyframe thumbnails, and mono 16kHz WAV audio for whisper.
  */
-import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { findFfmpegBinary } from "./binaries";
+import { findFfmpegBinary, findFfprobeBinary } from "./binaries";
 import { run } from "./exec";
 
 /**
- * ffmpeg's FFMPEG_ERROR_RATE_EXCEEDED. transcode() already returned success and
- * the output is fully muxed (trailer written, faststart applied) — ffmpeg only
- * swaps the exit code at the very end because more decoded frames errored than
- * -max_error_rate (default 2/3) allows. Damaged camera-card media trips this
- * constantly, and the file ffmpeg just wrote is byte-for-byte what a run
- * without the check would have produced, so it is the proxy we want.
+ * ffmpeg's FFMPEG_ERROR_RATE_EXCEEDED: more decoded frames errored than
+ * -max_error_rate allows. A proxy that trips this is mostly noise — accepting
+ * it once shipped green-static previews to a customer (Windows, 0.5.x), so it
+ * now fails the stage instead of being stored.
  */
 const ERROR_RATE_EXCEEDED = 69;
 
@@ -33,19 +30,24 @@ const PROXY_ENCODE_ARGS = [
 const PROXY_AUDIO_ARGS = ["-c:a", "aac", "-b:a", "128k"];
 const PROXY_MUX_ARGS = ["-movflags", "+faststart"];
 /**
- * Second-attempt decode tolerance: keep going through damaged packets, throw
- * corrupt frames away instead of feeding them to the decoder, and never let the
- * error rate alone fail a run that produced output. The output contract is
- * unchanged — same 960px H.264/AAC faststart proxy.mp4.
+ * Second-attempt decode tolerance: throw damaged packets away at the demuxer
+ * (+discardcorrupt) instead of feeding them to the decoder, and allow at most
+ * 5% of decoded frames to error before ffmpeg fails the run. The earlier flags
+ * here (-err_detect ignore_err, -max_error_rate 1) forced a desynced decoder
+ * to keep producing frames — the classic green-macroblock noise — and then
+ * declared success. Because discarded packets are not counted as frame errors,
+ * the caller additionally checks the output duration against the source.
  */
 const TOLERANT_INPUT_ARGS = [
-  "-err_detect",
-  "ignore_err",
   "-fflags",
   "+discardcorrupt",
   "-max_error_rate",
-  "1",
+  "0.05",
 ];
+
+/** A tolerant retry must still cover most of the source to be worth storing. */
+const MIN_PROXY_DURATION_RATIO = 0.8;
+const PROBE_TIMEOUT_MS = 20_000;
 
 interface FfmpegRun {
   ok: boolean;
@@ -84,7 +86,10 @@ async function tryFfmpeg(args: string[], timeoutMs?: number): Promise<FfmpegRun>
     return { ok: false, code, timedOut, how: `timed out after ${timeoutMs}ms`, detail, tail };
   }
   if (code !== 0) {
-    const how = code === null ? `signal ${signal ?? "unknown"}` : `exit ${code}`;
+    const how =
+      code === null ? `signal ${signal ?? "unknown"}`
+      : code === ERROR_RATE_EXCEEDED ? `exit ${code} (decode error rate exceeded)`
+      : `exit ${code}`;
     return { ok: false, code, timedOut, how, detail, tail };
   }
   return { ok: true, code, timedOut, how: "", detail, tail };
@@ -97,12 +102,27 @@ async function runFfmpeg(args: string[], timeoutMs?: number): Promise<void> {
   }
 }
 
-/** True once ffmpeg has actually left a non-empty file at `path`. */
-async function wroteOutput(path: string): Promise<boolean> {
+/** Duration of a finished proxy in seconds, or null when ffprobe cannot say. */
+async function probeDurationS(path: string): Promise<number | null> {
   try {
-    return (await stat(path)).size > 0;
+    const { stdout, code, timedOut } = await run(
+      findFfprobeBinary(),
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+      ],
+      { timeoutMs: PROBE_TIMEOUT_MS },
+    );
+    if (timedOut || code !== 0) return null;
+    const duration = Number.parseFloat(stdout.trim());
+    return Number.isFinite(duration) ? duration : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -118,8 +138,22 @@ function audioSideFailed(result: FfmpegRun): boolean {
   );
 }
 
-/** Generates a 960px-wide H.264/AAC proxy with faststart, returns its output path. */
-export async function makeProxy(path: string, outDir: string, timeoutMs?: number): Promise<string> {
+/**
+ * Generates a 960px-wide H.264/AAC proxy with faststart, returns its output path.
+ *
+ * A run that decodes cleanly (exit 0) is stored as-is. Anything else gets one
+ * tolerant retry that drops damaged packets but still fails on a >5% frame
+ * error rate; its output must also cover most of the source duration
+ * (discarded packets shorten the output without counting as errors). A file
+ * this cannot proxy honestly fails the stage — the UI then says "No preview"
+ * instead of playing decoder noise, and Retry re-runs it.
+ */
+export async function makeProxy(
+  path: string,
+  outDir: string,
+  timeoutMs?: number,
+  expectedDurationS?: number,
+): Promise<string> {
   const outPath = join(outDir, "proxy.mp4");
   const first = await tryFfmpeg([
     "-y",
@@ -131,13 +165,13 @@ export async function makeProxy(path: string, outDir: string, timeoutMs?: number
     outPath,
   ], timeoutMs);
   if (first.ok) return outPath;
-  if (first.code === ERROR_RATE_EXCEEDED && (await wroteOutput(outPath))) return outPath;
   // A second full encode of something that already ran out the clock would only
   // spend the same timeout again.
   if (first.timedOut) {
     throw new Error(`ffmpeg failed (${first.how}): ${first.detail}\n${first.tail}`);
   }
 
+  console.warn(`[pipeline] proxy tolerant retry (first attempt ${first.how}) for ${path}`);
   const second = await tryFfmpeg([
     "-y",
     ...TOLERANT_INPUT_ARGS,
@@ -148,14 +182,30 @@ export async function makeProxy(path: string, outDir: string, timeoutMs?: number
     ...PROXY_MUX_ARGS,
     outPath,
   ], timeoutMs);
-  if (second.ok) return outPath;
-  if (second.code === ERROR_RATE_EXCEEDED && (await wroteOutput(outPath))) return outPath;
+  if (!second.ok) {
+    throw new Error(
+      `ffmpeg failed (${first.how}): ${first.detail}\n` +
+        `tolerant retry also failed (${second.how}): ${second.detail}\n` +
+        second.tail,
+    );
+  }
 
-  throw new Error(
-    `ffmpeg failed (${first.how}): ${first.detail}\n` +
-      `tolerant retry also failed (${second.how}): ${second.detail}\n` +
-      second.tail,
-  );
+  if (expectedDurationS !== undefined && expectedDurationS > 0) {
+    const proxyDurationS = await probeDurationS(outPath);
+    if (
+      proxyDurationS !== null &&
+      proxyDurationS < expectedDurationS * MIN_PROXY_DURATION_RATIO
+    ) {
+      throw new Error(
+        `ffmpeg failed (${first.how}): ${first.detail}\n` +
+          `tolerant retry dropped too much of the source: proxy is ` +
+          `${proxyDurationS.toFixed(1)}s of ${expectedDurationS.toFixed(1)}s\n` +
+          second.tail,
+      );
+    }
+  }
+  console.warn(`[pipeline] proxy tolerant retry succeeded for ${path}`);
+  return outPath;
 }
 
 /** Extracts a single JPEG frame at `atS` seconds, scaled to 640px wide. */

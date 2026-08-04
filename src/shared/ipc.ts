@@ -63,6 +63,19 @@ export interface DailiesAPI {
 
   // episodes & folders (current project)
   createEpisode(code: string): Promise<Episode>;
+  /** Sets an episode's display title; empty string clears it back to the code. */
+  renameEpisode(episodeId: number, title: string | null): Promise<Episode>;
+  /** Clip counts for the episode selector: per episode plus the whole project. */
+  getEpisodeClipCounts(): Promise<{
+    totalFiles: number;
+    rows: Array<{ episodeId: number; clipCount: number }>;
+  }>;
+  /**
+   * Asks the chat model for a short display title for one episode, from its
+   * code and Avid project name (text only). Null when no LLM access or no
+   * usable suggestion.
+   */
+  suggestEpisodeTitle(episodeId: number): Promise<string | null>;
   getEpisodeMembership(episodeId: number): Promise<EpisodeMembershipReport>;
   setEpisodeMembershipSource(
     episodeId: number,
@@ -83,7 +96,7 @@ export interface DailiesAPI {
   getEpisodeProposal(): Promise<EpisodeProposal>;
   /** Creates one media-tag episode per accepted row. */
   applyEpisodeProposal(
-    rows: Array<{ code: string; sourceProject: string }>,
+    rows: Array<{ code: string; sourceProject: string; title?: string | null }>,
   ): Promise<Episode[]>;
   /** Opens a native folder picker; returns the new folder or null if cancelled. */
   addProjectFolder(
@@ -180,6 +193,9 @@ export const IPC = {
   openProject: "dailies:openProject",
   getProjectState: "dailies:getProjectState",
   createEpisode: "dailies:createEpisode",
+  renameEpisode: "dailies:renameEpisode",
+  getEpisodeClipCounts: "dailies:getEpisodeClipCounts",
+  suggestEpisodeTitle: "dailies:suggestEpisodeTitle",
   getEpisodeMembership: "dailies:getEpisodeMembership",
   setEpisodeMembershipSource: "dailies:setEpisodeMembershipSource",
   replaceEpisodeClipList: "dailies:replaceEpisodeClipList",

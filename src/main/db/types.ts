@@ -89,6 +89,8 @@ export interface DailiesDB {
   /** Backfill legacy unreadable stubs. Returns the number of changed rows. */
   backfillDiscoveryFailures(): number;
   setFileProxy(id: number, proxyPath: string): void;
+  /** Forgets the stored proxy so ensureWork regenerates it (manual retry). */
+  clearFileProxy(id: number): void;
   clearDerivedState(fileId: number): void;
   setVideoUnplayable(id: number, value: boolean): void;
   markTranscribed(id: number): void;
@@ -100,6 +102,10 @@ export interface DailiesDB {
   setEpisodeMembershipSource(episodeId: number, source: MembershipSource): void;
   getEpisodeMediaTag(episodeId: number): string | null;
   setEpisodeMediaTag(episodeId: number, mediaTag: string | null): void;
+  /** Sets the display title; empty or whitespace clears it back to the code. */
+  renameEpisode(episodeId: number, title: string | null): Episode;
+  /** Clip counts per episode (episode_members) plus the whole-project file count. */
+  tallyEpisodeClipCounts(): { totalFiles: number; rows: Array<{ episodeId: number; clipCount: number }> };
   getEpisodeListEntries(episodeId: number): EpisodeListEntry[];
   replaceEpisodeListEntries(episodeId: number, entries: EpisodeListEntry[]): void;
   getEpisodeMemberIds(episodeId: number): number[];

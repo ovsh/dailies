@@ -4,7 +4,7 @@ import type { EpisodeProposal } from "../../shared/types";
 interface EpisodeProposalCardProps {
   proposal: EpisodeProposal;
   /** Applies the accepted rows. Codes are already trimmed. */
-  onApply: (rows: Array<{ code: string; sourceProject: string }>) => Promise<void>;
+  onApply: (rows: Array<{ code: string; sourceProject: string; title?: string | null }>) => Promise<void>;
   onDismiss: () => void;
   /** Re-reads the proposal while tag reads are still running. */
   onRefresh?: () => void;
@@ -59,6 +59,7 @@ export function EpisodeProposalCard({ proposal, onApply, onDismiss, onRefresh }:
         ready.map((row) => ({
           sourceProject: row.sourceProject,
           code: (codes[row.sourceProject] ?? row.code).trim(),
+          title: row.title,
         })),
       );
     } catch (err) {

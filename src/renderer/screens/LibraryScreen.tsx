@@ -9,7 +9,7 @@ import type {
   ProjectFolder,
 } from "../../shared/types";
 import { ClipCard } from "../components/ClipCard";
-import { EpisodeBar } from "../components/EpisodeBar";
+import { EpisodeSelect } from "../components/EpisodeSelect";
 import { EpisodeProposalCard } from "../components/EpisodeProposalCard";
 import { Toast } from "../components/Toast";
 import { InlineError } from "../components/InlineError";
@@ -230,7 +230,7 @@ export function LibraryScreen({
     if (result.ok) setRetryAction(null);
   }
 
-  async function applyProposal(rows: Array<{ code: string; sourceProject: string }>) {
+  async function applyProposal(rows: Array<{ code: string; sourceProject: string; title?: string | null }>) {
     await api.applyEpisodeProposal(rows);
     proposalPollingRef.current = false;
     setProposal(null);
@@ -301,7 +301,7 @@ export function LibraryScreen({
           </div>
 
           <div className="library-scope-row">
-            <EpisodeBar
+            <EpisodeSelect
               episodes={episodes}
               activeEpisodeId={episodeId}
               onSelect={onEpisodeChange}
@@ -480,9 +480,13 @@ export function LibraryScreen({
           gap: 16px;
           margin-top: 18px;
         }
+        .library-scope-row > :first-child {
+          min-width: 0;
+        }
         .library-filters {
           display: flex;
           gap: 8px;
+          flex: 0 0 auto;
         }
         .library-filter-chip {
           background: var(--ground-raised);

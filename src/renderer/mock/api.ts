@@ -286,6 +286,7 @@ export function createMockApi(): DailiesAPI {
       rows: [...tally.entries()].map(([sourceProject, clipCount]) => ({
         sourceProject,
         code: sourceProject,
+        title: null,
         clipCount,
         alreadyExists: claimed.has(sourceProject),
       })),
@@ -504,10 +505,41 @@ export function createMockApi(): DailiesAPI {
         createdAt: new Date().toISOString(),
         membershipSource: "folder",
         mediaTag: null,
+        title: null,
       };
       episodesByProject[currentProjectId] = [...(episodesByProject[currentProjectId] ?? []), episode];
       notifyProjectUpdate();
       return episode;
+    },
+
+    async renameEpisode(episodeId: number, title: string | null) {
+      if (!currentProjectId) throw new Error("No project open");
+      const episodes = episodesByProject[currentProjectId] ?? [];
+      const episode = episodes.find((ep) => ep.id === episodeId);
+      if (!episode) throw new Error(`Episode ${episodeId} not found`);
+      const trimmed = title?.trim() ?? "";
+      const renamed: Episode = { ...episode, title: trimmed === "" ? null : trimmed };
+      episodesByProject[currentProjectId] = episodes.map((ep) =>
+        ep.id === episodeId ? renamed : ep,
+      );
+      notifyProjectUpdate();
+      return renamed;
+    },
+
+    async getEpisodeClipCounts() {
+      const episodes = episodesByProject[currentProjectId ?? ""] ?? [];
+      return {
+        totalFiles: MOCK_FILES.length,
+        rows: episodes.map((episode) => ({
+          episodeId: episode.id,
+          clipCount: episodeMembers.get(episode.id)?.size ?? 0,
+        })),
+      };
+    },
+
+    async suggestEpisodeTitle() {
+      // Browser preview has no model; the renderer treats null as "no suggestion".
+      return null;
     },
 
     getEpisodeMembership,
@@ -522,7 +554,7 @@ export function createMockApi(): DailiesAPI {
       return episodeProposal();
     },
 
-    async applyEpisodeProposal(rows: Array<{ code: string; sourceProject: string }>) {
+    async applyEpisodeProposal(rows: Array<{ code: string; sourceProject: string; title?: string | null }>) {
       if (!currentProjectId) throw new Error("No project open");
       const created: Episode[] = rows.map((row) => ({
         id: nextEpisodeId++,
@@ -530,6 +562,7 @@ export function createMockApi(): DailiesAPI {
         createdAt: new Date().toISOString(),
         membershipSource: "media-tag" as const,
         mediaTag: row.sourceProject,
+        title: row.title?.trim() || null,
       }));
       episodesByProject[currentProjectId] = [
         ...(episodesByProject[currentProjectId] ?? []),

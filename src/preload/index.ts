@@ -24,6 +24,11 @@ const api: DailiesAPI = {
 
   // episodes & folders
   createEpisode: (code: string) => ipcRenderer.invoke(IPC.createEpisode, code),
+  renameEpisode: (episodeId: number, title: string | null) =>
+    ipcRenderer.invoke(IPC.renameEpisode, episodeId, title),
+  getEpisodeClipCounts: () => ipcRenderer.invoke(IPC.getEpisodeClipCounts),
+  suggestEpisodeTitle: (episodeId: number) =>
+    ipcRenderer.invoke(IPC.suggestEpisodeTitle, episodeId),
   getEpisodeMembership: (episodeId: number) =>
     ipcRenderer.invoke(IPC.getEpisodeMembership, episodeId),
   setEpisodeMembershipSource: (episodeId: number, source: MembershipSource) =>
@@ -32,7 +37,7 @@ const api: DailiesAPI = {
     ipcRenderer.invoke(IPC.replaceEpisodeClipList, episodeId, input),
   detectEpisodesFromMedia: () => ipcRenderer.invoke(IPC.detectEpisodesFromMedia),
   getEpisodeProposal: () => ipcRenderer.invoke(IPC.getEpisodeProposal),
-  applyEpisodeProposal: (rows: Array<{ code: string; sourceProject: string }>) =>
+  applyEpisodeProposal: (rows: Array<{ code: string; sourceProject: string; title?: string | null }>) =>
     ipcRenderer.invoke(IPC.applyEpisodeProposal, rows),
   addProjectFolder: (role: MediaRole, episodeId: number | null, e2eFolderPath?: string) =>
     ipcRenderer.invoke(IPC.addProjectFolder, role, episodeId, e2eFolderPath),

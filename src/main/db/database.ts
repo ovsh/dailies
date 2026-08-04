@@ -102,6 +102,7 @@ interface EpisodeRow {
   created_at: string;
   membership_source: string;
   media_tag: string | null;
+  title: string | null;
 }
 
 interface FolderRow {
@@ -317,6 +318,7 @@ function mapEpisode(row: EpisodeRow): Episode {
     createdAt: row.created_at,
     membershipSource: mapMembershipSource(row.membership_source),
     mediaTag: row.media_tag,
+    title: row.title,
   };
 }
 
@@ -846,6 +848,9 @@ function migrate(db: BetterSqlite3Database, dbPath: string): boolean {
     ["media_tag", "TEXT"],
   ]);
   widenEpisodeMembershipCheck(db);
+  // After the rebuild: widenEpisodeMembershipCheck recreates the table without
+  // title, so adding it earlier would lose the column on pre-0.5.6 databases.
+  addMissingColumns(db, "episodes", [["title", "TEXT"]]);
   addMissingColumns(db, "files", [
     ["role", "TEXT NOT NULL DEFAULT 'raw'"],
     ["clip_name", "TEXT"],
@@ -1209,6 +1214,7 @@ export function openDatabase(dbPath: string): DailiesDB {
     "SELECT id FROM files WHERE source_project = ? ORDER BY id ASC",
   );
   const stmtSetFileProxy = db.prepare<[string, number]>("UPDATE files SET proxy_path = ? WHERE id = ?");
+  const stmtClearFileProxy = db.prepare<[number]>("UPDATE files SET proxy_path = NULL WHERE id = ?");
   const stmtSetVideoUnplayable = db.prepare<[number, number]>(
     "UPDATE files SET video_unplayable = ? WHERE id = ?",
   );
@@ -1293,6 +1299,17 @@ export function openDatabase(dbPath: string): DailiesDB {
   );
   const stmtSetEpisodeMediaTag = db.prepare<[string | null, number]>(
     "UPDATE episodes SET media_tag = ? WHERE id = ?",
+  );
+  const stmtSetEpisodeTitle = db.prepare<[string | null, number]>(
+    "UPDATE episodes SET title = ? WHERE id = ?",
+  );
+  const stmtCountEpisodeMembers = db.prepare<[], { episode_id: number; clip_count: number }>(
+    `SELECT episode_id, COUNT(*) AS clip_count
+     FROM episode_members
+     GROUP BY episode_id`,
+  );
+  const stmtCountAllFiles = db.prepare<[], { count: number }>(
+    "SELECT COUNT(*) AS count FROM files",
   );
   const stmtListEpisodeEntries = db.prepare<[number], EpisodeListEntryRow>(
     `SELECT episode_id, ordinal, raw_name, clip_name, clip_key
@@ -2496,6 +2513,10 @@ export function openDatabase(dbPath: string): DailiesDB {
       stmtSetFileProxy.run(proxyPath, id);
     },
 
+    clearFileProxy(id: number): void {
+      stmtClearFileProxy.run(id);
+    },
+
     clearDerivedState(fileId: number): void {
       clearDerivedStateTx(fileId);
     },
@@ -2550,6 +2571,25 @@ export function openDatabase(dbPath: string): DailiesDB {
     setEpisodeMediaTag(episodeId: number, mediaTag: string | null): void {
       const result = stmtSetEpisodeMediaTag.run(mediaTag, episodeId);
       if (result.changes === 0) throw new Error(`Episode ${episodeId} not found`);
+    },
+
+    renameEpisode(episodeId: number, title: string | null): Episode {
+      const trimmed = title?.trim() ?? "";
+      const result = stmtSetEpisodeTitle.run(trimmed === "" ? null : trimmed, episodeId);
+      if (result.changes === 0) throw new Error(`Episode ${episodeId} not found`);
+      const row = stmtGetEpisodeById.get(episodeId);
+      if (!row) throw new Error(`Episode ${episodeId} not found`);
+      return mapEpisode(row);
+    },
+
+    tallyEpisodeClipCounts(): { totalFiles: number; rows: Array<{ episodeId: number; clipCount: number }> } {
+      return {
+        totalFiles: stmtCountAllFiles.get()?.count ?? 0,
+        rows: stmtCountEpisodeMembers.all().map((row) => ({
+          episodeId: row.episode_id,
+          clipCount: row.clip_count,
+        })),
+      };
     },
 
     getEpisodeListEntries(episodeId: number): EpisodeListEntry[] {

@@ -7,6 +7,12 @@
       "runtimeArgs": ["run", "dev:renderer", "--", "--port", "5199", "--strictPort"],
       "port": 5199,
       "autoPort": false
+    },
+    {
+      "name": "design-comps",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "http-server", "design/comps", "-p", "8931", "-c-1"],
+      "port": 8931
     }
   ]
 }

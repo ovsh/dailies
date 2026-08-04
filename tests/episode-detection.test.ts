@@ -8,6 +8,7 @@ import {
   applyEpisodeProposal,
   buildEpisodeProposal,
   deriveEpisodeCodes,
+  deriveEpisodeTitles,
 } from "../src/main/episode-detection";
 import { readEpisodeMembershipReport, reconcileEpisodeMembership } from "../src/main/membership";
 import type { DailiesDB } from "../src/main/db/types";
@@ -53,16 +54,42 @@ describe("episode code derivation", () => {
     });
   });
 
-  it("falls back for every row when one project has no trailing digits", () => {
+  it("keeps short codes for numbered projects when one project has no trailing digits", () => {
+    // One un-numbered project must not drag every other row into full-length
+    // codes — that is how customers ended up with whole Avid project names as chips.
     const codes = deriveEpisodeCodes(["RWAR_EDIT_02", "RWAR_PICKUPS"]);
     expect(Object.fromEntries(codes)).toEqual({
-      RWAR_EDIT_02: "RWAR_EDIT_02",
+      RWAR_EDIT_02: "02",
       RWAR_PICKUPS: "RWAR_PICKUPS",
     });
   });
 
   it("has nothing to derive from an empty set", () => {
     expect(deriveEpisodeCodes([]).size).toBe(0);
+  });
+});
+
+describe("episode title derivation", () => {
+  it("strips the shared show prefix and the edit suffix, then title-cases", () => {
+    const titles = deriveEpisodeTitles([
+      "HHI_AUCKLAND_NEW_ZEALAND_PRETORIA_SOUTH_AFRICA_EDIT23",
+      "HHI_BALI_INDONESIA_NEW_ORLEANS_LA_EDIT24",
+    ]);
+    expect(Object.fromEntries(titles)).toEqual({
+      HHI_AUCKLAND_NEW_ZEALAND_PRETORIA_SOUTH_AFRICA_EDIT23:
+        "Auckland New Zealand Pretoria South Africa",
+      HHI_BALI_INDONESIA_NEW_ORLEANS_LA_EDIT24: "Bali Indonesia New Orleans LA",
+    });
+  });
+
+  it("keeps a lone project's tokens without eating a nonexistent prefix", () => {
+    const titles = deriveEpisodeTitles(["RWAR_EDIT_02"]);
+    expect(titles.get("RWAR_EDIT_02")).toBe("Rwar Edit");
+  });
+
+  it("returns null when only the suffix remains", () => {
+    const titles = deriveEpisodeTitles(["EDIT23"]);
+    expect(titles.get("EDIT23")).toBeNull();
   });
 });
 
@@ -76,8 +103,8 @@ describe("episode detection from media tags", () => {
 
     const proposal = buildEpisodeProposal(db);
     expect(proposal.rows).toEqual([
-      { sourceProject: "RWAR_EDIT_02", code: "02", clipCount: 2, alreadyExists: false },
-      { sourceProject: "RWAR_EDIT_03", code: "03", clipCount: 1, alreadyExists: false },
+      { sourceProject: "RWAR_EDIT_02", code: "02", title: null, clipCount: 2, alreadyExists: false },
+      { sourceProject: "RWAR_EDIT_03", code: "03", title: null, clipCount: 1, alreadyExists: false },
     ]);
     expect(proposal.untaggedClipCount).toBe(1);
     expect(proposal.pendingClipCount).toBe(0);
@@ -143,6 +170,28 @@ describe("episode detection from media tags", () => {
     expect(after.source).toBe("media-tag");
     expect(after.memberCount).toBe(0);
     expect(after.untaggedClipCount).toBe(0);
+  });
+
+  it("stores the proposal title and never overwrites an operator rename", () => {
+    const db = freshDb("titles");
+    addClip(db, "a01", "HHI_AUCKLAND_EDIT23");
+
+    const [episode] = applyEpisodeProposal(db, [
+      { sourceProject: "HHI_AUCKLAND_EDIT23", code: "23", title: "Auckland" },
+    ]);
+    expect(episode.title).toBe("Auckland");
+    expect(db.listEpisodes()[0]?.title).toBe("Auckland");
+
+    db.renameEpisode(episode.id, "Auckland & Pretoria");
+    // Re-applying the same proposal must keep the operator's name.
+    applyEpisodeProposal(db, [
+      { sourceProject: "HHI_AUCKLAND_EDIT23", code: "23", title: "Auckland" },
+    ]);
+    expect(db.listEpisodes()[0]?.title).toBe("Auckland & Pretoria");
+
+    // An empty rename clears back to the code.
+    const cleared = db.renameEpisode(episode.id, "   ");
+    expect(cleared.title).toBeNull();
   });
 
   it("rejects duplicate or occupied codes before creating any episode", () => {

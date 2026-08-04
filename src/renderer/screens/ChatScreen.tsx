@@ -27,7 +27,7 @@ import type {
   StructuredAgentAnswer,
 } from "../../shared/types";
 import { ActivityLine } from "../components/ActivityLine";
-import { EpisodeBar } from "../components/EpisodeBar";
+import { EpisodeSelect, episodeScopeLabel } from "../components/EpisodeSelect";
 import { HitCard } from "../components/HitCard";
 import { Toast } from "../components/Toast";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
@@ -676,7 +676,7 @@ export function ChatScreen({
   const isEmpty = turns.length === 0;
   const isAnswering = turns.some((turn) => turn.pending);
   const activeEpisode = episodeId === null ? null : episodes.find((e) => e.id === episodeId) ?? null;
-  const scopeLabel = activeEpisode ? `Episode ${activeEpisode.code}` : "All Episodes";
+  const scopeLabel = activeEpisode ? episodeScopeLabel(activeEpisode) : "All Episodes";
   const chatCountLabel = `${chats.length} ${chats.length === 1 ? "chat" : "chats"}`;
   const visibleChats = filterChats(chats, chatSearch);
   const normalizedChatSearch = chatSearch.trim();
@@ -703,7 +703,8 @@ export function ChatScreen({
     <div className="chat-screen">
       <aside className="chat-history" aria-label="Conversations in this scope" style={{ flexBasis: historyWidth }}>
         <div className="chat-history-head">
-          <span className="label">{scopeLabel} · {chatCountLabel}</span>
+          <span className="label chat-history-scope" title={scopeLabel}>{scopeLabel}</span>
+          <span className="label chat-history-count">{chatCountLabel}</span>
           <button className="chat-new label" onClick={handleNewChat} disabled={isAnswering}>
             New chat
           </button>
@@ -788,12 +789,12 @@ export function ChatScreen({
         <div className="chat-scroll" ref={scrollRef}>
           <div className="chat-column">
             <div className="chat-episode-bar">
-              <EpisodeBar
+              <EpisodeSelect
                 episodes={episodes}
                 activeEpisodeId={episodeId}
                 onSelect={onEpisodeChange}
                 onCreate={onCreateEpisode}
-                size="centered"
+                align="centered"
               />
             </div>
 
@@ -823,7 +824,9 @@ export function ChatScreen({
                 <p className="chat-empty-sub">
                   Search transcripts and producer notes, like "where does Marsh mention the salmon run?"
                 </p>
-                {activeEpisode && <p className="chat-empty-scope mono">Searching episode {activeEpisode.code}</p>}
+                {activeEpisode && (
+                  <p className="chat-empty-scope mono">Searching {episodeScopeLabel(activeEpisode)}</p>
+                )}
                 {apiKeySet === false && onOpenSettings && (
                   <button className="chat-key-hint" onClick={onOpenSettings}>
                     No OpenRouter key yet. Set one up in Settings →
@@ -1090,10 +1093,15 @@ export function ChatScreen({
           box-shadow: inset 0 -1px 0 var(--chrome-lo);
           flex: 0 0 auto;
         }
-        .chat-history-head .label {
+        .chat-history-scope {
+          flex: 1 1 auto;
           min-width: 0;
           overflow: hidden;
           text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .chat-history-count {
+          flex: 0 0 auto;
           white-space: nowrap;
         }
         .chat-new {
@@ -1223,7 +1231,11 @@ export function ChatScreen({
           gap: 6px;
         }
         .chat-history-chip {
-          flex: 0 0 auto;
+          flex: 0 1 auto;
+          max-width: 120px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
           border: 1px solid currentColor;
           border-radius: 2px;
           padding: 0 4px;

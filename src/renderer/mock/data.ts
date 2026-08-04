@@ -81,6 +81,7 @@ export const MOCK_EPISODES: Record<string, Episode[]> = {
       createdAt: new Date(Date.UTC(2026, 3, 2, 9, 5)).toISOString(),
       membershipSource: "folder",
       mediaTag: null,
+      title: null,
     },
     {
       id: 202,
@@ -88,6 +89,7 @@ export const MOCK_EPISODES: Record<string, Episode[]> = {
       createdAt: new Date(Date.UTC(2026, 4, 1, 9, 5)).toISOString(),
       membershipSource: "list",
       mediaTag: null,
+      title: null,
     },
     {
       id: 203,
@@ -95,6 +97,7 @@ export const MOCK_EPISODES: Record<string, Episode[]> = {
       createdAt: new Date(Date.UTC(2026, 5, 3, 9, 5)).toISOString(),
       membershipSource: "folder",
       mediaTag: null,
+      title: null,
     },
   ],
   "lonely-island": [],

@@ -109,6 +109,8 @@ export interface EpisodeProposalRow {
   sourceProject: string;
   /** Suggested code: the trailing digits when unique, else the whole tag. */
   code: string;
+  /** Suggested display title, prettified from the project name; null when nothing useful remains. */
+  title: string | null;
   clipCount: number;
   /** An episode with this media tag already exists. */
   alreadyExists: boolean;
@@ -141,6 +143,8 @@ export interface Episode {
   membershipSource: MembershipSource;
   /** media-tag source: the Avid project name whose clips belong to this episode. */
   mediaTag: string | null;
+  /** Editable display name; null falls back to the code. */
+  title: string | null;
 }
 
 /** A watched folder within a project, optionally assigned to one episode. */

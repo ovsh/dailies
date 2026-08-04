@@ -26,32 +26,80 @@ function trailingDigits(projectName: string): string | null {
 /**
  * Suggested episode codes for a set of project names.
  *
- * The trailing digits are the useful part ("RWAR_EDIT_02" -> "02"), but only
- * when every proposed project reduces to a distinct code. The moment two
- * projects would collide, or one has no trailing digits at all, every row
- * falls back to its full project name, so the operator never sees two rows
- * arguing over the same code.
+ * The trailing digits are the useful part ("RWAR_EDIT_02" -> "02"). Only the
+ * rows that cannot produce a distinct short code fall back to their full
+ * project name: a name with no trailing digits keeps its name, and two names
+ * whose digits collide both keep their names. One odd project no longer drags
+ * every other row into full-length codes (that is how customers ended up with
+ * whole Avid project names as episode chips).
  */
 export function deriveEpisodeCodes(projectNames: string[]): Map<string, string> {
-  const suffixes = new Map<string, string>();
-  for (const name of projectNames) {
-    const suffix = trailingDigits(name);
-    if (suffix === null) {
-      return new Map(projectNames.map((project) => [project, project]));
+  const codes = new Map<string, string>(
+    projectNames.map((name) => [name, trailingDigits(name) ?? name]),
+  );
+  const uses = new Map<string, number>();
+  for (const code of codes.values()) uses.set(code, (uses.get(code) ?? 0) + 1);
+  for (const [name, code] of codes) {
+    if (code !== name && (uses.get(code) ?? 0) > 1) codes.set(name, name);
+  }
+  return codes;
+}
+
+/** Tokens that are edit/version suffixes, not part of a human title. */
+const SUFFIX_TOKEN = /^(?:EDIT|EP|EPISODE|CUT|VERSION|V)?\d+$/i;
+
+function splitTokens(projectName: string): string[] {
+  return projectName.split(/[_\s]+/).filter((token) => token !== "");
+}
+
+function titleCaseToken(token: string): string {
+  // Two-letter all-caps tokens read as region codes (LA, NZ); keep them.
+  if (/^[A-Z]{2}$/.test(token)) return token;
+  return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
+}
+
+/**
+ * Suggested display titles for a set of project names: the project name minus
+ * the show prefix the names share and minus the trailing edit/episode-number
+ * token, title-cased. "HHI_AUCKLAND_NEW_ZEALAND_EDIT23" (with siblings sharing
+ * "HHI") becomes "Auckland New Zealand". Null when nothing readable remains.
+ */
+export function deriveEpisodeTitles(projectNames: string[]): Map<string, string | null> {
+  const tokenLists = projectNames.map(splitTokens);
+
+  // Longest run of leading tokens shared by every name — the show prefix.
+  // Meaningful only when there are siblings to agree with.
+  let sharedPrefixLength = 0;
+  if (tokenLists.length >= 2) {
+    const first = tokenLists[0] ?? [];
+    const shortest = Math.min(...tokenLists.map((tokens) => tokens.length));
+    // Never consume a whole name; leave at least one token everywhere.
+    while (
+      sharedPrefixLength < shortest - 1 &&
+      tokenLists.every((tokens) => tokens[sharedPrefixLength] === first[sharedPrefixLength])
+    ) {
+      sharedPrefixLength += 1;
     }
-    suffixes.set(name, suffix);
   }
-  const distinct = new Set(suffixes.values());
-  if (distinct.size !== suffixes.size) {
-    return new Map(projectNames.map((project) => [project, project]));
-  }
-  return suffixes;
+
+  const titles = new Map<string, string | null>();
+  projectNames.forEach((name, index) => {
+    let tokens = (tokenLists[index] ?? []).slice(sharedPrefixLength);
+    while (tokens.length > 0 && SUFFIX_TOKEN.test(tokens[tokens.length - 1] ?? "")) {
+      tokens = tokens.slice(0, -1);
+    }
+    const title = tokens.map(titleCaseToken).join(" ").trim();
+    titles.set(name, title === "" ? null : title);
+  });
+  return titles;
 }
 
 /** What the stored tags currently say about this project's episodes. */
 export function buildEpisodeProposal(db: DailiesDB): EpisodeProposal {
   const tally = db.tallySourceProjects();
-  const codes = deriveEpisodeCodes(tally.map((entry) => entry.sourceProject));
+  const projectNames = tally.map((entry) => entry.sourceProject);
+  const codes = deriveEpisodeCodes(projectNames);
+  const titles = deriveEpisodeTitles(projectNames);
   const claimed = new Set(
     db.listEpisodes()
       .map((episode) => episode.mediaTag)
@@ -60,6 +108,7 @@ export function buildEpisodeProposal(db: DailiesDB): EpisodeProposal {
   const rows: EpisodeProposalRow[] = tally.map((entry) => ({
     sourceProject: entry.sourceProject,
     code: codes.get(entry.sourceProject) ?? entry.sourceProject,
+    title: titles.get(entry.sourceProject) ?? null,
     clipCount: entry.clipCount,
     alreadyExists: claimed.has(entry.sourceProject),
   }));
@@ -73,6 +122,8 @@ export function buildEpisodeProposal(db: DailiesDB): EpisodeProposal {
 export interface EpisodeProposalApplication {
   sourceProject: string;
   code: string;
+  /** Display title to store on the created episode; omitted/null leaves it unset. */
+  title?: string | null;
 }
 
 function validateApplicationRows(
@@ -82,6 +133,7 @@ function validateApplicationRows(
   const normalized = rows.map((row) => ({
     sourceProject: row.sourceProject.trim(),
     code: row.code.trim(),
+    title: row.title?.trim() || null,
   }));
   const seenCodes = new Set<string>();
   const seenProjects = new Set<string>();
@@ -127,8 +179,13 @@ export function applyEpisodeProposal(
   return db.runInTransaction(() => {
     const created: Episode[] = [];
     for (const row of acceptedRows) {
-      const episode = db.createEpisode(row.code);
+      let episode = db.createEpisode(row.code);
       db.setEpisodeMediaTag(episode.id, row.sourceProject);
+      // Only fill an empty title: re-applying a proposal must not overwrite a
+      // name the operator already chose.
+      if (row.title && !episode.title) {
+        episode = db.renameEpisode(episode.id, row.title);
+      }
       setEpisodeMembershipSource(db, episode.id, "media-tag");
       created.push({ ...episode, membershipSource: "media-tag", mediaTag: row.sourceProject });
     }

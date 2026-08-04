@@ -209,6 +209,9 @@ export function JobsSettingsScreen({
   const [toast, setToast] = useState<{ message: string; actionLabel?: string; onAction?: () => void } | null>(null);
   const [episodeReports, setEpisodeReports] = useState<Record<number, EpisodeMembershipReport>>({});
   const [expandedEpisodeId, setExpandedEpisodeId] = useState<number | null>(null);
+  const [renamingEpisodeId, setRenamingEpisodeId] = useState<number | null>(null);
+  const [renameTitleDraft, setRenameTitleDraft] = useState("");
+  const [savingRename, setSavingRename] = useState(false);
   const [proposal, setProposal] = useState<EpisodeProposal | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [detectNotice, setDetectNotice] = useState<string | null>(null);
@@ -334,6 +337,17 @@ export function JobsSettingsScreen({
     if (result.ok) setRetryAction(null);
   }
 
+  async function handleRenameEpisode(episodeId: number) {
+    const result = await runIpc(
+      async () => {
+        await api.renameEpisode(episodeId, renameTitleDraft);
+        await onRefresh();
+      },
+      { setPending: setSavingRename, setError: setActionError, fallback: "Could not rename that episode." },
+    );
+    if (result.ok) setRenamingEpisodeId(null);
+  }
+
   async function handleCreateEpisode() {
     const code = newEpisodeCode.trim();
     if (!code) return;
@@ -374,7 +388,7 @@ export function JobsSettingsScreen({
     }
   }
 
-  async function handleApplyProposal(rows: Array<{ code: string; sourceProject: string }>) {
+  async function handleApplyProposal(rows: Array<{ code: string; sourceProject: string; title?: string | null }>) {
     await api.applyEpisodeProposal(rows);
     setProposal(null);
     setDetectNotice(null);
@@ -1141,6 +1155,23 @@ export function JobsSettingsScreen({
                       <div className="folder-row">
                         <span className="folder-path-row">
                           <span className="mono episode-code">{ep.code}</span>
+                          {renamingEpisodeId === ep.id ? (
+                            <input
+                              className="episode-title-input"
+                              autoFocus
+                              value={renameTitleDraft}
+                              placeholder="Episode title"
+                              disabled={savingRename}
+                              aria-label={`Title for episode ${ep.code}`}
+                              onChange={(e) => setRenameTitleDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") void handleRenameEpisode(ep.id);
+                                if (e.key === "Escape") setRenamingEpisodeId(null);
+                              }}
+                            />
+                          ) : (
+                            ep.title && <span className="episode-title">{ep.title}</span>
+                          )}
                           <span className="episode-source-tag label">{MEMBERSHIP_SOURCE_LABEL[source]}</span>
                           <span className="episode-count mono">
                             {report ? `${report.memberCount} ${report.memberCount === 1 ? "member" : "members"}` : "…"}
@@ -1150,6 +1181,27 @@ export function JobsSettingsScreen({
                           )}
                           <span className="folder-scanned mono">{formatDate(ep.createdAt)}</span>
                         </span>
+                        {renamingEpisodeId === ep.id ? (
+                          <button
+                            type="button"
+                            className="ghost-btn label"
+                            disabled={savingRename}
+                            onClick={() => void handleRenameEpisode(ep.id)}
+                          >
+                            {savingRename ? "Saving…" : "Save"}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="ghost-btn label"
+                            onClick={() => {
+                              setRenamingEpisodeId(ep.id);
+                              setRenameTitleDraft(ep.title ?? "");
+                            }}
+                          >
+                            Rename
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="ghost-btn label"
@@ -1939,6 +1991,31 @@ export function JobsSettingsScreen({
         .episode-code {
           font-size: 13px;
           color: var(--ink);
+        }
+        .episode-title {
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--ink);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .episode-title-input {
+          background: #fff;
+          border: 1px solid var(--chrome-lo);
+          box-shadow: var(--bevel-in);
+          border-radius: 2px;
+          padding: 4px 8px;
+          color: var(--ink);
+          font-size: 12.5px;
+          width: 220px;
+        }
+        .episode-title-input:focus {
+          outline: 2px solid var(--accent);
+          outline-offset: -1px;
+        }
+        .episode-title-input::placeholder {
+          color: var(--ink-faint);
         }
         .episode-add-row {
           display: flex;

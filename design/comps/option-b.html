@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Option B — Bin selector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Fragment+Mono&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="base.css" />
+<style>
+  /* Option B: one compact Media Composer-style bin selector.
+     Scope reads as a single control; the menu carries titles, counts, rename. */
+  .ep-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    background: var(--ground-raised);
+    border: 1px solid var(--chrome-lo);
+    border-radius: 2px;
+    box-shadow: var(--bevel-out);
+    padding: 5px 11px;
+    color: var(--ink);
+    font-size: 11.5px;
+    max-width: 340px;
+  }
+  .ep-select .k { font-size: 10px; font-weight: 600; letter-spacing: 0.12em; color: var(--ink-dimmer); }
+  .ep-select .code { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-dim); }
+  .ep-select .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ep-select .caret { font-size: 8px; color: var(--ink-dim); }
+  .ep-menu-anchor { position: relative; display: inline-block; }
+  .ep-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 330px;
+    background: var(--ground-card);
+    border: 1px solid var(--panel-border);
+    border-radius: 2px;
+    box-shadow: var(--shadow-card);
+    z-index: 10;
+    text-align: left;
+  }
+  .ep-menu-head {
+    padding: 7px 12px 6px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .ep-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--hairline);
+    padding: 7px 12px;
+    color: var(--ink);
+    font-size: 12px;
+    text-align: left;
+  }
+  .ep-row:nth-child(even) { background: var(--paper-alt); }
+  .ep-row .code { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-dim); flex: 0 0 30px; }
+  .ep-row .title { flex: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ep-row .count { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-dimmer); }
+  .ep-row.active { background: var(--select-bg); color: var(--select-ink); }
+  .ep-row.active .code, .ep-row.active .count { color: #aeb6bd; }
+  .ep-row.hovered { background: #e2e5e7; }
+  .ep-row .pencil {
+    font-size: 10px;
+    color: var(--accent);
+    border: 1px solid var(--hairline-strong);
+    border-radius: 2px;
+    padding: 1px 6px;
+    background: #fff;
+  }
+  .ep-menu-foot { display: flex; }
+  .ep-menu-foot button {
+    flex: 1;
+    background: var(--ground-raised);
+    border: none;
+    box-shadow: var(--bevel-out);
+    padding: 7px 10px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--ink-dim);
+  }
+  .ep-center { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+  <div class="comp-note">
+    <h1>Option B — Bin selector</h1>
+    <p>One compact control, like an Avid bin menu. The menu shows every episode with title, code, and clip count. Rename is a pencil on the hovered row. Scales to any episode count.</p>
+  </div>
+
+  <div class="stage">
+    <!-- CHAT -->
+    <div class="window">
+      <div class="window-bar"><span class="dot"></span><span class="label">Chat</span><span class="stripes"></span></div>
+      <div class="chat-screen">
+        <aside class="chat-history">
+          <div class="chat-history-head">
+            <span class="label">E23 · 4 chats</span>
+            <button class="chat-new label">New chat</button>
+          </div>
+          <div class="chat-search">⌕&nbsp; Search chats</div>
+          <div class="chat-count mono">4 chats in this scope</div>
+          <div class="chat-list">
+            <button class="chat-item active">
+              <span class="t">which is their favorite house</span>
+              <span class="m"><span class="chip">E23</span><span>Today</span></span>
+            </button>
+            <button class="chat-item">
+              <span class="t">budget talk in the Auckland walkthrough</span>
+              <span class="m"><span class="chip">E23</span><span>Today</span></span>
+            </button>
+            <button class="chat-item">
+              <span class="t">where do they mention the school district</span>
+              <span class="m"><span class="chip">E23</span><span>Yesterday</span></span>
+            </button>
+            <button class="chat-item">
+              <span class="t">pool argument — find the line</span>
+              <span class="m"><span class="chip">E23</span><span>Jul 30</span></span>
+            </button>
+          </div>
+        </aside>
+        <div class="chat-main">
+          <div class="chat-scroll">
+            <div class="chat-column">
+              <div class="ep-center">
+                <span class="ep-menu-anchor">
+                  <button class="ep-select">
+                    <span class="k">EPISODE</span>
+                    <span class="code">E23</span>
+                    <span class="title">Auckland &amp; Pretoria</span>
+                    <span class="caret">▼</span>
+                  </button>
+                  <div class="ep-menu">
+                    <div class="ep-menu-head"><span class="label">Episodes · 893 clips indexed</span></div>
+                    <button class="ep-row"><span class="code">ALL</span><span class="title">All episodes</span><span class="count">893</span></button>
+                    <button class="ep-row active"><span class="code">E23</span><span class="title">Auckland &amp; Pretoria</span><span class="count">174</span></button>
+                    <button class="ep-row hovered"><span class="code">E24</span><span class="title">Bali &amp; New Orleans</span><span class="pencil">RENAME</span><span class="count">151</span></button>
+                    <button class="ep-row"><span class="code">E25</span><span class="title">Madeira &amp; Tulsa</span><span class="count">163</span></button>
+                    <button class="ep-row"><span class="code">E26</span><span class="title">San Miguel &amp; Boise</span><span class="count">138</span></button>
+                    <button class="ep-row"><span class="code">E27</span><span class="title">Kraków &amp; Santa Fe</span><span class="count">101</span></button>
+                    <button class="ep-row"><span class="code">E28</span><span class="title">Lisbon &amp; Durham</span><span class="count">86</span></button>
+                    <button class="ep-row"><span class="code">E29</span><span class="title">Hobart &amp; Fresno</span><span class="count">80</span></button>
+                    <div class="ep-menu-foot"><button>NEW EPISODE…</button></div>
+                  </div>
+                </span>
+              </div>
+              <button class="coverage-banner mono">INDEXING · 1 OF 893 FILES REMAIN · ANSWERS COVER INDEXED FILES ONLY</button>
+              <div class="chat-empty" style="margin-top: 320px;">
+                <p class="display chat-empty-line">Ask your footage anything.</p>
+                <p class="chat-empty-sub">Search transcripts and producer notes, like "where does Marsh mention the salmon run?"</p>
+                <p class="chat-empty-scope mono">Searching E23 · Auckland &amp; Pretoria</p>
+              </div>
+            </div>
+          </div>
+          <div class="chat-inputbar">
+            <div class="chat-inputbox"><span>Ask about your footage…</span><span class="send">SEND</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LIBRARY -->
+    <div class="window">
+      <div class="library-bar"><span class="library-bar-close"></span><span class="label">Library</span><span class="library-bar-stripes"></span><span class="mono" style="font-size:11px;color:var(--ink-dim)">893 clips</span></div>
+      <div class="library-header-body">
+        <div class="library-header-row">
+          <h1 class="display">Footage</h1>
+          <div class="library-header-btns">
+            <button class="ghost-btn label">Import</button>
+            <button class="ghost-btn label">Add raw folder…</button>
+            <button class="ghost-btn label">Add finals…</button>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:16px;">
+          <button class="ep-select">
+            <span class="k">EPISODE</span>
+            <span class="code">E23</span>
+            <span class="title">Auckland &amp; Pretoria</span>
+            <span class="caret">▼</span>
+          </button>
+          <div class="library-filters">
+            <button class="library-filter-chip label active">ALL</button>
+            <button class="library-filter-chip label">RAW</button>
+            <button class="library-filter-chip label">FINALS</button>
+          </div>
+        </div>
+        <p class="library-scan-line mono">Scanned 8 minutes ago · <a href="#">Scan again</a></p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

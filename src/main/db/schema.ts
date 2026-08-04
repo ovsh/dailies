@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS episodes (
   created_at TEXT NOT NULL,
   membership_source TEXT NOT NULL DEFAULT 'folder'
     CHECK (membership_source IN ('folder', 'list', 'media-tag')),
-  media_tag TEXT
+  media_tag TEXT,
+  title TEXT
 );
 
 CREATE TABLE IF NOT EXISTS folders (

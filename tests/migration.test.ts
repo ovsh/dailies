@@ -189,6 +189,7 @@ describe("legacy database migration", () => {
         createdAt: created,
         membershipSource: "folder",
         mediaTag: null,
+        title: null,
       },
       {
         id: listEpisode,
@@ -196,6 +197,7 @@ describe("legacy database migration", () => {
         createdAt: created,
         membershipSource: "list",
         mediaTag: null,
+        title: null,
       },
     ]);
 

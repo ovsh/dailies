@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Option A — Wrapped chips</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Fragment+Mono&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="base.css" />
+<style>
+  /* Option A: keep the chip grammar, make it survive reality.
+     Chips wrap, titles are short, codes stay mono, rename is inline. */
+  .ep-wrap { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+  .ep-wrap.left { justify-content: flex-start; }
+  .ep-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--ground-raised);
+    border: 1px solid var(--chrome-lo);
+    border-radius: 2px;
+    box-shadow: var(--bevel-out);
+    color: var(--ink);
+    padding: 4px 10px;
+    font-size: 11.5px;
+    max-width: 210px;
+  }
+  .ep-chip .code { font-family: var(--font-mono); font-size: 10px; color: var(--ink-dim); }
+  .ep-chip .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ep-chip.active { background: var(--select-bg); border-color: var(--select-bg); color: var(--select-ink); box-shadow: none; }
+  .ep-chip.active .code { color: #aeb6bd; }
+  .ep-chip.all { font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; padding: 5px 11px; }
+  .ep-chip.add { color: var(--ink-dim); padding: 4px 9px; }
+  .ep-chip.hovered { background: #d2d6d9; position: relative; }
+  .ep-tip {
+    position: absolute;
+    top: calc(100% + 7px);
+    left: 0;
+    background: var(--ground-card);
+    border: 1px solid var(--panel-border);
+    box-shadow: var(--shadow-card);
+    border-radius: 2px;
+    padding: 7px 10px;
+    white-space: nowrap;
+    z-index: 5;
+    text-align: left;
+  }
+  .ep-tip .src { font-family: var(--font-mono); font-size: 10px; color: var(--ink-dim); display: block; }
+  .ep-tip .hint { font-size: 10px; color: var(--ink-dimmer); display: block; margin-top: 2px; }
+  .ep-rename { width: 150px; }
+</style>
+</head>
+<body>
+  <div class="comp-note">
+    <h1>Option A — Wrapped chips</h1>
+    <p>Keeps the current chip grammar. Chips wrap so all episodes stay visible. Short title + mono code. Hover shows the source Avid name. Double-click renames in place.</p>
+  </div>
+
+  <div class="stage">
+    <!-- CHAT -->
+    <div class="window">
+      <div class="window-bar"><span class="dot"></span><span class="label">Chat</span><span class="stripes"></span></div>
+      <div class="chat-screen">
+        <aside class="chat-history">
+          <div class="chat-history-head">
+            <span class="label">E23 · 4 chats</span>
+            <button class="chat-new label">New chat</button>
+          </div>
+          <div class="chat-search">⌕&nbsp; Search chats</div>
+          <div class="chat-count mono">4 chats in this scope</div>
+          <div class="chat-list">
+            <button class="chat-item active">
+              <span class="t">which is their favorite house</span>
+              <span class="m"><span class="chip">E23</span><span>Today</span></span>
+            </button>
+            <button class="chat-item">
+              <span class="t">budget talk in the Auckland walkthrough</span>
+              <span class="m"><span class="chip">E23</span><span>Today</span></span>
+            </button>
+            <button class="chat-item">
+              <span class="t">where do they mention the school district</span>
+              <span class="m"><span class="chip">E23</span><span>Yesterday</span></span>
+            </button>
+            <button class="chat-item">
+              <span class="t">pool argument — find the line</span>
+              <span class="m"><span class="chip">E23</span><span>Jul 30</span></span>
+            </button>
+          </div>
+        </aside>
+        <div class="chat-main">
+          <div class="chat-scroll">
+            <div class="chat-column">
+              <div class="ep-wrap">
+                <button class="ep-chip all">ALL</button>
+                <button class="ep-chip active"><span class="code">E23</span><span class="title">Auckland &amp; Pretoria</span></button>
+                <button class="ep-chip"><span class="code">E24</span><span class="title">Bali &amp; New Orleans</span></button>
+                <button class="ep-chip"><span class="code">E25</span><span class="title">Madeira &amp; Tulsa</span></button>
+                <button class="ep-chip"><span class="code">E26</span><span class="title">San Miguel &amp; Boise</span></button>
+                <input class="rename-input ep-rename" value="Kraków &amp; Santa Fe" />
+                <button class="ep-chip"><span class="code">E28</span><span class="title">Lisbon &amp; Durham</span></button>
+                <button class="ep-chip"><span class="code">E29</span><span class="title">Hobart &amp; Fresno</span></button>
+                <button class="ep-chip add">+</button>
+              </div>
+              <button class="coverage-banner mono">INDEXING · 1 OF 893 FILES REMAIN · ANSWERS COVER INDEXED FILES ONLY</button>
+              <div class="chat-empty">
+                <p class="display chat-empty-line">Ask your footage anything.</p>
+                <p class="chat-empty-sub">Search transcripts and producer notes, like "where does Marsh mention the salmon run?"</p>
+                <p class="chat-empty-scope mono">Searching E23 · Auckland &amp; Pretoria</p>
+              </div>
+            </div>
+          </div>
+          <div class="chat-inputbar">
+            <div class="chat-inputbox"><span>Ask about your footage…</span><span class="send">SEND</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LIBRARY -->
+    <div class="window">
+      <div class="library-bar"><span class="library-bar-close"></span><span class="label">Library</span><span class="library-bar-stripes"></span><span class="mono" style="font-size:11px;color:var(--ink-dim)">893 clips</span></div>
+      <div class="library-header-body" style="padding-bottom: 64px;">
+        <div class="library-header-row">
+          <h1 class="display">Footage</h1>
+          <div class="library-header-btns">
+            <button class="ghost-btn label">Import</button>
+            <button class="ghost-btn label">Add raw folder…</button>
+            <button class="ghost-btn label">Add finals…</button>
+          </div>
+        </div>
+        <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
+          <div class="ep-wrap left" style="flex:1; min-width:0;">
+            <button class="ep-chip all">ALL</button>
+            <button class="ep-chip active"><span class="code">E23</span><span class="title">Auckland &amp; Pretoria</span></button>
+            <button class="ep-chip"><span class="code">E24</span><span class="title">Bali &amp; New Orleans</span></button>
+            <button class="ep-chip"><span class="code">E25</span><span class="title">Madeira &amp; Tulsa</span></button>
+            <button class="ep-chip"><span class="code">E26</span><span class="title">San Miguel &amp; Boise</span></button>
+            <button class="ep-chip"><span class="code">E27</span><span class="title">Kraków &amp; Santa Fe</span></button>
+            <button class="ep-chip"><span class="code">E28</span><span class="title">Lisbon &amp; Durham</span></button>
+            <button class="ep-chip hovered" style="position:relative;">
+              <span class="code">E29</span><span class="title">Hobart &amp; Fresno</span>
+              <span class="ep-tip">
+                <span class="src">HHI_HOBART_TASMANIA_FRESNO_CA_EDIT29</span>
+                <span class="hint">Double-click to rename</span>
+              </span>
+            </button>
+            <button class="ep-chip add">+</button>
+          </div>
+          <div class="library-filters">
+            <button class="library-filter-chip label active">ALL</button>
+            <button class="library-filter-chip label">RAW</button>
+            <button class="library-filter-chip label">FINALS</button>
+          </div>
+        </div>
+        <p class="library-scan-line mono">Scanned 8 minutes ago · <a href="#">Scan again</a></p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

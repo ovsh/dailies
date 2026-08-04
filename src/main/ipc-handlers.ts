@@ -77,6 +77,7 @@ function membershipSourceFrom(value: unknown): MembershipSource {
 }
 
 const MAX_PROPOSAL_ROWS = 200;
+const MAX_EPISODE_TITLE_LENGTH = 80;
 
 function episodeProposalRowsFrom(value: unknown): EpisodeProposalApplication[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PROPOSAL_ROWS) {
@@ -94,7 +95,15 @@ function episodeProposalRowsFrom(value: unknown): EpisodeProposalApplication[] {
     ) {
       throw new Error("Invalid episode proposal");
     }
-    return { code: code.trim(), sourceProject };
+    const title = raw["title"];
+    return {
+      code: code.trim(),
+      sourceProject,
+      title:
+        typeof title === "string" && title.trim() !== ""
+          ? title.trim().slice(0, MAX_EPISODE_TITLE_LENGTH)
+          : null,
+    };
   });
 }
 
@@ -215,6 +224,70 @@ export function registerIpcHandlers(ctx: IpcContext): void {
     const ep = db.createEpisode(code);
     emitProjectUpdate();
     return ep;
+  });
+
+  ipcMain.handle(IPC.renameEpisode, (_e, rawEpisodeId: unknown, rawTitle: unknown) => {
+    const { db } = requireProject();
+    const episodeId = episodeIdFrom(rawEpisodeId);
+    if (rawTitle !== null && typeof rawTitle !== "string") {
+      throw new Error("Invalid episode title");
+    }
+    const title = rawTitle === null ? null : rawTitle.slice(0, MAX_EPISODE_TITLE_LENGTH);
+    const episode = db.renameEpisode(episodeId, title);
+    emitProjectUpdate();
+    return episode;
+  });
+
+  ipcMain.handle(IPC.getEpisodeClipCounts, () => {
+    const { db } = requireProject();
+    return db.tallyEpisodeClipCounts();
+  });
+
+  ipcMain.handle(IPC.suggestEpisodeTitle, async (_e, rawEpisodeId: unknown) => {
+    const { db } = requireProject();
+    const episodeId = episodeIdFrom(rawEpisodeId);
+    const episode = db.listEpisodes().find((ep) => ep.id === episodeId);
+    if (!episode) throw new Error("Episode not found");
+    const apiKey = settings.getOpenRouterKey();
+    if (!apiKey && !settings.hasLlmAccess()) return null;
+
+    const client = createOpenRouterClient(() => apiKey, {
+      operatorName: () => settings.getOperatorName(),
+    });
+    const selection = chatModelSelection(settings.getChatModelId(), settings.getChatEffort());
+    const siblingTitles = db
+      .listEpisodes()
+      .filter((ep) => ep.id !== episodeId && ep.title)
+      .slice(0, 8)
+      .map((ep) => ep.title as string);
+    const facts = [
+      `Episode code: ${episode.code}`,
+      episode.mediaTag ? `Avid project name: ${episode.mediaTag}` : null,
+      siblingTitles.length > 0
+        ? `Titles of other episodes in this show: ${siblingTitles.join("; ")}`
+        : null,
+    ].filter(Boolean).join("\n");
+    const response = await client.chat({
+      model: selection.option.id,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You name TV episodes inside an editor's tool. From the facts, produce one short, human display title for the episode (2-5 words, no quotes, no episode number, plain words from the source name — locations or subject). Match the style of the sibling titles when given. Respond as JSON: {\"title\": \"...\"}.",
+        },
+        { role: "user", content: facts },
+      ],
+      response_format: { type: "json_object" },
+    });
+    try {
+      const parsed: unknown = JSON.parse(response.message.content ?? "");
+      const title = isUnknownRecord(parsed) ? parsed["title"] : null;
+      if (typeof title !== "string") return null;
+      const trimmed = title.trim().slice(0, MAX_EPISODE_TITLE_LENGTH);
+      return trimmed === "" ? null : trimmed;
+    } catch {
+      return null;
+    }
   });
 
   ipcMain.handle(IPC.getEpisodeMembership, (_e, rawEpisodeId: unknown) => {
